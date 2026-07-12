@@ -15,5 +15,10 @@ test("server-renders the agency command center", async () => {
   assert.match(html, /HD SEO/);
   assert.match(html, /Next best actions/i);
   assert.match(html, /DEMO DATA/);
+  assert.match(html, /Site audits/);
+  assert.match(html, /Integrations/);
+  assert.match(html, /Add client/);
+  assert.match(html, /Create implementation draft/);
+  assert.match(html, /Help &amp; support/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/);
 });
