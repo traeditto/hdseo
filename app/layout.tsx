@@ -13,10 +13,10 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = `${protocol}://${host}/og.png`;
 
   return {
-    title: "Northstar SEO — Agency Operating System",
+    title: "HD SEO — Agency Operating System",
     description: "Prioritize, approve, execute, and measure SEO work across every client.",
-    openGraph: { title: "Northstar SEO", description: "Turn SEO data into prioritized client work.", type: "website", images: [{ url: image, width: 1732, height: 908, alt: "Northstar SEO agency operating system" }] },
-    twitter: { card: "summary_large_image", title: "Northstar SEO", description: "Turn SEO data into prioritized client work.", images: [image] },
+    openGraph: { title: "HD SEO", description: "Turn SEO data into prioritized client work.", type: "website", images: [{ url: image, width: 1732, height: 908, alt: "HD SEO agency operating system" }] },
+    twitter: { card: "summary_large_image", title: "HD SEO", description: "Turn SEO data into prioritized client work.", images: [image] },
   };
 }
 

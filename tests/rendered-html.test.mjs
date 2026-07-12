@@ -12,7 +12,7 @@ test("server-renders the agency command center", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /Northstar SEO/);
+  assert.match(html, /HD SEO/);
   assert.match(html, /Next best actions/i);
   assert.match(html, /DEMO DATA/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/);

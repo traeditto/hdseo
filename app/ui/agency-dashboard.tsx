@@ -75,10 +75,10 @@ export function AgencyDashboard() {
   return (
     <main className="app-shell">
       <aside className={`sidebar ${mobileNav ? "mobile-open" : ""}`}>
-        <div className="brand"><BrandMark /><span>Northstar <em>SEO</em></span><button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="Close navigation">×</button></div>
+        <div className="brand"><BrandMark /><span>HD <em>SEO</em></span><button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="Close navigation">×</button></div>
         <div className="workspace-switcher">
           <div className="workspace-avatar">NA</div>
-          <div><span>WORKSPACE</span><strong>Northstar Agency</strong></div>
+          <div><span>WORKSPACE</span><strong>HD SEO Agency</strong></div>
           <button aria-label="Switch workspace">⌄</button>
         </div>
         <nav aria-label="Primary navigation">
@@ -104,7 +104,7 @@ export function AgencyDashboard() {
       <section className="main-panel">
         <header className="topbar">
           <button className="menu-button" onClick={() => setMobileNav(true)} aria-label="Open navigation">☰</button>
-          <div className="breadcrumbs"><span>Northstar Agency</span><b>/</b><strong>{active}</strong></div>
+          <div className="breadcrumbs"><span>HD SEO Agency</span><b>/</b><strong>{active}</strong></div>
           <div className="top-actions"><button aria-label="Search">⌕</button><button className="notification" aria-label="Notifications">♢<i /></button><button className="add-client" onClick={() => notify("New client onboarding opened")}>＋ Add client</button></div>
         </header>
 
@@ -154,7 +154,7 @@ export function AgencyDashboard() {
             <div className="section-header"><div><h2>Agency work queue</h2><p>Prioritized work that needs attention</p></div><div><button className="filter-button">≡ Filter</button><button onClick={() => setActive("Work queue")}>View full queue →</button></div></div>
             <div className="queue-list">{queue.map((item, index) => <article key={item.title}><span className="queue-number">0{index + 1}</span><div className="queue-copy"><h3>{item.title}</h3><p><strong>{item.client}</strong><span>·</span>{item.meta}</p></div><span className={`priority-pill ${item.priority === "MED" ? "medium" : ""}`}>{item.priority}</span><div className="queue-due"><small>DUE</small><strong>{item.due}</strong></div><button onClick={() => notify(`${item.action} workflow opened`)}>{item.action}</button></article>)}</div>
           </section>
-          <footer className="content-footer"><span><BrandMark small /> Northstar SEO</span><p>Last synced 18 minutes ago · All systems operational</p><button onClick={() => notify("Support center opened")}>? Help & support</button></footer>
+          <footer className="content-footer"><span><BrandMark small /> HD SEO</span><p>Last synced 18 minutes ago · All systems operational</p><button onClick={() => notify("Support center opened")}>? Help & support</button></footer>
         </div>
       </section>
 
