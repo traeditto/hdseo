@@ -9,6 +9,7 @@ import {
   resolveLiveIdentity,
   LiveConfigError,
 } from "@/lib/live/identity";
+import { buildManualPackage } from "@/lib/seo/manual-package";
 
 /**
  * The portal store used to be backed by a Cloudflare D1 database. It now reads
@@ -666,4 +667,418 @@ export async function liveAdminSnapshot(email: string) {
       }),
     ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Mutations
+// ---------------------------------------------------------------------------
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+async function agencyContext(email: string): Promise<{
+  db: SupabaseClient;
+  agencyId: string;
+  userId: string;
+}> {
+  const db = admin();
+  const membership = await requireAgency(email);
+  const userId = await resolveUserId(db, email);
+  if (!userId) {
+    throw new ApiError("Sign in before continuing.", 403, "TENANT_DENIED");
+  }
+  return { db, agencyId: membership.agency.id, userId };
+}
+
+async function recordEvent(
+  db: SupabaseClient,
+  event: {
+    agencyId: string;
+    clientOrganizationId: string;
+    projectId: string;
+    eventType: string;
+    title: string;
+    description?: string | null;
+    actorUserId?: string | null;
+    actorEmail?: string | null;
+    clientVisible?: boolean;
+  },
+): Promise<void> {
+  await db.from("proof_of_work_events").insert({
+    agency_id: event.agencyId,
+    client_organization_id: event.clientOrganizationId,
+    project_id: event.projectId,
+    event_type: event.eventType,
+    title: event.title,
+    description: event.description ?? null,
+    actor_user_id: event.actorUserId ?? null,
+    client_visible: event.clientVisible ?? false,
+    metadata: event.actorEmail ? { actor_email: event.actorEmail } : {},
+  });
+}
+
+export async function createClientWithProject(
+  email: string,
+  input: { name: string; domain: string; contactEmail?: string },
+): Promise<void> {
+  const { db, agencyId, userId } = await agencyContext(email);
+  const cleanDomain = input.domain
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .toLowerCase();
+  const slugBase =
+    input.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "client";
+
+  const { data: org, error } = await db
+    .from("client_organizations")
+    .insert({
+      agency_id: agencyId,
+      name: input.name,
+      slug: `${slugBase}-${crypto.randomUUID().slice(0, 6)}`,
+      primary_contact_email: input.contactEmail?.toLowerCase() || null,
+      status: "active",
+    })
+    .select("id")
+    .single();
+
+  if (error || !org) {
+    throw new ApiError(
+      `Unable to create client: ${error?.message ?? "unknown error"}`,
+      500,
+      "WRITE_FAILED",
+    );
+  }
+
+  const { data: project, error: projectError } = await db
+    .from("seo_projects")
+    .insert({
+      agency_id: agencyId,
+      client_organization_id: org.id,
+      name: "Primary SEO Project",
+      domain: cleanDomain,
+      canonical_domain: cleanDomain,
+      status: "active",
+    })
+    .select("id")
+    .single();
+
+  if (projectError || !project) {
+    throw new ApiError(
+      `Unable to create project: ${projectError?.message ?? "unknown error"}`,
+      500,
+      "WRITE_FAILED",
+    );
+  }
+
+  // Auto-link the client contact to their organization if they already exist.
+  if (input.contactEmail) {
+    const contactUserId = await resolveUserId(db, input.contactEmail);
+    if (contactUserId) {
+      await db.from("client_members").upsert(
+        {
+          agency_id: agencyId,
+          client_organization_id: org.id,
+          user_id: contactUserId,
+          role: "client_owner",
+          status: "active",
+        },
+        { onConflict: "client_organization_id,user_id" },
+      );
+    }
+  }
+
+  await recordEvent(db, {
+    agencyId,
+    clientOrganizationId: org.id,
+    projectId: project.id,
+    eventType: "client_created",
+    title: `${input.name} added`,
+    description: `Primary SEO project created for ${cleanDomain}.`,
+    actorUserId: userId,
+    actorEmail: email,
+    clientVisible: false,
+  });
+}
+
+export async function createOpportunity(
+  email: string,
+  input: {
+    projectId: string;
+    keyword: string;
+    currentRank?: number;
+    targetRank: number;
+    actionType: string;
+    reason: string;
+  },
+): Promise<void> {
+  const { db, agencyId } = await agencyContext(email);
+  const { data: project } = await db
+    .from("seo_projects")
+    .select("id,client_organization_id")
+    .eq("id", input.projectId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
+
+  const proximity = input.currentRank
+    ? Math.max(0, 45 - Math.abs(input.currentRank - input.targetRank) * 3)
+    : 12;
+  const actionValue = ["IMPROVE", "CTR_WIN", "TECHNICAL"].includes(
+    input.actionType,
+  )
+    ? 24
+    : 18;
+  const score = Math.min(100, Math.max(1, proximity + actionValue + 20));
+
+  const { error } = await db.from("seo_opportunities").insert({
+    agency_id: agencyId,
+    client_organization_id: project.client_organization_id,
+    project_id: project.id,
+    opportunity_score: score,
+    confidence_score: input.currentRank ? 80 : 60,
+    action_type: input.actionType,
+    priority: score >= 80 ? "high" : score >= 60 ? "medium" : "low",
+    target_milestone: `top_${input.targetRank}`,
+    scoring_version: "manual-v1",
+    opportunity_key: `${input.actionType}:${input.keyword.toLowerCase()}`,
+    reason_codes: [input.actionType],
+    evidence: {
+      keyword: input.keyword,
+      current_rank: input.currentRank ?? null,
+      target_rank: input.targetRank,
+      reason: input.reason,
+    },
+    status: "open",
+  });
+
+  if (error) {
+    throw new ApiError(
+      `Unable to create opportunity: ${error.message}`,
+      500,
+      "WRITE_FAILED",
+    );
+  }
+}
+
+export async function createPackage(
+  email: string,
+  input: { opportunityId: string; implementationPath: string },
+): Promise<void> {
+  const { db, agencyId, userId } = await agencyContext(email);
+  const { data: opp } = await db
+    .from("seo_opportunities")
+    .select("*")
+    .eq("id", input.opportunityId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!opp) throw new ApiError("Opportunity not found.", 404, "NOT_FOUND");
+
+  const { data: project } = await db
+    .from("seo_projects")
+    .select("id,domain,client_organization_id")
+    .eq("id", opp.project_id)
+    .maybeSingle();
+  if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
+
+  const evidence = asRecord(opp.evidence);
+  const keyword =
+    (evidence.keyword as string) ?? (opp.opportunity_key as string) ?? "";
+  const path = input.implementationPath as
+    | "wordpress_package"
+    | "generic_cms"
+    | "developer_ticket";
+  const packageData = buildManualPackage({
+    path,
+    keyword,
+    targetUrl: `https://${project.domain}`,
+    actionType: opp.action_type,
+    verifiedEvidence: [],
+    missingEvidence: ["Approved business claims and proof"],
+  });
+
+  const { data: latest } = await db
+    .from("implementation_packages")
+    .select("version")
+    .eq("opportunity_id", input.opportunityId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const version = ((latest?.version as number) ?? 0) + 1;
+
+  const { data: pkg, error } = await db
+    .from("implementation_packages")
+    .insert({
+      agency_id: agencyId,
+      client_organization_id: project.client_organization_id,
+      project_id: project.id,
+      opportunity_id: input.opportunityId,
+      implementation_path: path,
+      version,
+      status: "agency_review",
+      package_data: { ...packageData, title: `${keyword} implementation` },
+      created_by: userId,
+    })
+    .select("id")
+    .single();
+
+  if (error || !pkg) {
+    throw new ApiError(
+      `Unable to create package: ${error?.message ?? "unknown error"}`,
+      500,
+      "WRITE_FAILED",
+    );
+  }
+
+  await db.from("seo_tasks").insert({
+    agency_id: agencyId,
+    client_organization_id: project.client_organization_id,
+    project_id: project.id,
+    title: `Implement ${keyword}`,
+    status: "awaiting_review",
+    priority: (opp.opportunity_score as number) >= 80 ? "high" : "medium",
+    created_by: userId,
+    completion_proof: {
+      opportunity_id: input.opportunityId,
+      package_id: pkg.id,
+      assigned_email: email,
+      implementation_path: path,
+    },
+  });
+
+  await recordEvent(db, {
+    agencyId,
+    clientOrganizationId: project.client_organization_id,
+    projectId: project.id,
+    eventType: "package_created",
+    title: "Implementation package created",
+    description: `${path.replaceAll("_", " ")} prepared for agency review.`,
+    actorUserId: userId,
+    actorEmail: email,
+    clientVisible: false,
+  });
+}
+
+export async function updateTaskStatus(
+  email: string,
+  input: { taskId: string; status: string },
+): Promise<void> {
+  const { db, agencyId } = await agencyContext(email);
+  const { data, error } = await db
+    .from("seo_tasks")
+    .update({ status: input.status, updated_at: nowIso() })
+    .eq("id", input.taskId)
+    .eq("agency_id", agencyId)
+    .select("id");
+  if (error) {
+    throw new ApiError(
+      `Unable to update task: ${error.message}`,
+      500,
+      "WRITE_FAILED",
+    );
+  }
+  if (!data || !data.length) {
+    throw new ApiError("Task not found.", 404, "NOT_FOUND");
+  }
+}
+
+export async function advancePackage(
+  email: string,
+  packageId: string,
+  action: "publish_package" | "mark_implemented" | "verify_package",
+): Promise<void> {
+  const { db, agencyId, userId } = await agencyContext(email);
+  const { data: pkg } = await db
+    .from("implementation_packages")
+    .select("*")
+    .eq("id", packageId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!pkg) {
+    throw new ApiError("Implementation package not found.", 404, "NOT_FOUND");
+  }
+
+  const status =
+    action === "publish_package"
+      ? "client_review"
+      : action === "mark_implemented"
+        ? "implemented"
+        : "verified";
+  const title =
+    action === "publish_package"
+      ? "Client approval requested"
+      : action === "mark_implemented"
+        ? "Implementation reported"
+        : "Implementation verified";
+
+  const patch: Record<string, unknown> = { status, updated_at: nowIso() };
+  if (action === "mark_implemented") patch.implemented_at = nowIso();
+
+  await db.from("implementation_packages").update(patch).eq("id", packageId);
+
+  await recordEvent(db, {
+    agencyId,
+    clientOrganizationId: pkg.client_organization_id,
+    projectId: pkg.project_id,
+    eventType: action,
+    title,
+    description:
+      action === "verify_package"
+        ? "Verification recorded. Monitoring checkpoints are now eligible."
+        : "Workflow status updated.",
+    actorUserId: userId,
+    actorEmail: email,
+    clientVisible: true,
+  });
+}
+
+export async function recordClientPackageDecision(
+  email: string,
+  input: { packageId: string; decision: string },
+): Promise<void> {
+  const db = admin();
+  const userId = await resolveUserId(db, email);
+  if (!userId) {
+    throw new ApiError("Client approval access denied.", 403, "TENANT_DENIED");
+  }
+
+  const { data: pkg } = await db
+    .from("implementation_packages")
+    .select("*")
+    .eq("id", input.packageId)
+    .maybeSingle();
+  if (!pkg) {
+    throw new ApiError("Implementation package not found.", 404, "NOT_FOUND");
+  }
+
+  const { data: member } = await db
+    .from("client_members")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("client_organization_id", pkg.client_organization_id)
+    .eq("status", "active")
+    .maybeSingle();
+  if (!member) {
+    throw new ApiError("Client approval access denied.", 403, "TENANT_DENIED");
+  }
+
+  await db
+    .from("implementation_packages")
+    .update({ status: input.decision, updated_at: nowIso() })
+    .eq("id", input.packageId);
+
+  await recordEvent(db, {
+    agencyId: pkg.agency_id,
+    clientOrganizationId: pkg.client_organization_id,
+    projectId: pkg.project_id,
+    eventType: input.decision,
+    title: `Client ${input.decision.replaceAll("_", " ")}`,
+    description: "The client decision was recorded through the secure portal.",
+    actorUserId: userId,
+    actorEmail: email,
+    clientVisible: true,
+  });
 }

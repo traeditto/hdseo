@@ -1,34 +1,193 @@
 import { z } from "zod";
-import { and,eq } from "drizzle-orm";
-import { getChatGPTUser } from "@/app/chatgpt-auth";
-import { getDb } from "@/db";
-import * as tables from "@/db/schema";
-import { parseJson } from "@/lib/api/request";
-import { ApiError,jsonError } from "@/lib/api/errors";
-import { agencyMembership,createAgencyForUser,liveAdminSnapshot,liveAgencySnapshot,liveClientSnapshot,requireAgency,upsertLiveUser } from "@/lib/live/store";
-import { buildManualPackage } from "@/lib/seo/manual-package";
 
-const schema=z.discriminatedUnion("action",[
-  z.object({action:z.literal("create_agency"),name:z.string().trim().min(2).max(100)}),
-  z.object({action:z.literal("create_client"),name:z.string().trim().min(2).max(120),domain:z.string().trim().min(3).max(200),contactEmail:z.string().email().optional().or(z.literal(""))}),
-  z.object({action:z.literal("create_opportunity"),projectId:z.string().uuid(),keyword:z.string().trim().min(2).max(200),currentRank:z.number().int().min(1).max(100).optional(),targetRank:z.number().int().min(1).max(20).default(10),actionType:z.enum(["IMPROVE","BUILD","TECHNICAL","LINK","LOCALIZE","CONTENT","MAPS","CTR_WIN"]),reason:z.string().trim().min(10).max(1000)}),
-  z.object({action:z.literal("create_package"),opportunityId:z.string().uuid(),implementationPath:z.enum(["wordpress_package","generic_cms","developer_ticket"])}),
-  z.object({action:z.literal("publish_package"),packageId:z.string().uuid()}),
-  z.object({action:z.literal("package_decision"),packageId:z.string().uuid(),decision:z.enum(["client_approved","revision_requested","rejected"])}),
-  z.object({action:z.literal("update_task"),taskId:z.string().uuid(),status:z.enum(["ready","in_progress","awaiting_review","completed","blocked"])}),
-  z.object({action:z.literal("mark_implemented"),packageId:z.string().uuid()}),
-  z.object({action:z.literal("verify_package"),packageId:z.string().uuid()})
+import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { parseJson } from "@/lib/api/request";
+import { ApiError, jsonError } from "@/lib/api/errors";
+import {
+  advancePackage,
+  agencyMembership,
+  createAgencyForUser,
+  createClientWithProject,
+  createOpportunity,
+  createPackage,
+  liveAdminSnapshot,
+  liveAgencySnapshot,
+  liveClientSnapshot,
+  recordClientPackageDecision,
+  updateTaskStatus,
+  upsertLiveUser,
+} from "@/lib/live/store";
+
+const schema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("create_agency"),
+    name: z.string().trim().min(2).max(100),
+  }),
+  z.object({
+    action: z.literal("create_client"),
+    name: z.string().trim().min(2).max(120),
+    domain: z.string().trim().min(3).max(200),
+    contactEmail: z.string().email().optional().or(z.literal("")),
+  }),
+  z.object({
+    action: z.literal("create_opportunity"),
+    projectId: z.string().uuid(),
+    keyword: z.string().trim().min(2).max(200),
+    currentRank: z.number().int().min(1).max(100).optional(),
+    targetRank: z.number().int().min(1).max(20).default(10),
+    actionType: z.enum([
+      "IMPROVE",
+      "BUILD",
+      "TECHNICAL",
+      "LINK",
+      "LOCALIZE",
+      "CONTENT",
+      "MAPS",
+      "CTR_WIN",
+    ]),
+    reason: z.string().trim().min(10).max(1000),
+  }),
+  z.object({
+    action: z.literal("create_package"),
+    opportunityId: z.string().uuid(),
+    implementationPath: z.enum([
+      "wordpress_package",
+      "generic_cms",
+      "developer_ticket",
+    ]),
+  }),
+  z.object({
+    action: z.literal("publish_package"),
+    packageId: z.string().uuid(),
+  }),
+  z.object({
+    action: z.literal("package_decision"),
+    packageId: z.string().uuid(),
+    decision: z.enum(["client_approved", "revision_requested", "rejected"]),
+  }),
+  z.object({
+    action: z.literal("update_task"),
+    taskId: z.string().uuid(),
+    status: z.enum([
+      "ready",
+      "in_progress",
+      "awaiting_review",
+      "completed",
+      "blocked",
+    ]),
+  }),
+  z.object({
+    action: z.literal("mark_implemented"),
+    packageId: z.string().uuid(),
+  }),
+  z.object({
+    action: z.literal("verify_package"),
+    packageId: z.string().uuid(),
+  }),
 ]);
 
-async function identity(){const user=await getChatGPTUser();if(!user)throw new ApiError("Sign in with ChatGPT to continue.",401,"AUTH_REQUIRED");await upsertLiveUser(user);return{...user,email:user.email.toLowerCase()};}
-export async function GET(request:Request){try{const user=await identity(),scope=new URL(request.url).searchParams.get("scope")??"agency";if(scope==="admin")return Response.json({ok:true,user,data:await liveAdminSnapshot(user.email)});if(scope==="client")return Response.json({ok:true,user,data:await liveClientSnapshot(user.email)});return Response.json({ok:true,user,data:await liveAgencySnapshot(user.email)});}catch(error){return jsonError(error)}}
+async function identity() {
+  const user = await getChatGPTUser();
+  if (!user) {
+    throw new ApiError("Sign in with ChatGPT to continue.", 401, "AUTH_REQUIRED");
+  }
+  await upsertLiveUser(user);
+  return { ...user, email: user.email.toLowerCase() };
+}
 
-export async function POST(request:Request){try{const user=await identity(),input=await parseJson(request,schema),db=getDb(),now=new Date().toISOString();if(input.action==="create_agency"){if(await agencyMembership(user.email))throw new ApiError("You already belong to an agency workspace.",409,"CONFLICT");await createAgencyForUser(user.email,input.name);return Response.json({ok:true,data:await liveAgencySnapshot(user.email)});}
-if(input.action==="package_decision"){const client=await liveClientSnapshot(user.email),allowed=new Set(client.packages.map(item=>item.id));if(!allowed.has(input.packageId))throw new ApiError("Client approval access denied.",403,"TENANT_DENIED");const pkg=client.packages.find(item=>item.id===input.packageId)!;await db.update(tables.livePackages).set({status:input.decision,updatedAt:now}).where(eq(tables.livePackages.id,input.packageId));await db.insert(tables.liveEvents).values({id:crypto.randomUUID(),agencyId:pkg.agencyId,projectId:pkg.projectId,eventType:input.decision,title:`Client ${input.decision.replaceAll("_"," ")}`,description:"The client decision was recorded through the secure portal.",actorEmail:user.email,clientVisible:true,createdAt:now});return Response.json({ok:true,data:await liveClientSnapshot(user.email)});}
-const membership=await requireAgency(user.email),agencyId=membership.agency.id;
-if(input.action==="create_client"){const clientId=crypto.randomUUID(),projectId=crypto.randomUUID(),domain=input.domain.replace(/^https?:\/\//,"").replace(/\/$/,"").toLowerCase();await db.batch([db.insert(tables.liveClients).values({id:clientId,agencyId,name:input.name,domain,contactEmail:input.contactEmail?.toLowerCase()||null,status:"active",createdAt:now}),db.insert(tables.liveProjects).values({id:projectId,agencyId,clientId,name:"Primary SEO Project",domain,status:"active",createdAt:now}),db.insert(tables.liveEvents).values({id:crypto.randomUUID(),agencyId,projectId,eventType:"client_created",title:`${input.name} added`,description:`Primary SEO project created for ${domain}.`,actorEmail:user.email,clientVisible:false,createdAt:now})]);}
-else if(input.action==="create_opportunity"){const project=(await db.select().from(tables.liveProjects).where(and(eq(tables.liveProjects.id,input.projectId),eq(tables.liveProjects.agencyId,agencyId))).limit(1))[0];if(!project)throw new ApiError("Project not found.",404,"NOT_FOUND");const proximity=input.currentRank?Math.max(0,45-Math.abs(input.currentRank-input.targetRank)*3):12,actionValue=["IMPROVE","CTR_WIN","TECHNICAL"].includes(input.actionType)?24:18,score=Math.min(100,Math.max(1,proximity+actionValue+20));await db.insert(tables.liveOpportunities).values({id:crypto.randomUUID(),agencyId,projectId:project.id,keyword:input.keyword,currentRank:input.currentRank??null,targetRank:input.targetRank,score,actionType:input.actionType,reason:input.reason,status:"open",createdAt:now});}
-else if(input.action==="create_package"){const opportunity=(await db.select().from(tables.liveOpportunities).where(and(eq(tables.liveOpportunities.id,input.opportunityId),eq(tables.liveOpportunities.agencyId,agencyId))).limit(1))[0];if(!opportunity)throw new ApiError("Opportunity not found.",404,"NOT_FOUND");const project=(await db.select().from(tables.liveProjects).where(eq(tables.liveProjects.id,opportunity.projectId)).limit(1))[0],packageData=buildManualPackage({path:input.implementationPath,keyword:opportunity.keyword,targetUrl:`https://${project.domain}`,actionType:opportunity.actionType,verifiedEvidence:[],missingEvidence:["Approved business claims and proof"]}),packageId=crypto.randomUUID();await db.batch([db.insert(tables.livePackages).values({id:packageId,agencyId,projectId:project.id,opportunityId:opportunity.id,title:`${opportunity.keyword} implementation`,implementationPath:input.implementationPath,status:"agency_review",packageData:JSON.stringify(packageData),createdAt:now,updatedAt:now}),db.insert(tables.liveTasks).values({id:crypto.randomUUID(),agencyId,projectId:project.id,opportunityId:opportunity.id,title:`Implement ${opportunity.keyword}`,status:"awaiting_review",priority:opportunity.score>=80?"high":"medium",assignedEmail:user.email,implementationPath:input.implementationPath,createdAt:now,updatedAt:now}),db.insert(tables.liveEvents).values({id:crypto.randomUUID(),agencyId,projectId:project.id,eventType:"package_created",title:"Implementation package created",description:`${input.implementationPath.replaceAll("_"," ")} prepared for agency review.`,actorEmail:user.email,clientVisible:false,createdAt:now})]);}
-else if(input.action==="update_task"){const result=await db.update(tables.liveTasks).set({status:input.status,updatedAt:now}).where(and(eq(tables.liveTasks.id,input.taskId),eq(tables.liveTasks.agencyId,agencyId))).returning({id:tables.liveTasks.id});if(!result.length)throw new ApiError("Task not found.",404,"NOT_FOUND");}
-else{const pkg=(await db.select().from(tables.livePackages).where(and(eq(tables.livePackages.id,input.packageId),eq(tables.livePackages.agencyId,agencyId))).limit(1))[0];if(!pkg)throw new ApiError("Implementation package not found.",404,"NOT_FOUND");const status=input.action==="publish_package"?"client_review":input.action==="mark_implemented"?"implemented":"verified",title=input.action==="publish_package"?"Client approval requested":input.action==="mark_implemented"?"Implementation reported":"Implementation verified";await db.batch([db.update(tables.livePackages).set({status,updatedAt:now}).where(eq(tables.livePackages.id,pkg.id)),db.insert(tables.liveEvents).values({id:crypto.randomUUID(),agencyId,projectId:pkg.projectId,eventType:input.action,title,description:input.action==="verify_package"?"Verification recorded. Monitoring checkpoints are now eligible.":"Workflow status updated.",actorEmail:user.email,clientVisible:true,createdAt:now})]);}
-return Response.json({ok:true,data:await liveAgencySnapshot(user.email)});}catch(error){return jsonError(error)}}
+export async function GET(request: Request) {
+  try {
+    const user = await identity();
+    const scope = new URL(request.url).searchParams.get("scope") ?? "agency";
+    if (scope === "admin") {
+      return Response.json({
+        ok: true,
+        user,
+        data: await liveAdminSnapshot(user.email),
+      });
+    }
+    if (scope === "client") {
+      return Response.json({
+        ok: true,
+        user,
+        data: await liveClientSnapshot(user.email),
+      });
+    }
+    return Response.json({
+      ok: true,
+      user,
+      data: await liveAgencySnapshot(user.email),
+    });
+  } catch (error) {
+    return jsonError(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const user = await identity();
+    const input = await parseJson(request, schema);
+
+    if (input.action === "create_agency") {
+      if (await agencyMembership(user.email)) {
+        throw new ApiError(
+          "You already belong to an agency workspace.",
+          409,
+          "CONFLICT",
+        );
+      }
+      await createAgencyForUser(user.email, input.name);
+      return Response.json({ ok: true, data: await liveAgencySnapshot(user.email) });
+    }
+
+    // Client-scoped decision: recorded against the client's own portal view.
+    if (input.action === "package_decision") {
+      await recordClientPackageDecision(user.email, {
+        packageId: input.packageId,
+        decision: input.decision,
+      });
+      return Response.json({ ok: true, data: await liveClientSnapshot(user.email) });
+    }
+
+    switch (input.action) {
+      case "create_client":
+        await createClientWithProject(user.email, {
+          name: input.name,
+          domain: input.domain,
+          contactEmail: input.contactEmail || undefined,
+        });
+        break;
+      case "create_opportunity":
+        await createOpportunity(user.email, {
+          projectId: input.projectId,
+          keyword: input.keyword,
+          currentRank: input.currentRank,
+          targetRank: input.targetRank,
+          actionType: input.actionType,
+          reason: input.reason,
+        });
+        break;
+      case "create_package":
+        await createPackage(user.email, {
+          opportunityId: input.opportunityId,
+          implementationPath: input.implementationPath,
+        });
+        break;
+      case "update_task":
+        await updateTaskStatus(user.email, {
+          taskId: input.taskId,
+          status: input.status,
+        });
+        break;
+      case "publish_package":
+      case "mark_implemented":
+      case "verify_package":
+        await advancePackage(user.email, input.packageId, input.action);
+        break;
+    }
+
+    return Response.json({ ok: true, data: await liveAgencySnapshot(user.email) });
+  } catch (error) {
+    return jsonError(error);
+  }
+}
