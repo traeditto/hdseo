@@ -1,7 +1,6 @@
 import "server-only";
-import { env } from "cloudflare:workers";
 import { and,desc,eq,inArray } from "drizzle-orm";
-import { getDb } from "@/db";
+import { getD1Binding,getDb } from "@/db";
 import * as schema from "@/db/schema";
 import type { ChatGPTUser } from "@/app/chatgpt-auth";
 import { ApiError } from "@/lib/api/errors";
@@ -31,7 +30,7 @@ const statements=[
   `create index if not exists live_events_project on live_events(project_id)`
 ];
 
-export async function ensureLiveSchema(){const d1=env.DB;if(!d1)throw new ApiError("The HD SEO database is not available.",503,"NOT_CONFIGURED");await d1.batch(statements.map(sql=>d1.prepare(sql)));}
+export async function ensureLiveSchema(){let d1:D1Database;try{d1=getD1Binding();}catch{throw new ApiError("The HD SEO database is hosted on the primary Sites deployment.",503,"NOT_CONFIGURED");}await d1.batch(statements.map(sql=>d1.prepare(sql)));}
 export async function upsertLiveUser(user:ChatGPTUser){await ensureLiveSchema();const db=getDb(),now=new Date().toISOString(),email=user.email.toLowerCase();await db.insert(schema.liveUsers).values({email,displayName:user.displayName,createdAt:now,updatedAt:now}).onConflictDoUpdate({target:schema.liveUsers.email,set:{displayName:user.displayName,updatedAt:now}});const owners=await db.select({email:schema.liveUsers.email}).from(schema.liveUsers).where(eq(schema.liveUsers.platformRole,"platform_owner")).limit(1);if(!owners.length)await db.update(schema.liveUsers).set({platformRole:"platform_owner",updatedAt:now}).where(eq(schema.liveUsers.email,email));const matchingClients=await db.select({id:schema.liveClients.id}).from(schema.liveClients).where(eq(schema.liveClients.contactEmail,email));for(const client of matchingClients)await db.insert(schema.liveClientMembers).values({id:crypto.randomUUID(),clientId:client.id,userEmail:email,role:"client_approver",createdAt:now}).onConflictDoNothing();return (await db.select().from(schema.liveUsers).where(eq(schema.liveUsers.email,email)).limit(1))[0];}
 export async function createAgencyForUser(email:string,name:string){const db=getDb(),now=new Date().toISOString(),id=crypto.randomUUID(),slug=`${name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")||"agency"}-${id.slice(0,6)}`;await db.batch([db.insert(schema.liveAgencies).values({id,name,slug,ownerEmail:email,createdAt:now}),db.insert(schema.liveAgencyMembers).values({id:crypto.randomUUID(),agencyId:id,userEmail:email,role:"agency_owner",createdAt:now})]);return id;}
 export async function agencyMembership(email:string){const db=getDb();return (await db.select({agency:schema.liveAgencies,role:schema.liveAgencyMembers.role}).from(schema.liveAgencyMembers).innerJoin(schema.liveAgencies,eq(schema.liveAgencyMembers.agencyId,schema.liveAgencies.id)).where(eq(schema.liveAgencyMembers.userEmail,email)).limit(1))[0]??null;}

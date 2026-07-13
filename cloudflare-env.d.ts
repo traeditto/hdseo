@@ -3,7 +3,12 @@ interface Fetcher {
 }
 
 interface D1Database {
-  prepare(query: string): unknown;
+  prepare(query: string): D1PreparedStatement;
+  batch(statements: D1PreparedStatement[]): Promise<unknown>;
+}
+
+interface D1PreparedStatement {
+  readonly __d1PreparedStatementBrand?: "D1PreparedStatement";
 }
 
 declare module "cloudflare:workers" {

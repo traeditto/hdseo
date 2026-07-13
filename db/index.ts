@@ -1,13 +1,10 @@
-import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
+type RuntimeEnvironment={DB?:D1Database};
+declare global { var __HD_SEO_RUNTIME_ENV__:RuntimeEnvironment|undefined; }
+export function setRuntimeEnvironment(runtime:RuntimeEnvironment){globalThis.__HD_SEO_RUNTIME_ENV__=runtime;}
+export function getD1Binding(){const binding=globalThis.__HD_SEO_RUNTIME_ENV__?.DB;if(!binding)throw new Error("Cloudflare D1 binding `DB` is unavailable in this runtime.");return binding;}
 export function getDb() {
-  if (!env.DB) {
-    throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
-    );
-  }
-
-  return drizzle(env.DB, { schema });
+  return drizzle(getD1Binding(), { schema });
 }
