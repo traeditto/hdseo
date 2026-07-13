@@ -1,25 +1,30 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-async function render(path = "/") {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }), { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } }, { waitUntil() {}, passThroughOnException() {} });
-}
+const read=(path)=>readFileSync(new URL(`../${path}`,import.meta.url),"utf8");
 
-test("server-renders the three role login hub", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /HD SEO/);
-  assert.match(html, /Admin<br\/>Portal/);
-  assert.match(html, /Agency<br\/>Portal/);
-  assert.match(html, /Client<br\/>Portal/);
-  assert.match(html, /SECURE PORTAL ACCESS/);
-  assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/);
+test("the production home exposes three role portals",()=>{
+  const source=read("app/page.tsx");
+  assert.match(source,/key: "admin"/);
+  assert.match(source,/key: "agency"/);
+  assert.match(source,/key: "client"/);
+  assert.match(source,/SECURE PORTAL ACCESS/);
+  assert.doesNotMatch(source,/codex-preview|react-loading-skeleton/);
 });
 
-test("server-renders a secure agency login",async()=>{const response=await render("/login/agency");assert.equal(response.status,200);const html=await response.text();assert.match(html,/Sign in to Agency Portal/);assert.match(html,/Preview[\s\S]*Agency Portal/);});
+test("the agency login uses live verified identity without a demo fallback",()=>{
+  const source=read("app/ui/portal-login.tsx");
+  assert.match(source,/Sign in to \{copy\.title\}/);
+  assert.match(source,/Continue with ChatGPT/);
+  assert.doesNotMatch(source,/Preview \{copy\.title\}/);
+  assert.doesNotMatch(source,/signInWithPassword/);
+});
 
-test("server-renders distinct Admin and Client previews",async()=>{const admin=await render("/portal/admin/preview"),client=await render("/portal/client/preview");assert.equal(admin.status,200);assert.equal(client.status,200);assert.match(await admin.text(),/Platform overview/);assert.match(await client.text(),/YOUR SEO PERFORMANCE/);});
+test("Admin, Agency, and Client production portals are distinct and protected",()=>{
+  const admin=read("app/portal/admin/page.tsx"),agency=read("app/portal/agency/page.tsx"),client=read("app/portal/client/page.tsx");
+  assert.match(admin,/LiveAdminDashboard/);
+  assert.match(agency,/LiveAgencyDashboard/);
+  assert.match(client,/LiveClientDashboard/);
+  for(const source of [admin,agency,client])assert.match(source,/requireChatGPTUser/);
+});

@@ -1,5 +1,13 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1783943262345,
+      "tag": "0000_clever_quasar",
+      "breakpoints": true
+    }
+  ]
 }

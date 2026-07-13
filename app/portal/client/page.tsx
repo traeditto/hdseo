@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
-import { resolvePortalAccess } from "@/lib/auth/portal-access";
-import { PortalDashboard } from "@/app/ui/portal-dashboard";
+import { requireChatGPTUser } from "@/app/chatgpt-auth";
+import { LiveClientDashboard } from "@/app/ui/live-role-dashboard";
+import { liveClientSnapshot,upsertLiveUser } from "@/lib/live/store";
 export const dynamic="force-dynamic";
-export default async function ClientPortal(){const access=await resolvePortalAccess("client");if(!access)redirect("/login/client");return <PortalDashboard portal="client" identity={access}/>;}
+export default async function ClientPortal(){const user=await requireChatGPTUser("/portal/client");await upsertLiveUser(user);return <LiveClientDashboard user={user} initialData={await liveClientSnapshot(user.email.toLowerCase())}/>;}
