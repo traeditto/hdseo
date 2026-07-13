@@ -1,0 +1,12 @@
+import { z } from "zod";
+import { resolveTenantContext,requirePermission } from "@/lib/auth/context";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createManualPackage } from "@/lib/manual/package-service";
+import { parseJson } from "@/lib/api/request";
+import { ApiError,jsonError } from "@/lib/api/errors";
+
+const createSchema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid(),projectId:z.string().uuid(),opportunityId:z.string().uuid(),draftId:z.string().uuid().optional(),implementationPath:z.enum(["wordpress_package","generic_cms","developer_ticket"]).optional()});
+
+export async function GET(request:Request){try{const url=new URL(request.url),context=await resolveTenantContext({agencyId:url.searchParams.get("agencyId")??undefined,clientId:url.searchParams.get("clientId")??undefined,projectId:url.searchParams.get("projectId")??undefined,requireProject:true}),db=createSupabaseAdminClient();if(!db||!context.project)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");const result=await db.from("implementation_packages").select("id,opportunity_id,implementation_path,cms_mode,version,status,risk_level,estimated_effort,hypothesis,package_data,required_evidence,dependencies,acceptance_criteria,verification_checklist,approved_at,implemented_at,created_at,updated_at").eq("agency_id",context.agency.id).eq("project_id",context.project.id).order("created_at",{ascending:false}).limit(100);if(result.error)throw new ApiError("Implementation packages could not be loaded.",500,"OPERATION_FAILED");return Response.json({ok:true,packages:result.data});}catch(error){return jsonError(error)}}
+
+export async function POST(request:Request){try{const input=await parseJson(request,createSchema),context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});requirePermission(context,"seo.write");const db=createSupabaseAdminClient();if(!db||!context.project||!context.client)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");const created=await createManualPackage(db,{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,opportunityId:input.opportunityId,draftId:input.draftId,createdBy:context.user.id,requestedPath:input.implementationPath});return Response.json({ok:true,package:created},{status:201});}catch(error){return jsonError(error)}}

@@ -12,6 +12,16 @@ export interface TenantContext {
   role: AgencyRole;
 }
 
+export type ClientRole = "client_admin" | "client_approver" | "client_viewer";
+
+export interface ClientTenantContext {
+  user: { id: string; email: string };
+  agency: { id: string };
+  client: { id: string; name: string };
+  project?: { id: string; name: string; domain: string };
+  role: ClientRole;
+}
+
 export async function resolveTenantContext(input: { agencyId?: string; clientId?: string; projectId?: string; requireProject?: boolean } = {}): Promise<TenantContext> {
   const db = await createSupabaseServerClient();
   if (!db) throw new ApiError("Supabase is not configured.", 503, "NOT_CONFIGURED");
@@ -44,4 +54,32 @@ export async function resolveTenantContext(input: { agencyId?: string; clientId?
 
 export function requirePermission(context: TenantContext, permission: string) {
   if (!hasPermission(context.role, permission)) throw new ApiError("Insufficient agency permission.", 403, "ROLE_FORBIDDEN");
+}
+
+export async function resolveClientContext(input: { clientId?: string; projectId?: string; requireProject?: boolean } = {}): Promise<ClientTenantContext> {
+  const db = await createSupabaseServerClient();
+  if (!db) throw new ApiError("Supabase is not configured.", 503, "NOT_CONFIGURED");
+  const { data: { user } } = await db.auth.getUser();
+  if (!user?.email) throw new ApiError("Authentication required.", 401, "AUTH_REQUIRED");
+  const store = await cookies();
+  const clientId = input.clientId ?? store.get("hd_client")?.value;
+  let membershipQuery = db.from("client_members").select("agency_id,client_organization_id,role,client_organizations(id,name)").eq("user_id", user.id).eq("status", "active");
+  if (clientId) membershipQuery = membershipQuery.eq("client_organization_id", clientId);
+  const membership = (await membershipQuery.limit(1)).data?.[0];
+  const client = Array.isArray(membership?.client_organizations) ? membership.client_organizations[0] : membership?.client_organizations;
+  if (!membership || !client) throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
+  const context: ClientTenantContext = { user: { id: user.id, email: user.email }, agency: { id: membership.agency_id }, client, role: membership.role as ClientRole };
+  const projectId = input.projectId ?? store.get("hd_project")?.value;
+  if (projectId || input.requireProject) {
+    let projectQuery = db.from("seo_projects").select("id,name,domain").eq("agency_id", membership.agency_id).eq("client_organization_id", client.id).eq("status", "active");
+    if (projectId) projectQuery = projectQuery.eq("id", projectId);
+    const project = (await projectQuery.limit(1)).data?.[0];
+    if (!project) throw new ApiError("Project access denied.", 403, "TENANT_DENIED");
+    context.project = project;
+  }
+  return context;
+}
+
+export function requireClientApproval(context: ClientTenantContext) {
+  if (!(["client_admin", "client_approver"] as ClientRole[]).includes(context.role)) throw new ApiError("This client role cannot make approval decisions.", 403, "ROLE_FORBIDDEN");
 }

@@ -1,0 +1,4 @@
+import { resolveTenantContext } from "@/lib/auth/context";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { ApiError,jsonError } from "@/lib/api/errors";
+export async function GET(request:Request){try{const url=new URL(request.url),context=await resolveTenantContext({agencyId:url.searchParams.get("agencyId")??undefined,clientId:url.searchParams.get("clientId")??undefined,projectId:url.searchParams.get("projectId")??undefined,requireProject:true}),db=createSupabaseAdminClient();if(!db||!context.project)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");const result=await db.rpc("github_execution_readiness",{target_agency:context.agency.id,target_project:context.project.id});if(result.error)throw new ApiError("GitHub readiness could not be evaluated.",500,"OPERATION_FAILED");return Response.json({ok:true,GITHUB_EXECUTION_READINESS:result.data});}catch(error){return jsonError(error)}}

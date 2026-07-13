@@ -5,16 +5,22 @@ import { env } from "@/lib/config/env";
 import { ApiError, logEvent } from "@/lib/api/errors";
 import type { TenantContext } from "@/lib/auth/context";
 import type { ProviderOperation } from "./dataforseo/types";
+import { createHash } from "node:crypto";
 
 export interface PaidRunContext { db: SupabaseClient; usageId: string; lockId: string; agencyId: string; clientId: string; projectId: string }
 
-export async function beginPaidOperation(context: TenantContext, input: { confirmationId: string; operation: ProviderOperation; estimatedUnits: number; estimatedCost: number; endpoint: string }): Promise<PaidRunContext> {
+export function paidScopeHash(value:unknown){return createHash("sha256").update(JSON.stringify(value,Object.keys(value as Record<string,unknown>).sort())).digest("hex");}
+
+export async function beginPaidOperation(context: TenantContext, input: { confirmationId: string; operation: ProviderOperation; estimatedUnits: number; estimatedCost: number; scopeHash:string }): Promise<PaidRunContext> {
   if (!context.client || !context.project) throw new ApiError("A client project is required.", 400, "VALIDATION_ERROR");
   const db = createSupabaseAdminClient();
   if (!db) throw new ApiError("Supabase server configuration is incomplete.", 503, "NOT_CONFIGURED");
-  const confirmation = await db.from("provider_operation_confirmations").select("id,provider,operation_type,estimated_units,estimated_cost,expires_at,requested_by").eq("id", input.confirmationId).eq("agency_id", context.agency.id).eq("project_id", context.project.id).eq("requested_by", context.user.id).maybeSingle();
+  const confirmation = await db.from("provider_operation_confirmations").select("id,provider,operation_type,estimated_units,estimated_cost,expires_at,requested_by,scope_hash,consumed_at").eq("id", input.confirmationId).eq("agency_id", context.agency.id).eq("project_id", context.project.id).eq("requested_by", context.user.id).maybeSingle();
   if (!confirmation.data || confirmation.data.provider !== "dataforseo" || confirmation.data.operation_type !== input.operation || new Date(confirmation.data.expires_at) <= new Date()) throw new ApiError("A current paid-operation confirmation is required.", 409, "CONFLICT");
   if (Number(confirmation.data.estimated_units) !== input.estimatedUnits || Number(confirmation.data.estimated_cost) !== input.estimatedCost) throw new ApiError("The confirmed request scope has changed.", 409, "CONFLICT");
+  if(confirmation.data.scope_hash!==input.scopeHash||confirmation.data.consumed_at)throw new ApiError("The paid-operation confirmation does not match this exact request or was already used.",409,"CONFLICT");
+  const consumed=await db.from("provider_operation_confirmations").update({consumed_at:new Date().toISOString()}).eq("id",input.confirmationId).is("consumed_at",null).select("id").maybeSingle();
+  if(!consumed.data)throw new ApiError("The paid-operation confirmation was already consumed.",409,"CONFLICT");
   const since = new Date(); since.setUTCHours(0, 0, 0, 0);
   const spendResult = await db.from("data_usage_events").select("actual_cost,estimated_cost,status").eq("agency_id", context.agency.id).gte("created_at", since.toISOString());
   const spend = (spendResult.data ?? []).reduce((sum, row) => sum + Number(row.actual_cost ?? (row.status === "completed" ? row.estimated_cost : 0) ?? 0), 0);

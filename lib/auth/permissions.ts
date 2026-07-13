@@ -2,9 +2,9 @@ export const agencyRoles = ["agency_owner", "agency_admin", "seo_director", "seo
 export type AgencyRole = (typeof agencyRoles)[number];
 
 export const permissionMatrix = {
-  agency_owner: ["agency.manage", "billing.manage", "members.manage", "clients.manage", "seo.write", "draft.approve", "execution.approve", "provider.authorize"],
-  agency_admin: ["members.manage", "clients.manage", "seo.write", "draft.approve", "execution.approve", "provider.authorize"],
-  seo_director: ["clients.manage", "seo.write", "draft.approve", "execution.approve", "provider.authorize"],
+  agency_owner: ["agency.manage", "billing.manage", "members.manage", "clients.manage", "client_portal.manage", "report.manage", "seo.write", "draft.approve", "execution.approve", "provider.authorize"],
+  agency_admin: ["members.manage", "clients.manage", "client_portal.manage", "report.manage", "seo.write", "draft.approve", "execution.approve", "provider.authorize"],
+  seo_director: ["clients.manage", "client_portal.manage", "report.manage", "seo.write", "draft.approve", "execution.approve", "provider.authorize"],
   seo_strategist: ["seo.write", "draft.create", "task.manage"],
   content_editor: ["draft.edit", "task.update"],
   developer: ["execution.edit", "task.update"],

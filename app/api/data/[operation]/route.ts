@@ -4,7 +4,7 @@ import { jsonError, ApiError } from "@/lib/api/errors";
 import { parseJson } from "@/lib/api/request";
 import { providerOperations } from "@/lib/providers/dataforseo/operations";
 import { dataForSeoRequest } from "@/lib/providers/dataforseo/client";
-import { beginPaidOperation, finishPaidOperation } from "@/lib/providers/paid-operation";
+import { beginPaidOperation, finishPaidOperation,paidScopeHash } from "@/lib/providers/paid-operation";
 import { persistProviderResults } from "@/lib/providers/dataforseo/persistence";
 import type { ProviderOperation } from "@/lib/providers/dataforseo/types";
 
@@ -24,7 +24,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ ope
     if (!units || (operation === "keyword_overview" && !input.keywords?.length) || (operation !== "keyword_overview" && !input.target)) throw new ApiError("The provider request scope is incomplete.", 400, "VALIDATION_ERROR");
     const config = providerOperations[operation];
     const estimatedCost = Number((config.estimateUnitCost * units).toFixed(4));
-    paid = await beginPaidOperation(context, { confirmationId: input.confirmationId, operation, estimatedUnits: units, estimatedCost, endpoint: config.endpoint });
+    const scope={operation,keywords:input.keywords??null,target:input.target??null,limit:input.limit,locationName:input.locationName,languageCode:input.languageCode};
+    paid = await beginPaidOperation(context, { confirmationId: input.confirmationId, operation, estimatedUnits: units, estimatedCost, scopeHash:paidScopeHash(scope) });
     const result = await dataForSeoRequest<unknown>(config.endpoint, config.payload(input), `${operation}:${paid.usageId}`);
     const persisted = await persistProviderResults(operation, paid, result.results);
     await finishPaidOperation(paid, { cost: result.totalCost, units: result.resultCount, status: "completed" });
