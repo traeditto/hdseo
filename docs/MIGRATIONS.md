@@ -9,5 +9,6 @@ Migrations are additive and ordered by dependency:
 5. provider confirmations, locks, intelligence snapshots, pages, Maps, and audits
 6. campaigns, durable jobs, executions, atomic webhook records, deployments, and monitoring
 7. tenant RLS for the intelligence and automation tables
+8. platform administrator identities and Admin, Agency, and Client portal access
 
 Never edit an applied migration. Add a new numbered migration for every schema change.

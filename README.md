@@ -11,6 +11,7 @@ A standalone, white-label SEO operating system for agencies. It converts stored 
 - Deterministic, transparent opportunity scoring engine
 - Paid-operation confirmation UX and usage-event schema
 - Architecture, data model, permissions, migration, and phased delivery documents
+- Separate role-checked Admin, Agency, and Client login portals with password recovery and preview workspaces
 - Unit and server-render tests
 - Supabase SSR/server clients and validated server environment
 - Explicit paid-provider confirmation, cost limits, usage logging, and reclaimable locks

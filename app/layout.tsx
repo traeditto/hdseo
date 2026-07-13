@@ -13,10 +13,10 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = `${protocol}://${host}/og.png`;
 
   return {
-    title: "HD SEO — Agency Operating System",
-    description: "Prioritize, approve, execute, and measure SEO work across every client.",
-    openGraph: { title: "HD SEO", description: "Turn SEO data into prioritized client work.", type: "website", images: [{ url: image, width: 1732, height: 908, alt: "HD SEO agency operating system" }] },
-    twitter: { card: "summary_large_image", title: "HD SEO", description: "Turn SEO data into prioritized client work.", images: [image] },
+    title: "HD SEO — Admin, Agency & Client Portals",
+    description: "Secure role-based access to the HD SEO operating platform.",
+    openGraph: { title: "HD SEO", description: "One SEO operating system with purpose-built Admin, Agency, and Client workspaces.", type: "website", images: [{ url: image, width: 1732, height: 908, alt: "HD SEO operating platform" }] },
+    twitter: { card: "summary_large_image", title: "HD SEO", description: "Secure Admin, Agency, and Client SEO workspaces.", images: [image] },
   };
 }
 

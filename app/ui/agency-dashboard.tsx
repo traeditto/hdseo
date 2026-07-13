@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, ReactNode, useMemo, useState } from "react";
+import Link from "next/link";
 
 type NavItem = { label: string; glyph: string; count?: number };
 type Client = { name: string; initials: string; color: string; project: string; health: number; status: string; action: string; score: number; tasks: number; trend: string; refresh: string };
@@ -65,7 +66,7 @@ function BrandMark({ small = false }: { small?: boolean }) { return <span classN
 
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="form-field"><span>{label}</span>{children}</label>; }
 
-export function AgencyDashboard() {
+export function AgencyDashboard({ portalAccess = false }: { portalAccess?: boolean }) {
   const [active, setActive] = useState("Command center");
   const [clientFilter, setClientFilter] = useState("All clients");
   const [toast, setToast] = useState<string | null>(null);
@@ -120,6 +121,7 @@ export function AgencyDashboard() {
           <button className="menu-button" onClick={() => setMobileNav(true)} aria-label="Open navigation">☰</button>
           <div className="breadcrumbs"><span>HD SEO Agency</span><b>/</b><strong>{active}</strong></div>
           <div className="top-actions">
+            {portalAccess && <Link className="portal-switch-link" href="/">Switch portal</Link>}
             <button onClick={() => open("search", "Search HD SEO", "Find clients, keywords, opportunities, tasks, and reports.")} aria-label="Search">⌕</button>
             <button className="notification" onClick={() => open("notifications", "Notifications", "Review important agency activity and alerts.")} aria-label="Notifications">♢{notifications > 0 && <i />}</button>
             <button className="add-client" onClick={() => open("add-client", "Add a client", "Create the client organization and its first SEO project.")}>＋ Add client</button>
