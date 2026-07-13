@@ -1,13 +1,13 @@
 # Phased implementation plan
 
-1. **Foundation (implemented here):** application shell, tenant schema, core RLS helpers, permission model, architecture, deterministic scoring, demo experience, tests.
-2. **Brand and command center:** persisted branding tokens, hostname resolution, dashboard query layer, onboarding.
-3. **SEO data collection:** manual entry, encrypted provider references, explicit paid-operation confirmation, jobs, usage summaries.
-4. **Opportunity workflow:** stored scoring inputs, page ownership/conflict checks, Next Best Action queues, evidence snapshots.
-5. **Execution workflow:** drafts, tasks, human edits, approvals, client evidence requests, notifications.
-6. **Portal and reports:** client visibility controls, live and PDF reports, scheduled delivery.
-7. **Repository execution:** GitHub App, static inspection, stale SHA checks, validation, draft pull requests.
-8. **Outcomes and billing:** ranking checkpoints, subscriptions, entitlements, limits, platform admin.
+1. **Foundation — implemented:** application shell, tenant schema, RLS helpers, permission model, environment validation, Supabase clients, safe API boundaries, tests.
+2. **Provider intelligence — implemented:** explicit paid confirmation, exact cost enforcement, reclaimable locks, DataForSEO normalization, snapshot persistence, usage events, readiness diagnostics.
+3. **Opportunity workflow — implemented:** deterministic scoring, stable opportunity keys, ownership/conflict detection, eligibility gates, confidence, evidence snapshots, Next Best Action selection.
+4. **Closed-loop jobs — implemented:** atomic claims, leases, retries, staged execution, persistent drafts/tasks, human pause states, safe error references.
+5. **Repository execution — implemented:** GitHub App JWT, static inspection, atomic tree commit, stale SHA protection, approved-file validation, draft PR only.
+6. **Deployment and outcomes — implemented:** signed/replay-protected webhooks, commit binding, monitoring plans, Day 7/14/30/60/90 decisions, cooldowns.
+7. **Production activation — manual setup:** apply migrations, configure Supabase, create the first agency/user/client/project, configure providers and scheduler, then replace demo view models with live tenant queries.
+8. **Remaining product expansion:** Google OAuth sync implementations, Stripe checkout/webhooks, client portal persistence, PDF report generation, full platform-admin UI.
 
 ## Credentials required
 

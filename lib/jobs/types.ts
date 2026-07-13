@@ -1,0 +1,2 @@
+export type JobStage = "validate"|"snapshot"|"score"|"select"|"prepare"|"inspect_repository"|"generate_diff"|"validate_changes"|"create_pr"|"schedule_monitoring";
+export interface CampaignJob { id:string; agency_id:string; client_organization_id:string; project_id:string; campaign_id:string|null; requested_by:string; status:string; current_stage:JobStage; last_completed_stage:string|null; progress_percent:number; input:Record<string,unknown>; stage_data:Record<string,unknown>; result:Record<string,unknown>; reference_id:string; attempt_count:number; max_attempts:number }

@@ -12,6 +12,13 @@ A standalone, white-label SEO operating system for agencies. It converts stored 
 - Paid-operation confirmation UX and usage-event schema
 - Architecture, data model, permissions, migration, and phased delivery documents
 - Unit and server-render tests
+- Supabase SSR/server clients and validated server environment
+- Explicit paid-provider confirmation, cost limits, usage logging, and reclaimable locks
+- DataForSEO normalization and evidence snapshot persistence
+- Page ownership, opportunity eligibility, deduplication, and cooldowns
+- Durable campaign jobs with atomic claiming, leases, retries, and human review states
+- Atomic GitHub draft-PR execution with stale-code protection and no merge capability
+- Signed webhook replay protection, deployment binding, and 7/14/30/60/90 monitoring
 
 ## Local development
 
@@ -25,7 +32,7 @@ Use Node.js 22 or newer, install dependencies, and run the development script. C
 4. Add provider credentials only for integrations being enabled.
 5. Deploy as a Next.js application and set environment variables in the hosting provider.
 
-The live demonstration does not execute paid provider requests. DataForSEO, Google, GitHub, Stripe, and Resend are intentionally represented by secure foundations until credentials and provider applications are configured.
+The live demonstration does not execute paid provider requests. The DataForSEO and GitHub execution services are implemented but remain safely inactive until Supabase, provider, scheduler, and webhook credentials are configured. Google, Stripe, and Resend retain secure foundations pending provider setup.
 
 ## Product rule
 

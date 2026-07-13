@@ -20,3 +20,15 @@ Every tenant operation resolves agency membership from the authenticated user. B
 ## Deployment
 
 The application remains compatible with a standard Next.js deployment. The included Sites adapter provides a working demonstration surface; Supabase remains the production system of record. Provider integrations remain mocked until credentials and OAuth applications are configured.
+
+## Closed-loop automation
+
+The production workflow is implemented as restartable database jobs with atomic PostgreSQL claims, five-minute leases, bounded attempts, heartbeats, and explicit human pause states:
+
+`validate → snapshot → score → select → prepare → opportunity review → repository inspection → diff → file review → validation → atomic draft PR → verified deployment → 7/14/30/60/90 monitoring`.
+
+Provider collection is separate from scoring. DataForSEO calls require a tenant-scoped confirmation record with exact scope and estimated cost. Scoring, selection, and reporting use stored evidence and do not trigger paid calls.
+
+GitHub execution creates one tree and one commit on a feature branch. It verifies the base commit and every affected file SHA immediately before creating a draft pull request. The application has no merge operation.
+
+Monitoring begins only after a signed deployment event binds the merged commit to a successful production deployment. Reports use “ranking movement observed since implementation” and do not claim causation.
