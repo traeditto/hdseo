@@ -374,7 +374,7 @@ export async function createAgencyForUser(
     throw new ApiError(
       `Unable to create agency: ${error?.message ?? "unknown error"}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
 
@@ -389,7 +389,7 @@ export async function createAgencyForUser(
     throw new ApiError(
       `Unable to attach agency owner: ${memberError.message}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
 
@@ -749,7 +749,7 @@ export async function createClientWithProject(
     throw new ApiError(
       `Unable to create client: ${error?.message ?? "unknown error"}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
 
@@ -770,7 +770,7 @@ export async function createClientWithProject(
     throw new ApiError(
       `Unable to create project: ${projectError?.message ?? "unknown error"}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
 
@@ -859,7 +859,7 @@ export async function createOpportunity(
     throw new ApiError(
       `Unable to create opportunity: ${error.message}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
 }
@@ -929,7 +929,7 @@ export async function createPackage(
     throw new ApiError(
       `Unable to create package: ${error?.message ?? "unknown error"}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
 
@@ -977,7 +977,7 @@ export async function updateTaskStatus(
     throw new ApiError(
       `Unable to update task: ${error.message}`,
       500,
-      "WRITE_FAILED",
+      "OPERATION_FAILED",
     );
   }
   if (!data || !data.length) {
