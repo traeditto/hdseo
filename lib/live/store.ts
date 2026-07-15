@@ -9,6 +9,21 @@ import {
   resolveLiveIdentity,
   LiveConfigError,
 } from "@/lib/live/identity";
+import { env, hasDataForSeoConfig } from "@/lib/config/env";
+import type { TenantContext } from "@/lib/auth/context";
+import type { AgencyRole } from "@/lib/auth/permissions";
+import { dataForSeoRequest } from "@/lib/providers/dataforseo/client";
+import { providerOperations } from "@/lib/providers/dataforseo/operations";
+import {
+  beginPaidOperation,
+  finishPaidOperation,
+  paidScopeHash,
+} from "@/lib/providers/paid-operation";
+import {
+  countDiscoveredKeywordRecords,
+  discoverKeywordCandidates,
+} from "@/lib/seo/keyword-discovery";
+import { opportunityKey } from "@/lib/seo/eligibility";
 import { buildManualPackage } from "@/lib/seo/manual-package";
 
 /**
@@ -71,6 +86,13 @@ export type LiveOpportunity = {
   actionType: string;
   reason: string;
   status: string;
+  searchVolume: number | null;
+  cpc: number | null;
+  difficulty: number | null;
+  estimatedMonthlyValue: number | null;
+  estimatedEffort: number | null;
+  valuePerDollar: number | null;
+  source: string;
   createdAt: string;
 };
 
@@ -179,53 +201,59 @@ async function emailMap(
 // Row mappers (Postgres snake_case -> portal camelCase)
 // ---------------------------------------------------------------------------
 
-function mapAgency(row: Record<string, any>): LiveAgency {
+type DatabaseRow = Record<string, unknown>;
+
+const rowText = (row: DatabaseRow, key: string, fallback = "") =>
+  typeof row[key] === "string" ? (row[key] as string) : fallback;
+
+function mapAgency(row: DatabaseRow): LiveAgency {
   return {
-    id: row.id,
-    name: row.name,
-    slug: row.slug,
-    ownerEmail: row.billing_email ?? "",
+    id: rowText(row, "id"),
+    name: rowText(row, "name"),
+    slug: rowText(row, "slug"),
+    ownerEmail: rowText(row, "billing_email"),
     createdAt: toIso(row.created_at),
   };
 }
 
 function mapClient(
-  row: Record<string, any>,
+  row: DatabaseRow,
   domainByOrg: Map<string, string>,
 ): LiveClient {
   return {
-    id: row.id,
-    agencyId: row.agency_id,
-    name: row.name,
-    domain: domainByOrg.get(row.id) ?? "",
-    contactEmail: row.primary_contact_email ?? null,
-    status: row.status,
+    id: rowText(row, "id"),
+    agencyId: rowText(row, "agency_id"),
+    name: rowText(row, "name"),
+    domain: domainByOrg.get(rowText(row, "id")) ?? "",
+    contactEmail: rowText(row, "primary_contact_email") || null,
+    status: rowText(row, "status"),
     createdAt: toIso(row.created_at),
   };
 }
 
-function mapProject(row: Record<string, any>): LiveProject {
+function mapProject(row: DatabaseRow): LiveProject {
   return {
-    id: row.id,
-    agencyId: row.agency_id,
-    clientId: row.client_organization_id,
-    name: row.name,
-    domain: row.domain,
-    status: row.status,
+    id: rowText(row, "id"),
+    agencyId: rowText(row, "agency_id"),
+    clientId: rowText(row, "client_organization_id"),
+    name: rowText(row, "name"),
+    domain: rowText(row, "domain"),
+    status: rowText(row, "status"),
     createdAt: toIso(row.created_at),
   };
 }
 
-function mapOpportunity(row: Record<string, any>): LiveOpportunity {
+function mapOpportunity(row: DatabaseRow): LiveOpportunity {
   const evidence = asRecord(row.evidence);
   const reasonFromCodes = Array.isArray(row.reason_codes)
     ? row.reason_codes.join(", ")
     : "";
   return {
-    id: row.id,
-    agencyId: row.agency_id,
-    projectId: row.project_id,
-    keyword: (evidence.keyword as string) ?? row.opportunity_key ?? "",
+    id: rowText(row, "id"),
+    agencyId: rowText(row, "agency_id"),
+    projectId: rowText(row, "project_id"),
+    keyword:
+      (evidence.keyword as string) ?? rowText(row, "opportunity_key"),
     currentRank:
       typeof evidence.current_rank === "number"
         ? (evidence.current_rank as number)
@@ -234,24 +262,45 @@ function mapOpportunity(row: Record<string, any>): LiveOpportunity {
       typeof evidence.target_rank === "number"
         ? (evidence.target_rank as number)
         : 10,
-    score: row.opportunity_score ?? 0,
-    actionType: row.action_type,
+    score:
+      typeof row.opportunity_score === "number" ? row.opportunity_score : 0,
+    actionType: rowText(row, "action_type"),
     reason: (evidence.reason as string) ?? reasonFromCodes,
-    status: row.status,
+    status: rowText(row, "status"),
+    searchVolume:
+      typeof evidence.search_volume === "number" ? evidence.search_volume : null,
+    cpc: typeof evidence.cpc === "number" ? evidence.cpc : null,
+    difficulty:
+      typeof evidence.keyword_difficulty === "number"
+        ? evidence.keyword_difficulty
+        : null,
+    estimatedMonthlyValue:
+      typeof evidence.estimated_monthly_value === "number"
+        ? evidence.estimated_monthly_value
+        : null,
+    estimatedEffort:
+      typeof evidence.estimated_effort === "number"
+        ? evidence.estimated_effort
+        : null,
+    valuePerDollar:
+      typeof evidence.value_per_dollar === "number"
+        ? evidence.value_per_dollar
+        : null,
+    source: (evidence.source as string) ?? "manual",
     createdAt: toIso(row.created_at),
   };
 }
 
-function mapTask(row: Record<string, any>): LiveTask {
+function mapTask(row: DatabaseRow): LiveTask {
   const proof = asRecord(row.completion_proof);
   return {
-    id: row.id,
-    agencyId: row.agency_id,
-    projectId: row.project_id,
+    id: rowText(row, "id"),
+    agencyId: rowText(row, "agency_id"),
+    projectId: rowText(row, "project_id"),
     opportunityId: (proof.opportunity_id as string) ?? null,
-    title: row.title,
-    status: row.status,
-    priority: row.priority,
+    title: rowText(row, "title"),
+    status: rowText(row, "status"),
+    priority: rowText(row, "priority"),
     assignedEmail: (proof.assigned_email as string) ?? null,
     implementationPath: (proof.implementation_path as string) ?? null,
     createdAt: toIso(row.created_at),
@@ -259,16 +308,16 @@ function mapTask(row: Record<string, any>): LiveTask {
   };
 }
 
-function mapPackage(row: Record<string, any>): LivePackage {
+function mapPackage(row: DatabaseRow): LivePackage {
   const data = asRecord(row.package_data);
   return {
-    id: row.id,
-    agencyId: row.agency_id,
-    projectId: row.project_id,
-    opportunityId: row.opportunity_id,
+    id: rowText(row, "id"),
+    agencyId: rowText(row, "agency_id"),
+    projectId: rowText(row, "project_id"),
+    opportunityId: rowText(row, "opportunity_id"),
     title: (data.title as string) ?? "",
-    implementationPath: row.implementation_path,
-    status: row.status,
+    implementationPath: rowText(row, "implementation_path"),
+    status: rowText(row, "status"),
     packageData: data,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
@@ -276,20 +325,22 @@ function mapPackage(row: Record<string, any>): LivePackage {
 }
 
 function mapEvent(
-  row: Record<string, any>,
+  row: DatabaseRow,
   emails: Map<string, string>,
 ): LiveEvent {
   const metadata = asRecord(row.metadata);
   return {
-    id: row.id,
-    agencyId: row.agency_id,
-    projectId: row.project_id ?? null,
-    eventType: row.event_type,
-    title: row.title,
-    description: row.description ?? null,
+    id: rowText(row, "id"),
+    agencyId: rowText(row, "agency_id"),
+    projectId: rowText(row, "project_id") || null,
+    eventType: rowText(row, "event_type"),
+    title: rowText(row, "title"),
+    description: rowText(row, "description") || null,
     actorEmail:
       (metadata.actor_email as string) ??
-      (row.actor_user_id ? emails.get(row.actor_user_id) ?? "" : ""),
+      (row.actor_user_id
+        ? emails.get(String(row.actor_user_id)) ?? ""
+        : ""),
     clientVisible: Boolean(row.client_visible),
     createdAt: toIso(row.occurred_at),
   };
@@ -539,7 +590,7 @@ export async function liveClientSnapshot(email: string) {
         : row.client_organizations;
       return org ? { org, role: row.role as string } : null;
     })
-    .filter(Boolean) as Array<{ org: Record<string, any>; role: string }>;
+    .filter(Boolean) as Array<{ org: DatabaseRow; role: string }>;
 
   if (!matches.length) {
     return {
@@ -551,7 +602,7 @@ export async function liveClientSnapshot(email: string) {
     };
   }
 
-  const orgIds = matches.map((match) => match.org.id);
+  const orgIds = matches.map((match) => rowText(match.org, "id"));
   const domainByOrg = await domainByOrgMap(db, orgIds);
 
   const { data: projectRows } = await db
@@ -725,6 +776,8 @@ export async function createClientWithProject(
   const { db, agencyId, userId } = await agencyContext(email);
   const cleanDomain = input.domain
     .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/.*$/, "")
     .replace(/\/$/, "")
     .toLowerCase();
   const slugBase =
@@ -858,6 +911,379 @@ export async function createOpportunity(
   if (error) {
     throw new ApiError(
       `Unable to create opportunity: ${error.message}`,
+      500,
+      "OPERATION_FAILED",
+    );
+  }
+}
+
+export type KeywordDiscoverySummary = {
+  analyzed: number;
+  selected: number;
+  providerCost: number;
+  monthlyBudget: number;
+};
+
+export async function discoverKeywordOpportunities(
+  email: string,
+  input: {
+    projectId: string;
+    monthlyBudget: number;
+    targetMarket: string;
+    limit: number;
+  },
+): Promise<KeywordDiscoverySummary> {
+  if (!hasDataForSeoConfig) {
+    throw new ApiError(
+      "Keyword discovery needs the DataForSEO connection configured by an administrator.",
+      503,
+      "NOT_CONFIGURED",
+    );
+  }
+
+  const { db, agencyId, userId } = await agencyContext(email);
+  const membership = await requireAgency(email);
+  const { data: project } = await db
+    .from("seo_projects")
+    .select(
+      "id,name,domain,client_organization_id,country_code,language_code,client_organizations(name)",
+    )
+    .eq("id", input.projectId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
+
+  const clientRow = Array.isArray(project.client_organizations)
+    ? project.client_organizations[0]
+    : project.client_organizations;
+  const limit = Math.min(env.MAX_KEYWORDS_PER_RUN, input.limit);
+  const discoveryDomain = project.domain
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+  const operation = "keyword_discovery" as const;
+  const scope = {
+    operation,
+    sources: ["keywords_for_site", "ranked_keywords"],
+    keywords: null,
+    target: discoveryDomain,
+    limit,
+    locationName: input.targetMarket,
+    languageCode: project.language_code || "en",
+  };
+  const estimatedCost = Number(
+    (
+      (providerOperations[operation].estimateUnitCost +
+        providerOperations.ranked_keywords.estimateUnitCost) *
+      limit
+    ).toFixed(4),
+  );
+  const scopeHash = paidScopeHash(scope);
+  const { data: confirmation, error: confirmationError } = await db
+    .from("provider_operation_confirmations")
+    .insert({
+      agency_id: agencyId,
+      client_organization_id: project.client_organization_id,
+      project_id: project.id,
+      provider: "dataforseo",
+      operation_type: operation,
+      requested_by: userId,
+      estimated_units: limit,
+      estimated_cost: estimatedCost,
+      scope,
+      scope_hash: scopeHash,
+      expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    })
+    .select("id")
+    .single();
+  if (confirmationError || !confirmation) {
+    throw new ApiError(
+      `Unable to authorize keyword discovery: ${confirmationError?.message ?? "unknown error"}`,
+      500,
+      "OPERATION_FAILED",
+    );
+  }
+
+  const context: TenantContext = {
+    user: { id: userId, email },
+    agency: {
+      id: agencyId,
+      name: membership.agency.name,
+      slug: membership.agency.slug,
+    },
+    client: {
+      id: project.client_organization_id,
+      name: clientRow?.name ?? project.name,
+    },
+    project: { id: project.id, name: project.name, domain: project.domain },
+    role: membership.role as AgencyRole,
+  };
+
+  let paid: Awaited<ReturnType<typeof beginPaidOperation>> | null = null;
+  try {
+    paid = await beginPaidOperation(context, {
+      confirmationId: confirmation.id,
+      operation,
+      estimatedUnits: limit,
+      estimatedCost,
+      scopeHash,
+    });
+    const providerInput = {
+      target: discoveryDomain,
+      limit,
+      locationName: input.targetMarket,
+      languageCode: project.language_code || "en",
+    };
+    const [siteResult, rankedResult] = await Promise.all([
+      dataForSeoRequest<unknown>(
+        providerOperations[operation].endpoint,
+        providerOperations[operation].payload(providerInput),
+        `automated-keyword-discovery:${paid.usageId}:site`,
+      ),
+      dataForSeoRequest<unknown>(
+        providerOperations.ranked_keywords.endpoint,
+        providerOperations.ranked_keywords.payload(providerInput),
+        `automated-keyword-discovery:${paid.usageId}:ranked`,
+      ),
+    ]);
+    const providerResults = [...siteResult.results, ...rankedResult.results];
+    const providerCost = siteResult.totalCost + rankedResult.totalCost;
+    const candidates = discoverKeywordCandidates(
+      providerResults,
+      input.monthlyBudget,
+      Math.min(25, limit),
+    );
+    const analyzed = countDiscoveredKeywordRecords(providerResults);
+
+    const { data: existingKeywords } = await db
+      .from("seo_keywords")
+      .select("id,normalized_keyword")
+      .eq("project_id", project.id);
+    const keywordIds = new Map(
+      (existingKeywords ?? []).map((row) => [row.normalized_keyword, row.id]),
+    );
+    const missingKeywords = candidates
+      .filter((candidate) => !keywordIds.has(candidate.normalizedKeyword))
+      .map((candidate) => ({
+        agency_id: agencyId,
+        client_organization_id: project.client_organization_id,
+        project_id: project.id,
+        keyword: candidate.keyword,
+        normalized_keyword: candidate.normalizedKeyword,
+        intent: candidate.intent,
+        commercial_intent_score: candidate.commercialIntentScore,
+        target_url: candidate.rankingUrl,
+        priority: candidate.opportunityScore,
+        status: "active",
+      }));
+    if (missingKeywords.length) {
+      const { data: inserted, error } = await db
+        .from("seo_keywords")
+        .insert(missingKeywords)
+        .select("id,normalized_keyword");
+      if (error) throw error;
+      for (const row of inserted ?? []) {
+        keywordIds.set(row.normalized_keyword, row.id);
+      }
+    }
+
+    await Promise.all(
+      candidates
+        .filter((candidate) => keywordIds.has(candidate.normalizedKeyword))
+        .map((candidate) =>
+          db
+            .from("seo_keywords")
+            .update({
+              intent: candidate.intent,
+              commercial_intent_score: candidate.commercialIntentScore,
+              target_url: candidate.rankingUrl,
+              priority: candidate.opportunityScore,
+              status: "active",
+              updated_at: nowIso(),
+            })
+            .eq("id", keywordIds.get(candidate.normalizedKeyword)),
+        ),
+    );
+
+    if (candidates.length) {
+      const metricRows = candidates.map((candidate) => ({
+        agency_id: agencyId,
+        client_organization_id: project.client_organization_id,
+        project_id: project.id,
+        keyword_id: keywordIds.get(candidate.normalizedKeyword),
+        keyword: candidate.keyword,
+        search_volume: candidate.searchVolume,
+        cpc: candidate.cpc,
+        keyword_difficulty: candidate.difficulty,
+        search_intent: candidate.intent,
+        source: "dataforseo_domain_discovery",
+        raw_response: {
+          estimated_monthly_value: candidate.estimatedMonthlyValue,
+          estimated_effort: candidate.estimatedEffort,
+          value_per_dollar: candidate.valuePerDollar,
+        },
+      }));
+      const rankingRows = candidates.filter((candidate)=>candidate.currentRank!=null).map((candidate) => ({
+        agency_id: agencyId,
+        client_organization_id: project.client_organization_id,
+        project_id: project.id,
+        keyword_id: keywordIds.get(candidate.normalizedKeyword),
+          position: candidate.currentRank,
+        ranking_url: candidate.rankingUrl,
+        search_engine: "google",
+        device: "desktop",
+        location_code: input.targetMarket,
+        collected_at: nowIso(),
+      }));
+      const metricWrite = await db
+        .from("keyword_metric_snapshots")
+        .insert(metricRows);
+      if (metricWrite.error) throw metricWrite.error;
+      if (rankingRows.length) {
+        const rankingWrite = await db
+          .from("organic_ranking_snapshots")
+          .insert(rankingRows);
+        if (rankingWrite.error) throw rankingWrite.error;
+      }
+    }
+
+    const { data: activeOpportunities } = await db
+      .from("seo_opportunities")
+      .select("id,opportunity_key")
+      .eq("project_id", project.id)
+      .in("status", ["open", "approved", "in_progress", "monitoring"]);
+    const opportunityIds = new Map(
+      (activeOpportunities ?? []).map((row) => [row.opportunity_key, row.id]),
+    );
+    for (const candidate of candidates) {
+      const key = opportunityKey(
+        project.id,
+        candidate.keyword,
+        candidate.rankingUrl,
+        candidate.actionType,
+      );
+      const reason = `HD SEO found this from ${project.domain}: ${candidate.searchVolume.toLocaleString()} monthly searches, $${candidate.cpc.toFixed(2)} CPC, ${candidate.currentRank == null ? "an untapped keyword" : `current rank #${candidate.currentRank}`}, and an estimated ${candidate.valuePerDollar.toFixed(2)} value-to-effort ratio within the $${input.monthlyBudget.toLocaleString()} monthly SEO budget.`;
+      const values = {
+        agency_id: agencyId,
+        client_organization_id: project.client_organization_id,
+        project_id: project.id,
+        keyword_id: keywordIds.get(candidate.normalizedKeyword),
+        opportunity_score: candidate.opportunityScore,
+        confidence_score: candidate.confidenceScore,
+        action_type: candidate.actionType,
+        priority: candidate.priority,
+        target_milestone: candidate.targetMilestone,
+        reason_codes: candidate.reasonCodes,
+        evidence: {
+          keyword: candidate.keyword,
+          current_rank: candidate.currentRank,
+          target_rank: candidate.targetRank,
+          ranking_url: candidate.rankingUrl,
+          search_volume: candidate.searchVolume,
+          cpc: candidate.cpc,
+          keyword_difficulty: candidate.difficulty,
+          search_intent: candidate.intent,
+          estimated_monthly_value: candidate.estimatedMonthlyValue,
+          estimated_effort: candidate.estimatedEffort,
+          value_per_dollar: candidate.valuePerDollar,
+          monthly_budget: input.monthlyBudget,
+          target_market: input.targetMarket,
+          source: "dataforseo_domain_discovery",
+          reason,
+          disclaimer:
+            "Value and effort figures are directional prioritization estimates, not revenue guarantees.",
+        },
+        recommended_actions: candidate.recommendedActions,
+        scoring_version: "automated-value-v1",
+        opportunity_key: key,
+        target_url: candidate.rankingUrl,
+        updated_at: nowIso(),
+      };
+      const opportunityId = opportunityIds.get(key);
+      const write = opportunityId
+        ? await db.from("seo_opportunities").update(values).eq("id", opportunityId)
+        : await db.from("seo_opportunities").insert({ ...values, status: "open" });
+      if (write.error) throw write.error;
+    }
+
+    const { data: campaign } = await db
+      .from("seo_campaigns")
+      .select("id")
+      .eq("project_id", project.id)
+      .in("status", ["draft", "active", "paused", "budget_paused"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const campaignValues = {
+      monthly_budget: input.monthlyBudget,
+      implementation_budget: input.monthlyBudget,
+      data_budget: Math.min(25, Math.max(1, input.monthlyBudget * 0.01)),
+      automation_mode: "PREPARE",
+      status: "active",
+      constraints: {
+        target_market: input.targetMarket,
+        discovery_limit: limit,
+        human_approval_required: true,
+      },
+      updated_at: nowIso(),
+    };
+    const campaignWrite = campaign
+      ? await db.from("seo_campaigns").update(campaignValues).eq("id", campaign.id)
+      : await db.from("seo_campaigns").insert({
+          ...campaignValues,
+          agency_id: agencyId,
+          client_organization_id: project.client_organization_id,
+          project_id: project.id,
+          name: `${project.name} SEO Value Plan`,
+          reserve_budget: 0,
+          created_by: userId,
+        });
+    if (campaignWrite.error) throw campaignWrite.error;
+
+    await db
+      .from("seo_projects")
+      .update({
+        data_readiness_status: candidates.length ? "ready" : "needs_data",
+        updated_at: nowIso(),
+      })
+      .eq("id", project.id);
+    await recordEvent(db, {
+      agencyId,
+      clientOrganizationId: project.client_organization_id,
+      projectId: project.id,
+      eventType: "keyword_discovery_completed",
+      title: `${candidates.length} high-value keywords discovered`,
+      description: `HD SEO analyzed ${analyzed} site-relevant keyword records and prioritized the strongest opportunities for a $${input.monthlyBudget.toLocaleString()} monthly budget.`,
+      actorUserId: userId,
+      actorEmail: email,
+      clientVisible: false,
+    });
+
+    await finishPaidOperation(paid, {
+      cost: providerCost,
+      units: analyzed,
+      status: "completed",
+    });
+    paid = null;
+    return {
+      analyzed,
+      selected: candidates.length,
+      providerCost,
+      monthlyBudget: input.monthlyBudget,
+    };
+  } catch (error) {
+    if (paid) {
+      await finishPaidOperation(paid, {
+        cost: 0,
+        units: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Keyword discovery failed",
+      }).catch(() => undefined);
+    }
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(
+      `Keyword discovery failed: ${error instanceof Error ? error.message : "unknown error"}`,
       500,
       "OPERATION_FAILED",
     );

@@ -10,6 +10,7 @@ import {
   createClientWithProject,
   createOpportunity,
   createPackage,
+  discoverKeywordOpportunities,
   liveAdminSnapshot,
   liveAgencySnapshot,
   liveClientSnapshot,
@@ -46,6 +47,13 @@ const schema = z.discriminatedUnion("action", [
       "CTR_WIN",
     ]),
     reason: z.string().trim().min(10).max(1000),
+  }),
+  z.object({
+    action: z.literal("discover_keywords"),
+    projectId: z.string().uuid(),
+    monthlyBudget: z.number().int().min(100).max(1_000_000),
+    targetMarket: z.string().trim().min(2).max(120).default("United States"),
+    limit: z.number().int().min(10).max(100).default(50),
   }),
   z.object({
     action: z.literal("create_package"),
@@ -167,6 +175,20 @@ export async function POST(request: Request) {
           reason: input.reason,
         });
         break;
+      case "discover_keywords": {
+        const summary = await discoverKeywordOpportunities(user.email, {
+          projectId: input.projectId,
+          monthlyBudget: input.monthlyBudget,
+          targetMarket: input.targetMarket,
+          limit: input.limit,
+        });
+        return Response.json({
+          ok: true,
+          data: await liveAgencySnapshot(user.email),
+          message: `${summary.selected} best-value keyword opportunities found from ${summary.analyzed} site-relevant records. Provider cost: $${summary.providerCost.toFixed(2)}.`,
+          summary,
+        });
+      }
       case "create_package":
         await createPackage(user.email, {
           opportunityId: input.opportunityId,
