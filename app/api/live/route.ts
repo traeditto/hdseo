@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { parseJson } from "@/lib/api/request";
 import { ApiError, jsonError } from "@/lib/api/errors";
 import {
@@ -95,9 +96,17 @@ const schema = z.discriminatedUnion("action", [
 ]);
 
 async function identity() {
-  const user = await getChatGPTUser();
+  let user = await getChatGPTUser();
   if (!user) {
-    throw new ApiError("Sign in with ChatGPT to continue.", 401, "AUTH_REQUIRED");
+    const session = await createSupabaseServerClient();
+    const account = session ? (await session.auth.getUser()).data.user : null;
+    if (account?.email) {
+      const displayName = String(account.user_metadata?.full_name || account.user_metadata?.name || account.email.split("@")[0]);
+      user = { displayName, email: account.email, fullName: displayName };
+    }
+  }
+  if (!user) {
+    throw new ApiError("Sign in to HD SEO to continue.", 401, "AUTH_REQUIRED");
   }
   await upsertLiveUser(user);
   return { ...user, email: user.email.toLowerCase() };

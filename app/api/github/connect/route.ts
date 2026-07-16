@@ -13,7 +13,7 @@ import { saveRepositoryConnection } from "@/lib/github/repository-connection";
 const connectSchema = z.object({ agencyId:z.string().uuid(), clientId:z.string().uuid(), projectId:z.string().uuid(), installationId:z.coerce.number().int().positive(), repositoryId:z.coerce.number().int().positive() });
 
 function settingsRedirect(agencyId:string,status:"connected"|"error"="connected"){
-  const origin=process.env.HD_SEO_LIVE_ORIGIN||env.NEXT_PUBLIC_APP_URL||"https://hdseo.vercel.app",url=new URL("/portal/admin/settings/github",origin);
+  const origin=env.NEXT_PUBLIC_APP_URL||process.env.HD_SEO_LIVE_ORIGIN||"https://hdseo.vercel.app",url=new URL("/portal/admin/settings/github",origin);
   url.searchParams.set("agencyId",agencyId);url.searchParams.set("github",status);return url;
 }
 

@@ -11,6 +11,6 @@ export function AdminSidebar({user,active}:{user:User;active:"overview"|"github"
       <span className="admin-nav-label">SETTINGS</span>
       <Link className={active==="github"?"active":""} href="/portal/admin/settings/github"><span>⌘</span>GitHub</Link>
     </nav>
-    <div className="live-user"><strong>{user.displayName}</strong><span>{user.email}</span><a href="/signout-with-chatgpt?return_to=/">Sign out</a></div>
+    <div className="live-user"><strong>{user.displayName}</strong><span>{user.email}</span><a href="/api/auth/signout">Sign out</a></div>
   </aside>;
 }
