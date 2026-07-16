@@ -3,15 +3,20 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { env } from "@/lib/config/env";
 import { ApiError, logEvent } from "@/lib/api/errors";
-import type { TenantContext } from "@/lib/auth/context";
 import type { ProviderOperation } from "./dataforseo/types";
 import { createHash } from "node:crypto";
 
 export interface PaidRunContext { db: SupabaseClient; usageId: string; lockId: string; agencyId: string; clientId: string; projectId: string }
+export interface PaidTenantContext {
+  user: { id: string };
+  agency: { id: string };
+  client?: { id: string };
+  project?: { id: string };
+}
 
 export function paidScopeHash(value:unknown){return createHash("sha256").update(JSON.stringify(value,Object.keys(value as Record<string,unknown>).sort())).digest("hex");}
 
-export async function beginPaidOperation(context: TenantContext, input: { confirmationId: string; operation: ProviderOperation; estimatedUnits: number; estimatedCost: number; scopeHash:string }): Promise<PaidRunContext> {
+export async function beginPaidOperation(context: PaidTenantContext, input: { confirmationId: string; operation: ProviderOperation; estimatedUnits: number; estimatedCost: number; scopeHash:string }): Promise<PaidRunContext> {
   if (!context.client || !context.project) throw new ApiError("A client project is required.", 400, "VALIDATION_ERROR");
   const db = createSupabaseAdminClient();
   if (!db) throw new ApiError("Supabase server configuration is incomplete.", 503, "NOT_CONFIGURED");

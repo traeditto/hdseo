@@ -1,0 +1,2 @@
+[functions.automation-worker]
+verify_jwt = false

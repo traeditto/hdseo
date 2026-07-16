@@ -8,11 +8,50 @@ import { evaluateEligibility, opportunityKey, selectNextBestAction } from "@/lib
 import { advance, pause } from "../helpers";
 import type { CampaignJob } from "../types";
 import { selectImplementationPath } from "@/lib/seo/implementation-path";
+import {
+  importSearchConsoleDiscovery,
+  runAuthorizedDomainDiscovery,
+} from "@/lib/seo/autonomous-discovery";
+import { classifySite } from "@/lib/seo/site-classifier";
+import { buildWorkflowPlan } from "@/lib/seo/workflow-registry";
+import { env, hasDataForSeoConfig } from "@/lib/config/env";
 
-export async function validateStage(db:SupabaseClient,job:CampaignJob){const readiness=await systemReadiness(job.project_id);if(!readiness.ready)throw new ApiError("The SEO automation foundation is not ready.",409,"CONFLICT",job.reference_id);if(!readiness.evidence.keywords)throw new ApiError("Tracked keywords are required before campaign generation.",409,"CONFLICT",job.reference_id);return advance(db,job,"snapshot",{readiness});}
+const inputNumber=(value:unknown,fallback:number)=>Number.isFinite(Number(value))?Number(value):fallback;
 
-export async function snapshotStage(db:SupabaseClient,job:CampaignJob){const [keywords,metrics,rankings,pages,competitors,audits]=await Promise.all([
-  db.from("seo_keywords").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),db.from("keyword_metric_snapshots").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),db.from("organic_ranking_snapshots").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),db.from("seo_page_snapshots").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),db.from("competitor_domains").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),db.from("site_audits").select("id",{count:"exact",head:true}).eq("project_id",job.project_id)]);return advance(db,job,"score",{counts:{keywords:keywords.count??0,metrics:metrics.count??0,rankings:rankings.count??0,pages:pages.count??0,competitors:competitors.count??0,audits:audits.count??0},capturedAt:new Date().toISOString()});}
+export async function discoverStage(db:SupabaseClient,job:CampaignJob){
+  const existing=await db.from("seo_keywords").select("id",{count:"exact",head:true}).eq("project_id",job.project_id).eq("status","active");
+  if((existing.count??0)>0)return advance(db,job,"validate",{source:"existing_evidence",keywords:existing.count??0});
+  const tenant={agencyId:job.agency_id,clientId:job.client_organization_id,projectId:job.project_id,requestedBy:job.requested_by};
+  const firstParty=await importSearchConsoleDiscovery(db,tenant,Math.min(250,inputNumber(job.input.discoveryLimit,100)));
+  if(firstParty.keywords>0)return advance(db,job,"validate",firstParty);
+  const confirmationId=typeof job.input.discoveryConfirmationId==="string"?job.input.discoveryConfirmationId:null;
+  if(confirmationId){
+    const project=await db.from("seo_projects").select("domain,language_code").eq("id",job.project_id).single();
+    if(!project.data)throw new ApiError("Project discovery settings are unavailable.",409,"CONFLICT",job.reference_id);
+    const provider=await runAuthorizedDomainDiscovery(db,{...tenant,confirmationId,domain:project.data.domain,targetMarket:typeof job.input.targetMarket==="string"?job.input.targetMarket:"United States",languageCode:project.data.language_code||"en",monthlyBudget:inputNumber(job.input.monthlyBudget,1500),limit:Math.min(env.MAX_KEYWORDS_PER_RUN,Math.max(1,inputNumber(job.input.discoveryLimit,50)))});
+    if(provider.keywords>0)return advance(db,job,"validate",provider);
+  }
+  return pause(db,job,"awaiting_data_connection",{reason:"NO_DISCOVERY_EVIDENCE",message:"Connect Google Search Console or authorize bounded domain discovery. A manual keyword list is not required."});
+}
+
+export async function validateStage(db:SupabaseClient,job:CampaignJob){const readiness=await systemReadiness(job.project_id);if(!readiness.ready)throw new ApiError("The SEO automation foundation is not ready.",409,"CONFLICT",job.reference_id);if(!readiness.evidence.keywords)throw new ApiError("Automatic discovery completed without usable keyword evidence.",409,"CONFLICT",job.reference_id);return advance(db,job,"snapshot",{readiness});}
+
+export async function snapshotStage(db:SupabaseClient,job:CampaignJob){
+  const [keywords,metrics,rankings,pages,competitors,audits,services,locations,searchConsole,project]=await Promise.all([
+    db.from("seo_keywords").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),
+    db.from("keyword_metric_snapshots").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),
+    db.from("organic_ranking_snapshots").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),
+    db.from("seo_page_snapshots").select("url,title,h1,schema_types,captured_at").eq("project_id",job.project_id).order("captured_at",{ascending:false}).limit(500),
+    db.from("competitor_domains").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),
+    db.from("site_audits").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),
+    db.from("seo_services").select("id",{count:"exact",head:true}).eq("project_id",job.project_id).eq("status","active"),
+    db.from("seo_locations").select("id",{count:"exact",head:true}).eq("project_id",job.project_id).eq("status","active"),
+    db.from("search_console_rows").select("id",{count:"exact",head:true}).eq("project_id",job.project_id),
+    db.from("seo_projects").select("industry,country_code,language_code").eq("id",job.project_id).single(),
+  ]);
+  const pageRows=pages.data??[],classification=classifySite({industry:project.data?.industry,countryCode:project.data?.country_code,languageCode:project.data?.language_code,serviceCount:services.count??0,locationCount:locations.count??0,pages:pageRows.map(page=>({url:page.url,title:page.title,h1:page.h1,schemaTypes:(page.schema_types??[]) as string[]}))}),counts={keywords:keywords.count??0,metrics:metrics.count??0,rankings:rankings.count??0,pages:pageRows.length,competitors:competitors.count??0,audits:audits.count??0,services:services.count??0,locations:locations.count??0,searchConsoleRows:searchConsole.count??0},workflowPlan=buildWorkflowPlan({classification,pageCount:counts.pages,keywordCount:counts.keywords,hasSearchConsole:counts.searchConsoleRows>0,hasDataForSeo:hasDataForSeoConfig,hasBaseline:counts.pages>0});
+  return advance(db,job,"score",{counts,classification,workflowPlan,capturedAt:new Date().toISOString()});
+}
 
 type KeywordRow={id:string;keyword:string;commercial_intent_score:number|null;target_url:string|null;priority:number;service_id:string|null;location_id:string|null};
 export async function scoreStage(db:SupabaseClient,job:CampaignJob){const [keywordResult,metricResult,rankingResult,pageResult,competitorResult,auditResult]=await Promise.all([

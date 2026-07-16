@@ -1,0 +1,9 @@
+import {readFile} from "node:fs/promises";
+import {describe,expect,it} from "vitest";
+const root=new URL("../",import.meta.url);
+describe("enterprise GitHub and Vercel automation",()=>{
+  it("defines the requested control-plane tables and atomic queue functions",async()=>{const sql=await readFile(new URL("supabase/migrations/0013_enterprise_automation_control_plane.sql",root),"utf8");for(const name of ["clients","repositories","deployments","deploy_logs","github_installations","vercel_projects","seo_jobs","automation_runs","webhook_events","background_jobs"])expect(sql).toContain(`public.${name}`);for(const fn of ["claim_background_jobs","enqueue_deployment_job","enqueue_rollback_job","consume_rate_limit","for update skip locked"])expect(sql.toLowerCase()).toContain(fn);});
+  it("implements every public integration and deployment route",async()=>{for(const path of ["app/api/github/install/route.ts","app/api/github/connect/route.ts","app/api/github/webhook/route.ts","app/api/vercel/connect/route.ts","app/api/vercel/webhook/route.ts","app/api/deploy/route.ts","app/api/deploy/status/route.ts","app/api/deploy/rollback/route.ts"])expect(await readFile(new URL(path,root),"utf8")).toContain("export async function");});
+  it("encrypts stored secrets and consumes verified GitHub authorization",async()=>{const encryption=await readFile(new URL("lib/security/encryption.ts",root),"utf8"),connect=await readFile(new URL("app/api/github/connect/route.ts",root),"utf8");expect(encryption).toContain("aes-256-gcm");expect(connect).toContain("/user/installations");expect(connect).toContain("integration_oauth_states");expect(connect).toContain(".delete()");});
+  it("runs all required post-deployment validation",async()=>{const validator=await readFile(new URL("lib/automation/validator.ts",root),"utf8");for(const check of ["health","lighthouse","seo","schema","sitemap","robots","indexing_readiness"])expect(validator).toContain(`checkType:\"${check}\"`);});
+});

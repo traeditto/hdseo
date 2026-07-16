@@ -9,9 +9,15 @@ const schema = z.object({
   DATAFORSEO_LOGIN: z.string().optional(),
   DATAFORSEO_PASSWORD: z.string().optional(),
   GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_SLUG: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   VERCEL_ACCESS_TOKEN: z.string().optional(),
+  VERCEL_CLIENT_ID: z.string().optional(),
+  VERCEL_CLIENT_SECRET: z.string().optional(),
+  VERCEL_INTEGRATION_SLUG: z.string().optional(),
   VERCEL_TEAM_ID: z.string().optional(),
   VERCEL_PROJECT_ID: z.string().optional(),
   VERCEL_WEBHOOK_SECRET: z.string().optional(),
@@ -29,6 +35,9 @@ const schema = z.object({
   MAX_COMPETITORS_PER_RUN: z.coerce.number().int().positive().max(100).default(25),
   MAX_CRAWL_PAGES: z.coerce.number().int().positive().max(10_000).default(500),
   JOB_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(10),
+  AUTOMATION_JOB_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(10),
+  AUTOMATION_MAX_CONCURRENT_PER_AGENCY: z.coerce.number().int().positive().max(50).default(5),
+  PAGESPEED_API_KEY: z.string().optional(),
 });
 
 export const env = schema.parse(process.env);
@@ -36,4 +45,5 @@ export const hasSupabaseConfig = Boolean(env.NEXT_PUBLIC_SUPABASE_URL && env.NEX
 export const hasSupabaseAdminConfig = Boolean(hasSupabaseConfig && env.SUPABASE_SERVICE_ROLE_KEY);
 export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD);
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
+export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.GITHUB_WEBHOOK_SECRET && env.APP_ENCRYPTION_KEY);
 export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));

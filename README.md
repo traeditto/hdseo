@@ -1,10 +1,10 @@
-# SEO Agency OS
+# HD SEO
 
-A standalone, white-label SEO operating system for agencies. It converts stored SEO evidence into prioritized, assigned, approved, and measurable client work.
+A production white-label SEO operating system for agencies. It converts stored SEO evidence into prioritized, assigned, approved, deployed, and measurable client work.
 
 ## What is in this foundation
 
-- Responsive agency command center with clearly labeled synthetic demo data
+- Responsive agency command center with live tenant-backed workflows
 - Multi-tenant Supabase/Postgres schema with composite tenant foreign keys
 - Row Level Security helpers and initial policies
 - Agency and client role model
@@ -20,6 +20,8 @@ A standalone, white-label SEO operating system for agencies. It converts stored 
 - Durable campaign jobs with atomic claiming, leases, retries, and human review states
 - Atomic GitHub draft-PR execution with stale-code protection and no merge capability
 - Signed webhook replay protection, deployment binding, and 7/14/30/60/90 monitoring
+- Enterprise GitHub App and per-agency Vercel OAuth connections
+- Durable deployment queue, encrypted secrets, deployment history, validation, audit trail, and instant rollback
 
 ## Local development
 
@@ -33,7 +35,7 @@ Use Node.js 22 or newer, install dependencies, and run the development script. C
 4. Add provider credentials only for integrations being enabled.
 5. Deploy as a Next.js application and set environment variables in the hosting provider.
 
-The live demonstration does not execute paid provider requests. The DataForSEO and GitHub execution services are implemented but remain safely inactive until Supabase, provider, scheduler, and webhook credentials are configured. Google, Stripe, and Resend retain secure foundations pending provider setup.
+The integration subsystem is inactive until Supabase migrations, provider credentials, scheduler, and webhook configuration are complete. Follow [the enterprise GitHub and Vercel production runbook](docs/HD_SEO_ENTERPRISE_GITHUB_VERCEL.md) to activate it at `https://hdseo.vercel.app`.
 
 ## Product rule
 

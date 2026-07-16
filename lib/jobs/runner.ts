@@ -2,10 +2,10 @@ import "server-only";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { safeError, logEvent } from "@/lib/api/errors";
 import type { CampaignJob } from "./types";
-import { validateStage,snapshotStage,scoreStage,selectStage,prepareStage } from "./stages/intelligence";
+import { discoverStage,validateStage,snapshotStage,scoreStage,selectStage,prepareStage } from "./stages/intelligence";
 import { inspectStage,diffStage,validationStage,createPrStage,monitoringStage } from "./stages/execution";
 
-const handlers = { validate:validateStage,snapshot:snapshotStage,score:scoreStage,select:selectStage,prepare:prepareStage,inspect_repository:inspectStage,generate_diff:diffStage,validate_changes:validationStage,create_pr:createPrStage,schedule_monitoring:monitoringStage };
+const handlers = { discover:discoverStage,validate:validateStage,snapshot:snapshotStage,score:scoreStage,select:selectStage,prepare:prepareStage,inspect_repository:inspectStage,generate_diff:diffStage,validate_changes:validationStage,create_pr:createPrStage,schedule_monitoring:monitoringStage };
 export async function processOneCampaignJob(workerId=crypto.randomUUID()){
   const db=createSupabaseAdminClient();if(!db)throw new Error("Supabase is not configured.");
   const claimed=await db.rpc("claim_seo_campaign_job",{p_worker_id:workerId,p_lock_seconds:300}),job=(claimed.data??[])[0] as CampaignJob|undefined;if(!job)return{status:"idle"};
