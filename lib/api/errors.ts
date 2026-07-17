@@ -1,4 +1,22 @@
-export type ApiErrorCode = "AUTH_REQUIRED" | "TENANT_DENIED" | "ROLE_FORBIDDEN" | "VALIDATION_ERROR" | "NOT_FOUND" | "CONFLICT" | "NOT_CONFIGURED" | "RATE_LIMITED" | "OPERATION_FAILED";
+export type ApiErrorCode =
+  | "AUTH_REQUIRED"
+  | "TENANT_DENIED"
+  | "ROLE_FORBIDDEN"
+  | "VALIDATION_ERROR"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "NOT_CONFIGURED"
+  | "RATE_LIMITED"
+  | "INVALID_STATE"
+  | "MISSING_INSTALLATION_ID"
+  | "GITHUB_OAUTH_FAILED"
+  | "GITHUB_JWT_FAILED"
+  | "INSTALLATION_LOOKUP_FAILED"
+  | "INSTALLATION_TOKEN_FAILED"
+  | "REPOSITORY_LOOKUP_FAILED"
+  | "REPOSITORY_NOT_AUTHORIZED"
+  | "DATABASE_BINDING_FAILED"
+  | "OPERATION_FAILED";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code: ApiErrorCode, public referenceId = crypto.randomUUID()) { super(message); this.name = "ApiError"; }
@@ -12,6 +30,24 @@ export function safeError(error: unknown) {
 }
 
 export function jsonError(error: unknown) { const safe = safeError(error); return Response.json(safe.body, { status: safe.status }); }
+
+function redactErrorMessage(value: string) {
+  return value
+    .replace(/-----BEGIN[\s\S]*?-----END [^-]+-----/g, "[REDACTED_PEM]")
+    .replace(/\b(?:gh[opsu]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g, "[REDACTED_TOKEN]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
+    .replace(/(authorization|token|secret|private[_ -]?key)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+    .slice(0, 500);
+}
+
+export function logServerError(event: string, error: unknown, context: Record<string, LogValue> = {}) {
+  const referenceId=context.referenceId??(error instanceof ApiError?error.referenceId:crypto.randomUUID());
+  const errorName=error instanceof Error?error.name:"UnknownError";
+  const errorMessage=redactErrorMessage(error instanceof Error?error.message:String(error));
+  const safe=Object.fromEntries(Object.entries(context).filter(([key,value])=>allowed.has(key)&&value!==undefined));
+  console.error(JSON.stringify({system:"hd_seo",event,...safe,referenceId,errorName,errorMessage,timestamp:new Date().toISOString()}));
+  return String(referenceId);
+}
 
 type LogValue = string | number | boolean | null | undefined;
 const allowed = new Set(["referenceId", "agencyId", "clientId", "projectId", "jobId", "executionId", "stage", "status", "durationMs", "errorCode", "provider", "operation"]);

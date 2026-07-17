@@ -5,10 +5,25 @@ import { ApiError } from "@/lib/api/errors";
 
 const API = "https://api.github.com";
 const base64url = (value: string | Buffer) => Buffer.from(value).toString("base64url");
-export function appJwt() { if (!hasGitHubConfig) throw new ApiError("GitHub App is not configured.",503,"NOT_CONFIGURED"); const now=Math.floor(Date.now()/1000), header=base64url(JSON.stringify({alg:"RS256",typ:"JWT"})), payload=base64url(JSON.stringify({iat:now-60,exp:now+540,iss:env.GITHUB_APP_ID})); const signer=createSign("RSA-SHA256"); signer.update(`${header}.${payload}`); return `${header}.${payload}.${signer.sign(env.GITHUB_APP_PRIVATE_KEY!.replace(/\\n/g,"\n"),"base64url")}`; }
+export function appJwt() {
+  if (!hasGitHubConfig) throw new ApiError("GitHub App authentication is not configured.",503,"GITHUB_JWT_FAILED");
+  const appId=Number(env.GITHUB_APP_ID),privateKey=env.GITHUB_APP_PRIVATE_KEY!.replace(/\\n/g,"\n").trim();
+  if(!Number.isInteger(appId)||appId<=0||!/^-----BEGIN (?:RSA )?PRIVATE KEY-----[\s\S]+-----END (?:RSA )?PRIVATE KEY-----$/.test(privateKey))throw new ApiError("GitHub App credentials are invalid.",503,"GITHUB_JWT_FAILED");
+  try{
+    const now=Math.floor(Date.now()/1000),header=base64url(JSON.stringify({alg:"RS256",typ:"JWT"})),payload=base64url(JSON.stringify({iat:now-60,exp:now+540,iss:String(appId)})),signer=createSign("RSA-SHA256");
+    signer.update(`${header}.${payload}`);
+    return `${header}.${payload}.${signer.sign(privateKey,"base64url")}`;
+  }catch{
+    throw new ApiError("GitHub App JWT generation failed.",503,"GITHUB_JWT_FAILED");
+  }
+}
 export async function githubRequest<T>(path:string,token:string,options:RequestInit={}) { const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15_000); try { const response=await fetch(`${API}${path}`,{...options,headers:{Accept:"application/vnd.github+json",Authorization:`Bearer ${token}`,"X-GitHub-Api-Version":"2022-11-28",...(options.headers??{})},signal:controller.signal,cache:"no-store"}); if(!response.ok)throw new ApiError(`GitHub request failed with HTTP ${response.status}.`,response.status===429?429:502,response.status===429?"RATE_LIMITED":"OPERATION_FAILED",response.headers.get("x-github-request-id")??undefined); if(response.status===204||response.headers.get("content-length")==="0")return undefined as T;return await response.json() as T; } finally { clearTimeout(timer); } }
 const request=githubRequest;
-export async function installationToken(installationId:number){return (await request<{token:string}>(`/app/installations/${installationId}/access_tokens`,appJwt(),{method:"POST"})).token;}
+function githubOperationError(error:unknown,code:"INSTALLATION_LOOKUP_FAILED"|"INSTALLATION_TOKEN_FAILED"|"REPOSITORY_LOOKUP_FAILED",message:string):never{
+  if(error instanceof ApiError&&(error.code==="GITHUB_JWT_FAILED"||error.code==="RATE_LIMITED"||error.code==="NOT_CONFIGURED"))throw error;
+  throw new ApiError(message,error instanceof ApiError&&error.status===429?429:502,code,error instanceof ApiError?error.referenceId:undefined);
+}
+export async function installationToken(installationId:number){try{return (await request<{token:string}>(`/app/installations/${installationId}/access_tokens`,appJwt(),{method:"POST"})).token;}catch(error){return githubOperationError(error,"INSTALLATION_TOKEN_FAILED","GitHub installation authentication failed.");}}
 
 export interface GitHubInstallation { id:number; app_id?:number; app_slug?:string; account:{id:number;login:string;type:"User"|"Organization"|"Enterprise"|"Bot"}; repository_selection:"all"|"selected"; permissions:Record<string,string>; events:string[]; suspended_at?:string|null }
 export interface GitHubRepository { id:number; name:string; full_name:string; private:boolean; visibility?:"public"|"private"|"internal"; default_branch:string; owner:{login:string} }
@@ -16,9 +31,9 @@ export interface AuthenticatedGitHubApp { id:number;slug:string;name:string;owne
 export function getAuthenticatedApp(){return request<AuthenticatedGitHubApp>("/app",appJwt());}
 export async function listAppInstallations(){const items:GitHubInstallation[]=[];for(let page=1;page<=100;page++){const batch=await request<GitHubInstallation[]>(`/app/installations?per_page=100&page=${page}`,appJwt());items.push(...batch);if(batch.length<100)break;}return items;}
 export async function listUserInstallations(token:string){const items:GitHubInstallation[]=[];for(let page=1;page<=100;page++){const batch=(await request<{installations:GitHubInstallation[]}>(`/user/installations?per_page=100&page=${page}`,token)).installations;items.push(...batch);if(batch.length<100)break;}return items;}
-export function getInstallation(installationId:number){return request<GitHubInstallation>(`/app/installations/${installationId}`,appJwt());}
+export async function getInstallation(installationId:number){try{return await request<GitHubInstallation>(`/app/installations/${installationId}`,appJwt());}catch(error){return githubOperationError(error,"INSTALLATION_LOOKUP_FAILED","GitHub installation lookup failed.");}}
 export function deleteInstallation(installationId:number){return request<void>(`/app/installations/${installationId}`,appJwt(),{method:"DELETE"});}
-export async function listInstallationRepositories(installationId:number){const token=await installationToken(installationId),items:GitHubRepository[]=[];for(let page=1;page<=100;page++){const batch=(await request<{repositories:GitHubRepository[]}>(`/installation/repositories?per_page=100&page=${page}`,token)).repositories;items.push(...batch);if(batch.length<100)break;}return items;}
+export async function listInstallationRepositories(installationId:number){try{const token=await installationToken(installationId),items:GitHubRepository[]=[];for(let page=1;page<=100;page++){const batch=(await request<{repositories:GitHubRepository[]}>(`/installation/repositories?per_page=100&page=${page}`,token)).repositories;items.push(...batch);if(batch.length<100)break;}return items;}catch(error){if(error instanceof ApiError&&(error.code==="GITHUB_JWT_FAILED"||error.code==="INSTALLATION_TOKEN_FAILED"||error.code==="RATE_LIMITED"))throw error;return githubOperationError(error,"REPOSITORY_LOOKUP_FAILED","Accessible GitHub repositories could not be loaded.");}}
 
 export interface RepositoryConnection { installation_id:number; repository_owner:string; repository_name:string; default_branch:string }
 export async function inspectRepository(connection:RepositoryConnection,preferred:string[]=[]){const token=await installationToken(connection.installation_id),repo=`${connection.repository_owner}/${connection.repository_name}`,ref=await request<{object:{sha:string}}>(`/repos/${repo}/git/ref/heads/${encodeURIComponent(connection.default_branch)}`,token),tree=await request<{tree:Array<{path:string;type:string;sha:string}>}>(`/repos/${repo}/git/trees/${ref.object.sha}?recursive=1`,token); const paths=tree.tree.filter((item)=>item.type==="blob"&&/^(app|src|components|lib|pages)\/.+\.(ts|tsx|js|jsx|mjs|html)$/.test(item.path)).map((item)=>item.path), selected=[...new Set([...preferred.filter((path)=>paths.includes(path)),...paths.filter((path)=>/page\.|route\.|sitemap|robots|schema|content/i.test(path))])].slice(0,20),files=[]; for(const path of selected){const value=await request<{sha:string;content:string;encoding:string}>(`/repos/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g,"/")}?ref=${ref.object.sha}`,token); files.push({path,sha:value.sha,content:value.encoding==="base64"?Buffer.from(value.content.replace(/\n/g,""),"base64").toString("utf8"):value.content});} return{baseCommitSha:ref.object.sha,defaultBranch:connection.default_branch,files,availableSourcePaths:paths};}

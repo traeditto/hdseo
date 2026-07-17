@@ -31,14 +31,14 @@ export function createIntegrationState(input: Omit<IntegrationState, "nonce" | "
 
 export function verifyIntegrationState(value: string, purpose: IntegrationState["purpose"]) {
   const [encoded, signature] = value.split(".");
-  if (!encoded || !signature) throw new ApiError("Integration state is invalid.", 400, "VALIDATION_ERROR");
+  if (!encoded || !signature) throw new ApiError("Integration state is invalid.", 400, "INVALID_STATE");
   const expected = createHmac("sha256", key()).update(encoded).digest();
   const actual = Buffer.from(signature, "base64url");
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new ApiError("Integration state signature is invalid.", 400, "VALIDATION_ERROR");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new ApiError("Integration state signature is invalid.", 400, "INVALID_STATE");
   let state: IntegrationState;
   try { state = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as IntegrationState; }
-  catch { throw new ApiError("Integration state is invalid.", 400, "VALIDATION_ERROR"); }
-  if (state.purpose !== purpose || state.expiresAt < Math.floor(Date.now() / 1000)) throw new ApiError("Integration state has expired.", 400, "VALIDATION_ERROR");
+  catch { throw new ApiError("Integration state is invalid.", 400, "INVALID_STATE"); }
+  if (state.purpose !== purpose || state.expiresAt < Math.floor(Date.now() / 1000)) throw new ApiError("Integration state has expired.", 400, "INVALID_STATE");
   return state;
 }
 
