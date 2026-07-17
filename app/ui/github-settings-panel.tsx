@@ -8,7 +8,7 @@ import type { GitHubSettingsSnapshot } from "@/lib/github/integration-settings";
 function displayDate(value:string|null|undefined){return value?new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short"}).format(new Date(value)):"No webhook received yet"}
 
 export function GitHubSettingsPanel({snapshot,justConnected=false}:{snapshot:GitHubSettingsSnapshot;justConnected?:boolean}){
-  const router=useRouter(),[message,setMessage]=useState(justConnected?"GitHub authorization completed. Select a repository to connect it to an HD SEO project.":""),[error,setError]=useState(snapshot.connectionError??""),[busy,setBusy]=useState<"test"|"disconnect"|"repository"|null>(null);
+  const router=useRouter(),[message,setMessage]=useState(justConnected?"GitHub connected. Authorized repositories were synced and the matching client repository was bound automatically.":""),[error,setError]=useState(snapshot.connectionError??""),[busy,setBusy]=useState<"test"|"disconnect"|"repository"|null>(null);
   const defaultProject=snapshot.projects[0],defaultRepository=snapshot.availableRepositories.find(repo=>!snapshot.connectedRepositories.some(item=>item.fullName===repo.fullName));
   const[projectId,setProjectId]=useState(defaultProject?.id??""),[repositoryId,setRepositoryId]=useState(defaultRepository?String(defaultRepository.id):"");
   const selectedProject=useMemo(()=>snapshot.projects.find(item=>item.id===projectId),[projectId,snapshot.projects]);
