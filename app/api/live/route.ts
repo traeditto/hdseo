@@ -23,6 +23,11 @@ import {
   updateTaskStatus,
   upsertLiveUser,
 } from "@/lib/live/store";
+import {
+  connectWebsite,
+  disconnectWebsite,
+  testWebsiteConnection,
+} from "@/lib/websites/connections";
 
 const schema = z.discriminatedUnion("action", [
   z.object({
@@ -122,6 +127,27 @@ const schema = z.discriminatedUnion("action", [
     jobId: z.string().uuid(),
     decision: z.enum(["proceed", "dismiss"]),
   }),
+  z.object({
+    action: z.literal("connect_website"),
+    projectId: z.string().uuid(),
+    mode: z.enum(["wordpress", "shopify", "webflow", "manual", "monitoring", "managed"]),
+    siteUrl: z.string().trim().min(3).max(500),
+    username: z.string().trim().max(200).optional(),
+    applicationPassword: z.string().trim().max(500).optional(),
+    accessToken: z.string().trim().max(2000).optional(),
+    siteId: z.string().trim().max(200).optional(),
+    platformName: z.string().trim().max(100).optional(),
+    notes: z.string().trim().max(2000).optional(),
+  }),
+  z.object({
+    action: z.literal("test_website"),
+    websiteId: z.string().uuid(),
+  }),
+  z.object({
+    action: z.literal("disconnect_website"),
+    websiteId: z.string().uuid(),
+    confirm: z.literal(true),
+  }),
 ]);
 
 async function identity() {
@@ -181,6 +207,8 @@ export async function POST(request: Request) {
       await enforceRateLimit(actorScope, "agency_creation", 3, 86400);
     } else if (input.action === "package_decision") {
       await enforceRateLimit(actorScope, "client_decision", 30, 3600);
+    } else if (["connect_website", "test_website", "disconnect_website"].includes(input.action)) {
+      await enforceRateLimit(actorScope, "website_connection", 20, 3600);
     }
 
     if (input.action === "create_agency") {
@@ -260,6 +288,21 @@ export async function POST(request: Request) {
           decision: input.decision,
         });
         break;
+      case "connect_website": {
+        const connected = await connectWebsite(user.email, input);
+        return Response.json({
+          ok: true,
+          data: await liveAgencySnapshot(user.email),
+          message: connected.status === "pending" ? "Managed onboarding request saved." : "Website connection verified and saved.",
+        });
+      }
+      case "test_website": {
+        const tested = await testWebsiteConnection(user.email, input.websiteId);
+        return Response.json({ ok: true, data: await liveAgencySnapshot(user.email), message: tested.message });
+      }
+      case "disconnect_website":
+        await disconnectWebsite(user.email, input.websiteId);
+        return Response.json({ ok: true, data: await liveAgencySnapshot(user.email), message: "Website connection disconnected and credentials removed." });
       case "approve_package":
       case "publish_package":
       case "mark_implemented":
