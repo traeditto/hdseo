@@ -46,7 +46,7 @@ export const hasSupabaseConfig = Boolean(env.NEXT_PUBLIC_SUPABASE_URL && env.NEX
 export const hasSupabaseAdminConfig = Boolean(hasSupabaseConfig && env.SUPABASE_SERVICE_ROLE_KEY);
 export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD);
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
-export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.GITHUB_WEBHOOK_SECRET && env.APP_ENCRYPTION_KEY);
+export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
 export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
 
 // Stable, configured production base URL for all external callbacks.
@@ -61,4 +61,8 @@ export function appBaseUrl(): string {
 export const GITHUB_CALLBACK_PATH = "/api/github/callback";
 export function githubCallbackUrl(): string {
   return new URL(GITHUB_CALLBACK_PATH, `${appBaseUrl()}/`).toString();
+}
+export const GITHUB_SETUP_PATH = "/api/github/setup";
+export function githubSetupUrl(): string {
+  return new URL(GITHUB_SETUP_PATH, `${appBaseUrl()}/`).toString();
 }

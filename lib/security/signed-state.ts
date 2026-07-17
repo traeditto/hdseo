@@ -4,12 +4,15 @@ import { env } from "@/lib/config/env";
 import { ApiError } from "@/lib/api/errors";
 
 export interface IntegrationState {
-  purpose: "github_oauth" | "github_install" | "vercel_connect";
+  purpose: "github_oauth" | "github_install" | "github_bind" | "vercel_connect";
   agencyId: string;
   clientId?: string;
   projectId?: string;
+  returnUrl?: string;
   userId: string;
   oauthStateId?: string;
+  installationId?: number;
+  setupAction?: string;
   nonce: string;
   expiresAt: number;
 }
@@ -37,4 +40,8 @@ export function verifyIntegrationState(value: string, purpose: IntegrationState[
   catch { throw new ApiError("Integration state is invalid.", 400, "VALIDATION_ERROR"); }
   if (state.purpose !== purpose || state.expiresAt < Math.floor(Date.now() / 1000)) throw new ApiError("Integration state has expired.", 400, "VALIDATION_ERROR");
   return state;
+}
+
+export function integrationStatePurpose(value:string):IntegrationState["purpose"]|null{
+  try{const [encoded]=value.split("."),payload=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8")) as Partial<IntegrationState>;return ["github_oauth","github_install","github_bind","vercel_connect"].includes(String(payload.purpose))?payload.purpose??null:null;}catch{return null;}
 }

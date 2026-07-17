@@ -48,7 +48,7 @@ Create a new GitHub App under the GitHub organization that owns HD SEO.
 | Request user authorization during installation | Off; HD SEO performs the user authorization before opening installation |
 | Where can this GitHub App be installed? | Any account |
 
-GitHub generates the URL slug from the app name. The expected slug is `hd-seo`, producing `https://github.com/apps/hd-seo`. If GitHub reports that the name is already owned by another account, choose an organization-qualified name and set `GITHUB_APP_SLUG` to the slug GitHub actually assigns.
+The production App is named `HD SEO Production Traeditto`. Its slug is `hd-seo-production-traeditto`, producing `https://github.com/apps/hd-seo-production-traeditto`. The application also verifies this slug at runtime through GitHub's authenticated `GET /app` endpoint before generating an installation URL.
 
 ### Repository permissions
 
@@ -75,7 +75,9 @@ GitHub supplies installation and installation-repository lifecycle events to the
 4. Generate a client secret and copy it into `GITHUB_CLIENT_SECRET`.
 5. Generate a private key, open the downloaded `.pem`, and copy the complete PEM text into `GITHUB_APP_PRIVATE_KEY`. In Vercel, a multiline secret is supported; a single-line value containing `\n` is also supported by the code.
 6. Generate a separate random webhook secret and enter the same value in the GitHub App webhook setting and `GITHUB_WEBHOOK_SECRET`.
-7. Set `GITHUB_APP_SLUG=hd-seo` if that is the slug shown by GitHub.
+7. Set `GITHUB_APP_SLUG=hd-seo-production-traeditto`.
+8. Set the Setup URL to `https://hdseo.vercel.app/api/github/setup` and enable **Redirect on update**.
+9. Disable **Request user authorization (OAuth) during installation**; GitHub makes the Setup URL unavailable when this option is enabled. HD SEO performs user verification after the Setup URL callback instead.
 
 The connection flow is:
 
@@ -162,7 +164,7 @@ Never rotate `APP_ENCRYPTION_KEY` by replacing it in place. A key rotation must 
 | Variable | Value |
 |---|---|
 | `GITHUB_APP_ID` | Numeric App ID copied from the HD SEO GitHub App |
-| `GITHUB_APP_SLUG` | `hd-seo` if GitHub assigned that slug |
+| `GITHUB_APP_SLUG` | `hd-seo-production-traeditto` |
 | `GITHUB_APP_PRIVATE_KEY` | Complete generated GitHub App PEM private key |
 | `GITHUB_CLIENT_ID` | Client ID copied from the GitHub App |
 | `GITHUB_CLIENT_SECRET` | Generated GitHub App client secret |
