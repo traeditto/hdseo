@@ -93,6 +93,15 @@ export type LiveWebsite = {
   connectionMode: string | null;
   connectionStatus: string | null;
   editorMode: string | null;
+  googleSearchConsole: {
+    id: string;
+    status: string;
+    selectedProperty: string | null;
+    lastSyncedAt: string | null;
+    lastVerifiedAt: string | null;
+    properties: Array<{siteUrl: string;permissionLevel?: string}>;
+    health: string;
+  } | null;
 };
 
 export type LiveOpportunity = {
@@ -577,6 +586,7 @@ export async function liveAgencySnapshot(email: string) {
     jobsRes,
     websitesRes,
     connectionsRes,
+    googleRes,
   ] = await Promise.all([
     db
       .from("client_organizations")
@@ -627,6 +637,12 @@ export async function liveAgencySnapshot(email: string) {
       .select("id,website_id,editor_mode,connection_mode,status,last_verified_at,updated_at")
       .eq("agency_id", agencyId)
       .order("updated_at", { ascending: false }),
+    db
+      .from("integration_connections")
+      .select("id,project_id,status,selected_resource,last_synced_at,last_verified_at,metadata,updated_at")
+      .eq("agency_id", agencyId)
+      .eq("provider", "google_search_console")
+      .order("updated_at", { ascending: false }),
   ]);
 
   const clients = clientsRes.data ?? [];
@@ -644,6 +660,8 @@ export async function liveAgencySnapshot(email: string) {
       connectionByWebsite.set(rowText(row, "website_id"), row);
     }
   }
+  const googleByProject = new Map<string, DatabaseRow>();
+  for (const row of googleRes.data ?? []) if (!googleByProject.has(rowText(row, "project_id"))) googleByProject.set(rowText(row, "project_id"), row);
 
   return {
     agency: membership.agency,
@@ -652,6 +670,8 @@ export async function liveAgencySnapshot(email: string) {
     projects: (projectsRes.data ?? []).map(mapProject),
     websites: (websitesRes.data ?? []).map((row) => {
       const connection = connectionByWebsite.get(rowText(row, "id"));
+      const google = googleByProject.get(rowText(row, "project_id"));
+      const metadata = asRecord(google?.metadata);
       return {
         id: rowText(row, "id"),
         projectId: rowText(row, "project_id"),
@@ -665,6 +685,18 @@ export async function liveAgencySnapshot(email: string) {
         connectionMode: connection ? rowNullableText(connection, "connection_mode") : null,
         connectionStatus: connection ? rowNullableText(connection, "status") : null,
         editorMode: connection ? rowNullableText(connection, "editor_mode") : null,
+        googleSearchConsole: google ? {
+          id: rowText(google, "id"),
+          status: rowText(google, "status"),
+          selectedProperty: rowNullableText(google, "selected_resource"),
+          lastSyncedAt: rowNullableText(google, "last_synced_at"),
+          lastVerifiedAt: rowNullableText(google, "last_verified_at"),
+          properties: Array.isArray(metadata.properties) ? metadata.properties.flatMap((item) => {
+            const property = asRecord(item);
+            return typeof property.siteUrl === "string" ? [{ siteUrl: property.siteUrl, permissionLevel: typeof property.permissionLevel === "string" ? property.permissionLevel : undefined }] : [];
+          }) : [],
+          health: rowText(metadata, "health", "unknown"),
+        } : null,
       } satisfies LiveWebsite;
     }),
     opportunities: (opportunitiesRes.data ?? []).map(mapOpportunity),
