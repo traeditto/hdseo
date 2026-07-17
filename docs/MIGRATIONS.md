@@ -12,3 +12,6 @@ Migrations are additive and ordered by dependency:
 8. platform administrator identities and Admin, Agency, and Client portal access
 
 Never edit an applied migration. Add a new numbered migration for every schema change.
+## 0016 — production evidence control plane
+
+Apply `0016_evidence_control_plane.sql` after `0015_live_portal_security_and_publications.sql`. It is required for the Admin system-readiness page, Google Search Console OAuth state consumption, evidence queue jobs, crawler snapshots, freshness policies, and worker heartbeats. It does not replace or backfill existing campaign, deployment, or portal tables.

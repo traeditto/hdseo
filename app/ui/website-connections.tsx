@@ -7,6 +7,7 @@ type Website = {
   id:string; projectId:string; name:string; siteUrl:string; canonicalDomain:string;
   cmsType:string; status:string; lastVerifiedAt:string|null; connectionId:string|null;
   connectionMode:string|null; connectionStatus:string|null; editorMode:string|null;
+  googleSearchConsole:{id:string;status:string;selectedProperty:string|null;lastSyncedAt:string|null;lastVerifiedAt:string|null;properties:Array<{siteUrl:string;permissionLevel?:string}>;health:string}|null;
 };
 type Mode = "wordpress"|"shopify"|"webflow"|"github"|"manual"|"monitoring"|"managed";
 
@@ -26,6 +27,8 @@ export function WebsiteConnections({agencyId,projects,websites,canManage,busy,on
   const [projectId,setProjectId]=useState(projects[0]?.id??"");
   const [open,setOpen]=useState(false);
   const [mode,setMode]=useState<Mode>("wordpress");
+  const [integrationBusy,setIntegrationBusy]=useState<string|null>(null);
+  const [integrationMessage,setIntegrationMessage]=useState("");
   const selected=projects.find(project=>project.id===projectId)??projects[0];
   const websiteByProject=useMemo(()=>new Map(websites.map(website=>[website.projectId,website])),[websites]);
   function begin(nextProjectId:string){setProjectId(nextProjectId);setMode("wordpress");setOpen(true);}
@@ -44,6 +47,8 @@ export function WebsiteConnections({agencyId,projects,websites,canManage,busy,on
     });
     if(success)setOpen(false);
   }
+  async function integration(path:string,body:Record<string,unknown>,key:string){setIntegrationBusy(key);setIntegrationMessage("");try{const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),result=await response.json();if(!response.ok){setIntegrationMessage(result.error?.message??"The evidence action could not be completed.");return;}setIntegrationMessage(result.message??"Evidence action queued.");}catch{setIntegrationMessage("The evidence action could not be reached. Try again.");}finally{setIntegrationBusy(null);}}
+  async function chooseProperty(project:string,property:string){await integration("/api/google/properties",{projectId:project,property},"property");}
   if(!projects.length)return <section className="live-section"><div className="live-empty"><strong>Add a client before connecting a website</strong><p>Every website connection belongs to a client SEO project.</p></div></section>;
   return <>
     <div className="live-heading website-heading"><div><small>CLIENT WEBSITE ACCESS</small><h1>Website connections</h1><p>Connect each client using the method that matches how their site is managed. GitHub is optional.</p></div>{canManage&&<button onClick={()=>begin(projects[0].id)}>＋ Connect website</button>}</div>
@@ -52,6 +57,7 @@ export function WebsiteConnections({agencyId,projects,websites,canManage,busy,on
         <header><span className={connected?"website-dot connected":"website-dot"}/><div><strong>{project.domain}</strong><small>{project.name}</small></div><em className={connected?"connected":""}>{connected?"CONNECTED":human(website?.status).toUpperCase()}</em></header>
         <dl><div><dt>Connection</dt><dd>{human(website?.connectionMode)}</dd></div><div><dt>Platform</dt><dd>{human(website?.cmsType)}</dd></div><div><dt>Last verified</dt><dd>{website?.lastVerifiedAt?new Date(website.lastVerifiedAt).toLocaleString():"Not yet"}</dd></div></dl>
         <footer>{canManage&&<button onClick={()=>begin(project.id)}>{website?.connectionId?"Reconnect":"Choose connection"}</button>}{website?.connectionId&&canManage&&<button disabled={busy} onClick={()=>void onAction({action:"test_website",websiteId:website.id})}>Test connection</button>}{website?.connectionId&&canManage&&<button className="danger" disabled={busy} onClick={()=>{if(window.confirm(`Disconnect ${project.domain} and remove its stored credentials?`))void onAction({action:"disconnect_website",websiteId:website.id,confirm:true});}}>Disconnect</button>}</footer>
+        <div className="website-evidence"><header><div><small>SEARCH CONSOLE EVIDENCE</small><strong>{website?.googleSearchConsole?.selectedProperty??"Not connected"}</strong></div><em className={website?.googleSearchConsole?.status==="active"?"connected":""}>{website?.googleSearchConsole?.status==="active"?"CONNECTED":"NOT CONNECTED"}</em></header>{website?.googleSearchConsole?.status!=="active"?<a className="evidence-link" href={`/api/google/connect?projectId=${encodeURIComponent(project.id)}`}>Connect Google Search Console →</a>:<>{!website.googleSearchConsole.selectedProperty&&website.googleSearchConsole.properties.length>0&&<div className="evidence-property"><select defaultValue="" onChange={event=>void chooseProperty(project.id,event.target.value)} disabled={integrationBusy!==null}><option value="" disabled>Select authorized property</option>{website.googleSearchConsole.properties.map(property=><option value={property.siteUrl} key={property.siteUrl}>{property.siteUrl}</option>)}</select></div>}<div className="evidence-actions"><button disabled={integrationBusy!==null} onClick={()=>void integration("/api/google/sync",{projectId:project.id},"sync")}>{integrationBusy==="sync"?"Queueing…":"Refresh Search Console"}</button><button disabled={integrationBusy!==null} onClick={()=>void integration("/api/crawler/run",{projectId:project.id},"crawl")}>{integrationBusy==="crawl"?"Queueing…":"Crawl website"}</button><button className="danger" disabled={integrationBusy!==null} onClick={()=>{if(window.confirm("Disconnect Search Console and remove its stored authorization?"))void integration("/api/google/disconnect",{projectId:project.id,confirm:true},"disconnect");}}>Disconnect</button></div><small className="evidence-last">Last sync: {website.googleSearchConsole.lastSyncedAt?new Date(website.googleSearchConsole.lastSyncedAt).toLocaleString():"Not yet"}</small></>}</div>{integrationMessage&&<div className="evidence-message">{integrationMessage}</div>}
       </article>})}
     </section>
     {open&&selected&&<div className="modal-backdrop" onMouseDown={()=>!busy&&setOpen(false)}><div className="modal website-modal live-dialog" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" disabled={busy} onClick={()=>setOpen(false)}>×</button><small>CONNECT {selected.domain.toUpperCase()}</small><h2>How is this website managed?</h2><p>Choose one option. Credentials are verified on the server, encrypted before storage, and never returned to the browser.</p>

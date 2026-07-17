@@ -4,7 +4,7 @@ import { env } from "@/lib/config/env";
 import { ApiError } from "@/lib/api/errors";
 
 export interface IntegrationState {
-  purpose: "github_oauth" | "github_install" | "github_bind" | "vercel_connect";
+  purpose: "github_oauth" | "github_install" | "github_bind" | "vercel_connect" | "google_search_console";
   agencyId: string;
   clientId?: string;
   projectId?: string;
@@ -43,5 +43,5 @@ export function verifyIntegrationState(value: string, purpose: IntegrationState[
 }
 
 export function integrationStatePurpose(value:string):IntegrationState["purpose"]|null{
-  try{const [encoded]=value.split("."),payload=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8")) as Partial<IntegrationState>;return ["github_oauth","github_install","github_bind","vercel_connect"].includes(String(payload.purpose))?payload.purpose??null:null;}catch{return null;}
+  try{const [encoded]=value.split("."),payload=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8")) as Partial<IntegrationState>;return ["github_oauth","github_install","github_bind","vercel_connect","google_search_console"].includes(String(payload.purpose))?payload.purpose??null:null;}catch{return null;}
 }

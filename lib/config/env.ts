@@ -14,6 +14,8 @@ const schema = z.object({
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
   VERCEL_ACCESS_TOKEN: z.string().optional(),
   VERCEL_CLIENT_ID: z.string().optional(),
   VERCEL_CLIENT_SECRET: z.string().optional(),
@@ -47,6 +49,7 @@ export const hasSupabaseAdminConfig = Boolean(hasSupabaseConfig && env.SUPABASE_
 export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD);
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
 export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
+export const hasGoogleSearchConsoleConfig = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
 export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
 
 // Stable, configured production base URL for all external callbacks.
@@ -65,4 +68,8 @@ export function githubCallbackUrl(): string {
 export const GITHUB_SETUP_PATH = "/api/github/setup";
 export function githubSetupUrl(): string {
   return new URL(GITHUB_SETUP_PATH, `${appBaseUrl()}/`).toString();
+}
+export const GOOGLE_CALLBACK_PATH = "/api/google/callback";
+export function googleCallbackUrl(): string {
+  return new URL(GOOGLE_CALLBACK_PATH, `${appBaseUrl()}/`).toString();
 }
