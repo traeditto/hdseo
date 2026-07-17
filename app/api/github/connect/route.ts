@@ -6,14 +6,14 @@ import { createIntegrationState } from "@/lib/security/signed-state";
 import { getInstallation, githubRequest, listInstallationRepositories, type GitHubInstallation } from "@/lib/github/app-client";
 import { auditEvent, requireAdminDb } from "@/lib/automation/control-plane";
 import { encryptSecret,decryptSecret } from "@/lib/security/encryption";
-import { env } from "@/lib/config/env";
+import { env, githubCallbackUrl, appBaseUrl } from "@/lib/config/env";
 import { resolveGitHubManagementContext, resolveSignedGitHubContext } from "@/lib/github/integration-context";
 import { saveRepositoryConnection } from "@/lib/github/repository-connection";
 
 const connectSchema = z.object({ agencyId:z.string().uuid(), clientId:z.string().uuid(), projectId:z.string().uuid(), installationId:z.coerce.number().int().positive(), repositoryId:z.coerce.number().int().positive() });
 
 function settingsRedirect(agencyId:string,status:"connected"|"error"="connected"){
-  const origin=env.NEXT_PUBLIC_APP_URL||process.env.HD_SEO_LIVE_ORIGIN||"https://hdseo.vercel.app",url=new URL("/portal/admin/settings/github",origin);
+  const origin=appBaseUrl(),url=new URL("/portal/admin/settings/github",origin);
   url.searchParams.set("agencyId",agencyId);url.searchParams.set("github",status);return url;
 }
 
@@ -23,7 +23,9 @@ export async function GET(request: Request) {
     if(code&&stateValue){
       const state=verifyIntegrationState(stateValue,"github_oauth"),context=await resolveSignedGitHubContext(state);
       if(!env.GITHUB_CLIENT_ID||!env.GITHUB_CLIENT_SECRET||!env.GITHUB_APP_SLUG)throw new ApiError("GitHub authorization could not be completed.",503,"NOT_CONFIGURED");
-      const exchange=await fetch("https://github.com/login/oauth/access_token",{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify({client_id:env.GITHUB_CLIENT_ID,client_secret:env.GITHUB_CLIENT_SECRET,code,redirect_uri:"https://hdseo.vercel.app/api/github/connect"}),cache:"no-store"}),tokenResult=await exchange.json() as {access_token?:string;error?:string};
+      const redirectUri=githubCallbackUrl();
+      console.info("[github] token exchange redirect_uri:",redirectUri);
+      const exchange=await fetch("https://github.com/login/oauth/access_token",{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify({client_id:env.GITHUB_CLIENT_ID,client_secret:env.GITHUB_CLIENT_SECRET,code,redirect_uri:redirectUri}),cache:"no-store"}),tokenResult=await exchange.json() as {access_token?:string;error?:string};
       if(!exchange.ok||!tokenResult.access_token)throw new ApiError(`GitHub user authorization failed${tokenResult.error?` (${tokenResult.error})`:""}.`,502,"OPERATION_FAILED");
       const githubUser=await githubRequest<{id:number;login:string}>("/user",tokenResult.access_token),db=requireAdminDb(),oauth=await db.from("integration_oauth_states").insert({agency_id:context.agency.id,user_id:context.user.id,provider:"github",provider_user_id:String(githubUser.id),encrypted_access_token:encryptSecret(tokenResult.access_token),context:{clientId:state.clientId,projectId:state.projectId,githubLogin:githubUser.login},expires_at:new Date(Date.now()+10*60*1000).toISOString()}).select("id").single();
       if(!oauth.data)throw new ApiError("GitHub authorization state could not be stored.",500,"OPERATION_FAILED");

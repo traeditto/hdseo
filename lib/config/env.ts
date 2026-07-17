@@ -28,6 +28,7 @@ const schema = z.object({
   CRON_SECRET: z.string().min(16).optional().or(z.literal("")),
   APP_ENCRYPTION_KEY: z.string().min(32).optional().or(z.literal("")),
   NEXT_PUBLIC_APP_URL: optionalUrl,
+  APP_URL: optionalUrl,
   PLATFORM_ADMIN_EMAILS: z.string().optional(),
   MAX_DAILY_DATAFORSEO_COST_USD: z.coerce.number().positive().default(25),
   MAX_KEYWORDS_PER_RUN: z.coerce.number().int().positive().max(700).default(100),
@@ -47,3 +48,17 @@ export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSE
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
 export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.GITHUB_WEBHOOK_SECRET && env.APP_ENCRYPTION_KEY);
 export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
+
+// Stable, configured production base URL for all external callbacks.
+// Never derived from request headers, VERCEL_URL, preview domains, or browser hostname.
+export const DEFAULT_APP_URL = "https://hdseo.vercel.app";
+export function appBaseUrl(): string {
+  const configured = env.APP_URL || env.NEXT_PUBLIC_APP_URL || process.env.HD_SEO_LIVE_ORIGIN || DEFAULT_APP_URL;
+  return configured.replace(/\/+$/, "");
+}
+// Canonical GitHub OAuth/App authorization + installation callback URL.
+// Must exactly match the callback URL registered in the GitHub App.
+export const GITHUB_CALLBACK_PATH = "/api/github/callback";
+export function githubCallbackUrl(): string {
+  return new URL(GITHUB_CALLBACK_PATH, `${appBaseUrl()}/`).toString();
+}
