@@ -141,19 +141,9 @@ async function ensurePlatformAdmin(
     return existing.status === "active";
   }
 
-  let shouldPromote = platformAdminEmails.has(email);
-
-  // Bootstrap: if no platform admin exists yet, the first resolved user becomes
-  // the platform owner (mirrors the original portal behavior).
-  if (!shouldPromote) {
-    const { count } = await admin
-      .from("platform_admins")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "active");
-    if ((count ?? 0) === 0) shouldPromote = true;
-  }
-
-  if (!shouldPromote) return false;
+  // Platform administration is explicit. Never promote the first person who
+  // happens to sign in to a new environment.
+  if (!platformAdminEmails.has(email)) return false;
 
   await admin
     .from("platform_admins")
@@ -189,7 +179,7 @@ async function autoLinkClientContact(
       agency_id: org.agency_id,
       client_organization_id: org.id,
       user_id: userId,
-      role: "client_owner",
+      role: "client_admin",
       status: "active",
     });
   }

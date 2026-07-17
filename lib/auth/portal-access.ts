@@ -14,7 +14,11 @@ export async function resolvePortalAccess(portal:PortalRole):Promise<PortalIdent
   }
   if(portal==="agency"){
     const result=await db.from("agency_members").select("role,agencies(name)").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle(),agency=Array.isArray(result.data?.agencies)?result.data?.agencies[0]:result.data?.agencies;
-    return result.data&&agency?{userId:user.id,email:user.email,displayName,organization:agency.name,role:result.data.role,destination:"/portal/agency"}:null;
+    if(result.data&&agency)return {userId:user.id,email:user.email,displayName,organization:agency.name,role:result.data.role,destination:"/portal/agency"};
+    // A verified account without a membership must still be able to reach the
+    // first-run workspace creator. All tenant data remains unavailable until
+    // create_agency attaches the user as the agency owner.
+    return {userId:user.id,email:user.email,displayName,organization:"New agency workspace",role:"onboarding",destination:"/portal/agency"};
   }
   const result=await db.from("client_members").select("role,client_organizations(name)").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle(),client=Array.isArray(result.data?.client_organizations)?result.data?.client_organizations[0]:result.data?.client_organizations;
   return result.data&&client?{userId:user.id,email:user.email,displayName,organization:client.name,role:result.data.role,destination:"/portal/client"}:null;

@@ -11,7 +11,11 @@ import {
 } from "@/lib/live/identity";
 import { env, hasDataForSeoConfig } from "@/lib/config/env";
 import type { TenantContext } from "@/lib/auth/context";
-import type { AgencyRole } from "@/lib/auth/permissions";
+import {
+  hasPermission,
+  permissionMatrix,
+  type AgencyRole,
+} from "@/lib/auth/permissions";
 import { dataForSeoRequest } from "@/lib/providers/dataforseo/client";
 import { providerOperations } from "@/lib/providers/dataforseo/operations";
 import {
@@ -25,6 +29,7 @@ import {
 } from "@/lib/seo/keyword-discovery";
 import { opportunityKey } from "@/lib/seo/eligibility";
 import { buildManualPackage } from "@/lib/seo/manual-package";
+import { createManualPackage } from "@/lib/manual/package-service";
 
 /**
  * The portal store used to be backed by a Cloudflare D1 database. It now reads
@@ -135,7 +140,20 @@ export type LiveEvent = {
   createdAt: string;
 };
 
-export type AgencyMembership = { agency: LiveAgency; role: string };
+export type LiveCampaignJob = {
+  id: string;
+  projectId: string;
+  status: string;
+  currentStage: string;
+  progressPercent: number;
+  errorMessage: string | null;
+  referenceId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgencyMembership = { agency: LiveAgency; role: AgencyRole };
+export type LiveClientAccess = { client: LiveClient; role: string };
 
 // ---------------------------------------------------------------------------
 // Client-visible package statuses (portal vocabulary)
@@ -143,8 +161,12 @@ export type AgencyMembership = { agency: LiveAgency; role: string };
 
 export const CLIENT_VISIBLE_PACKAGE_STATUSES = [
   "client_review",
+  "awaiting_client",
   "client_approved",
+  "revision_requested",
+  "rejected",
   "implemented",
+  "implemented_unverified",
   "verified",
 ] as const;
 
@@ -346,6 +368,21 @@ function mapEvent(
   };
 }
 
+function mapCampaignJob(row: DatabaseRow): LiveCampaignJob {
+  return {
+    id: rowText(row, "id"),
+    projectId: rowText(row, "project_id"),
+    status: rowText(row, "status"),
+    currentStage: rowText(row, "current_stage"),
+    progressPercent:
+      typeof row.progress_percent === "number" ? row.progress_percent : 0,
+    errorMessage: rowText(row, "error_message") || null,
+    referenceId: rowText(row, "reference_id"),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
 async function domainByOrgMap(
   db: SupabaseClient,
   orgIds: string[],
@@ -444,6 +481,15 @@ export async function createAgencyForUser(
     );
   }
 
+  await recordAudit(db, {
+    agencyId: agency.id,
+    actorUserId: userId,
+    action: "agency.created",
+    resourceType: "agency",
+    resourceId: agency.id,
+    afterState: { name },
+  });
+
   return agency.id as string;
 }
 
@@ -468,7 +514,7 @@ export async function agencyMembership(
     : data.agencies;
   if (!agencyRow) return null;
 
-  return { agency: mapAgency(agencyRow), role: data.role as string };
+  return { agency: mapAgency(agencyRow), role: data.role as AgencyRole };
 }
 
 export async function requireAgency(email: string): Promise<AgencyMembership> {
@@ -495,6 +541,8 @@ export async function liveAgencySnapshot(email: string) {
       tasks: [] as LiveTask[],
       packages: [] as LivePackage[],
       events: [] as LiveEvent[],
+      jobs: [] as LiveCampaignJob[],
+      permissions: [] as string[],
     };
   }
 
@@ -508,6 +556,7 @@ export async function liveAgencySnapshot(email: string) {
     tasksRes,
     packagesRes,
     eventsRes,
+    jobsRes,
   ] = await Promise.all([
     db
       .from("client_organizations")
@@ -540,6 +589,14 @@ export async function liveAgencySnapshot(email: string) {
       .eq("agency_id", agencyId)
       .order("occurred_at", { ascending: false })
       .limit(100),
+    db
+      .from("seo_campaign_jobs")
+      .select(
+        "id,project_id,status,current_stage,progress_percent,error_message,reference_id,created_at,updated_at",
+      )
+      .eq("agency_id", agencyId)
+      .order("created_at", { ascending: false })
+      .limit(50),
   ]);
 
   const clients = clientsRes.data ?? [];
@@ -561,6 +618,8 @@ export async function liveAgencySnapshot(email: string) {
     tasks: (tasksRes.data ?? []).map(mapTask),
     packages: (packagesRes.data ?? []).map(mapPackage),
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
+    jobs: (jobsRes.data ?? []).map(mapCampaignJob),
+    permissions: [...permissionMatrix[membership.role]],
   };
 }
 
@@ -569,7 +628,7 @@ export async function liveClientSnapshot(email: string) {
   const userId = await resolveUserId(db, email);
   if (!userId) {
     return {
-      clients: [] as AgencyMembership["agency"][],
+      clients: [] as LiveClientAccess[],
       projects: [] as LiveProject[],
       opportunities: [] as LiveOpportunity[],
       packages: [] as LivePackage[],
@@ -627,18 +686,13 @@ export async function liveClientSnapshot(email: string) {
     };
   }
 
-  const [opportunitiesRes, packagesRes, eventsRes] = await Promise.all([
+  const [publicationsRes, eventsRes] = await Promise.all([
     db
-      .from("seo_opportunities")
-      .select("*")
+      .from("client_portal_publications")
+      .select("source_id")
       .in("project_id", projectIds)
-      .order("opportunity_score", { ascending: false }),
-    db
-      .from("implementation_packages")
-      .select("*")
-      .in("project_id", projectIds)
-      .in("status", [...CLIENT_VISIBLE_PACKAGE_STATUSES])
-      .order("updated_at", { ascending: false }),
+      .eq("record_type", "implementation_package")
+      .is("revoked_at", null),
     db
       .from("proof_of_work_events")
       .select("*")
@@ -647,6 +701,27 @@ export async function liveClientSnapshot(email: string) {
       .order("occurred_at", { ascending: false })
       .limit(100),
   ]);
+  const publishedPackageIds = (publicationsRes.data ?? [])
+    .map((row) => row.source_id as string | null)
+    .filter(Boolean) as string[];
+  const packagesRes = publishedPackageIds.length
+    ? await db
+        .from("implementation_packages")
+        .select("*")
+        .in("id", publishedPackageIds)
+        .in("status", [...CLIENT_VISIBLE_PACKAGE_STATUSES])
+        .order("updated_at", { ascending: false })
+    : { data: [] };
+  const opportunityIds = (packagesRes.data ?? [])
+    .map((row) => row.opportunity_id as string | null)
+    .filter(Boolean) as string[];
+  const opportunitiesRes = opportunityIds.length
+    ? await db
+        .from("seo_opportunities")
+        .select("*")
+        .in("id", opportunityIds)
+        .order("opportunity_score", { ascending: false })
+    : { data: [] };
 
   const emails = await emailMap(
     db,
@@ -732,6 +807,7 @@ async function agencyContext(email: string): Promise<{
   db: SupabaseClient;
   agencyId: string;
   userId: string;
+  role: AgencyRole;
 }> {
   const db = admin();
   const membership = await requireAgency(email);
@@ -739,7 +815,20 @@ async function agencyContext(email: string): Promise<{
   if (!userId) {
     throw new ApiError("Sign in before continuing.", 403, "TENANT_DENIED");
   }
-  return { db, agencyId: membership.agency.id, userId };
+  return { db, agencyId: membership.agency.id, userId, role: membership.role };
+}
+
+function requireLivePermission(
+  role: AgencyRole,
+  ...permissions: string[]
+): void {
+  if (!permissions.some((permission) => hasPermission(role, permission))) {
+    throw new ApiError(
+      "Your agency role cannot perform this action.",
+      403,
+      "ROLE_FORBIDDEN",
+    );
+  }
 }
 
 async function recordEvent(
@@ -769,11 +858,42 @@ async function recordEvent(
   });
 }
 
+async function recordAudit(
+  db: SupabaseClient,
+  input: {
+    agencyId: string;
+    actorUserId: string;
+    action: string;
+    resourceType: string;
+    resourceId?: string;
+    afterState?: Record<string, unknown>;
+  },
+): Promise<void> {
+  const { error } = await db.from("audit_events").insert({
+    agency_id: input.agencyId,
+    actor_user_id: input.actorUserId,
+    actor_type: "user",
+    action: input.action,
+    resource_type: input.resourceType,
+    resource_id: input.resourceId ?? null,
+    after_state: input.afterState ?? null,
+    metadata: { source: "live_portal" },
+  });
+  if (error) {
+    throw new ApiError(
+      "The action completed, but its audit record could not be stored.",
+      500,
+      "OPERATION_FAILED",
+    );
+  }
+}
+
 export async function createClientWithProject(
   email: string,
   input: { name: string; domain: string; contactEmail?: string },
 ): Promise<void> {
-  const { db, agencyId, userId } = await agencyContext(email);
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "clients.manage");
   const cleanDomain = input.domain
     .replace(/^https?:\/\//, "")
     .replace(/^www\./, "")
@@ -836,7 +956,7 @@ export async function createClientWithProject(
           agency_id: agencyId,
           client_organization_id: org.id,
           user_id: contactUserId,
-          role: "client_owner",
+          role: "client_admin",
           status: "active",
         },
         { onConflict: "client_organization_id,user_id" },
@@ -855,6 +975,14 @@ export async function createClientWithProject(
     actorEmail: email,
     clientVisible: false,
   });
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: "client.created",
+    resourceType: "client_organization",
+    resourceId: org.id,
+    afterState: { projectId: project.id, domain: cleanDomain },
+  });
 }
 
 export async function createOpportunity(
@@ -868,7 +996,8 @@ export async function createOpportunity(
     reason: string;
   },
 ): Promise<void> {
-  const { db, agencyId } = await agencyContext(email);
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "seo.write");
   const { data: project } = await db
     .from("seo_projects")
     .select("id,client_organization_id")
@@ -915,6 +1044,13 @@ export async function createOpportunity(
       "OPERATION_FAILED",
     );
   }
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: "opportunity.created",
+    resourceType: "seo_opportunity",
+    afterState: { projectId: input.projectId, keyword: input.keyword },
+  });
 }
 
 export type KeywordDiscoverySummary = {
@@ -922,6 +1058,8 @@ export type KeywordDiscoverySummary = {
   selected: number;
   providerCost: number;
   monthlyBudget: number;
+  jobId: string | null;
+  jobStatus: string | null;
 };
 
 export async function discoverKeywordOpportunities(
@@ -941,7 +1079,8 @@ export async function discoverKeywordOpportunities(
     );
   }
 
-  const { db, agencyId, userId } = await agencyContext(email);
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "provider.authorize");
   const membership = await requireAgency(email);
   const { data: project } = await db
     .from("seo_projects")
@@ -1017,7 +1156,7 @@ export async function discoverKeywordOpportunities(
       name: clientRow?.name ?? project.name,
     },
     project: { id: project.id, name: project.name, domain: project.domain },
-    role: membership.role as AgencyRole,
+    role: membership.role,
   };
 
   let paid: Awaited<ReturnType<typeof beginPaidOperation>> | null = null;
@@ -1229,17 +1368,77 @@ export async function discoverKeywordOpportunities(
       updated_at: nowIso(),
     };
     const campaignWrite = campaign
-      ? await db.from("seo_campaigns").update(campaignValues).eq("id", campaign.id)
-      : await db.from("seo_campaigns").insert({
-          ...campaignValues,
+      ? await db
+          .from("seo_campaigns")
+          .update(campaignValues)
+          .eq("id", campaign.id)
+          .select("id")
+          .single()
+      : await db
+          .from("seo_campaigns")
+          .insert({
+            ...campaignValues,
+            agency_id: agencyId,
+            client_organization_id: project.client_organization_id,
+            project_id: project.id,
+            name: `${project.name} SEO Value Plan`,
+            reserve_budget: 0,
+            created_by: userId,
+          })
+          .select("id")
+          .single();
+    if (campaignWrite.error || !campaignWrite.data) {
+      throw campaignWrite.error ?? new Error("Campaign could not be saved.");
+    }
+
+    let { data: activeJob } = await db
+      .from("seo_campaign_jobs")
+      .select("id,status")
+      .eq("project_id", project.id)
+      .not("status", "in", "(completed,failed,cancelled,stale)")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!activeJob && candidates.length) {
+      const referenceId = crypto.randomUUID();
+      const queued = await db
+        .from("seo_campaign_jobs")
+        .insert({
           agency_id: agencyId,
           client_organization_id: project.client_organization_id,
           project_id: project.id,
-          name: `${project.name} SEO Value Plan`,
-          reserve_budget: 0,
-          created_by: userId,
-        });
-    if (campaignWrite.error) throw campaignWrite.error;
+          campaign_id: campaignWrite.data.id,
+          requested_by: userId,
+          status: "queued",
+          current_stage: "discover",
+          input: {
+            automationMode: "PREPARE",
+            minimumConfidence: 55,
+            monthlyBudget: input.monthlyBudget,
+            targetMarket: input.targetMarket,
+            discoveryLimit: limit,
+            automaticDiscoveryCompleted: true,
+          },
+          idempotency_key: `live-discovery:${project.id}:${referenceId}`,
+          reference_id: referenceId,
+        })
+        .select("id,status")
+        .single();
+      if (queued.error && queued.error.code !== "23505") throw queued.error;
+      activeJob = queued.data ?? null;
+      if (!activeJob) {
+        activeJob = (
+          await db
+            .from("seo_campaign_jobs")
+            .select("id,status")
+            .eq("project_id", project.id)
+            .not("status", "in", "(completed,failed,cancelled,stale)")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+        ).data;
+      }
+    }
 
     await db
       .from("seo_projects")
@@ -1266,11 +1465,27 @@ export async function discoverKeywordOpportunities(
       status: "completed",
     });
     paid = null;
+    await recordAudit(db, {
+      agencyId,
+      actorUserId: userId,
+      action: "keyword_discovery.completed",
+      resourceType: "seo_project",
+      resourceId: project.id,
+      afterState: {
+        analyzed,
+        selected: candidates.length,
+        providerCost,
+        monthlyBudget: input.monthlyBudget,
+        jobId: activeJob?.id ?? null,
+      },
+    });
     return {
       analyzed,
       selected: candidates.length,
       providerCost,
       monthlyBudget: input.monthlyBudget,
+      jobId: activeJob?.id ?? null,
+      jobStatus: activeJob?.status ?? null,
     };
   } catch (error) {
     if (paid) {
@@ -1294,7 +1509,8 @@ export async function createPackage(
   email: string,
   input: { opportunityId: string; implementationPath: string },
 ): Promise<void> {
-  const { db, agencyId, userId } = await agencyContext(email);
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "seo.write");
   const { data: opp } = await db
     .from("seo_opportunities")
     .select("*")
@@ -1344,7 +1560,7 @@ export async function createPackage(
       opportunity_id: input.opportunityId,
       implementation_path: path,
       version,
-      status: "agency_review",
+      status: "awaiting_agency_review",
       package_data: { ...packageData, title: `${keyword} implementation` },
       created_by: userId,
     })
@@ -1386,13 +1602,22 @@ export async function createPackage(
     actorEmail: email,
     clientVisible: false,
   });
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: "implementation_package.created",
+    resourceType: "implementation_package",
+    resourceId: pkg.id,
+    afterState: { opportunityId: input.opportunityId, path },
+  });
 }
 
 export async function updateTaskStatus(
   email: string,
   input: { taskId: string; status: string },
 ): Promise<void> {
-  const { db, agencyId } = await agencyContext(email);
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "task.manage", "task.update");
   const { data, error } = await db
     .from("seo_tasks")
     .update({ status: input.status, updated_at: nowIso() })
@@ -1409,14 +1634,233 @@ export async function updateTaskStatus(
   if (!data || !data.length) {
     throw new ApiError("Task not found.", 404, "NOT_FOUND");
   }
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: "seo_task.status_updated",
+    resourceType: "seo_task",
+    resourceId: input.taskId,
+    afterState: { status: input.status },
+  });
+}
+
+export async function controlCampaignJob(
+  email: string,
+  input: { jobId: string; command: "cancel" | "retry" },
+): Promise<void> {
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "execution.approve");
+  const { data: job } = await db
+    .from("seo_campaign_jobs")
+    .select("id,status,attempt_count,max_attempts")
+    .eq("id", input.jobId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!job) throw new ApiError("Automation run not found.", 404, "NOT_FOUND");
+
+  if (input.command === "cancel") {
+    if (["completed", "failed", "cancelled", "stale"].includes(job.status)) {
+      throw new ApiError("This automation run is already finished.", 409, "CONFLICT");
+    }
+    await db
+      .from("seo_campaign_jobs")
+      .update({
+        status: "cancelled",
+        worker_id: null,
+        locked_at: null,
+        lock_expires_at: null,
+        updated_at: nowIso(),
+      })
+      .eq("id", input.jobId)
+      .eq("agency_id", agencyId);
+  } else {
+    if (
+      !["failed", "stale"].includes(job.status) ||
+      job.attempt_count >= job.max_attempts
+    ) {
+      throw new ApiError(
+        "This automation run cannot be retried safely.",
+        409,
+        "CONFLICT",
+      );
+    }
+    await db
+      .from("seo_campaign_jobs")
+      .update({
+        status: "queued",
+        error_code: null,
+        error_message: null,
+        error_details: {},
+        worker_id: null,
+        locked_at: null,
+        lock_expires_at: null,
+        next_attempt_at: nowIso(),
+        failed_at: null,
+        updated_at: nowIso(),
+      })
+      .eq("id", input.jobId)
+      .eq("agency_id", agencyId);
+  }
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: `automation_run.${input.command}`,
+    resourceType: "seo_campaign_job",
+    resourceId: input.jobId,
+    afterState: { status: input.command === "cancel" ? "cancelled" : "queued" },
+  });
+}
+
+export async function reviewCampaignJob(
+  email: string,
+  input: { jobId: string; decision: "proceed" | "dismiss" },
+): Promise<void> {
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "draft.approve");
+  const { data: job } = await db
+    .from("seo_campaign_jobs")
+    .select("id,status,project_id,client_organization_id,result")
+    .eq("id", input.jobId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!job) throw new ApiError("Automation run not found.", 404, "NOT_FOUND");
+  if (job.status !== "awaiting_opportunity_review") {
+    throw new ApiError(
+      "This automation run is not awaiting a recommendation decision.",
+      409,
+      "CONFLICT",
+    );
+  }
+  const result = asRecord(job.result);
+  const opportunityId =
+    typeof result.opportunityId === "string" ? result.opportunityId : null;
+  const draftId = typeof result.draftId === "string" ? result.draftId : null;
+  if (!opportunityId || !draftId) {
+    throw new ApiError(
+      "The selected recommendation is unavailable.",
+      409,
+      "CONFLICT",
+    );
+  }
+
+  if (input.decision === "dismiss") {
+    await Promise.all([
+      db
+        .from("seo_campaign_jobs")
+        .update({ status: "cancelled", updated_at: nowIso() })
+        .eq("id", input.jobId)
+        .eq("status", "awaiting_opportunity_review"),
+      db
+        .from("seo_opportunities")
+        .update({ status: "dismissed", updated_at: nowIso() })
+        .eq("id", opportunityId)
+        .eq("agency_id", agencyId),
+    ]);
+  } else {
+    const { data: draft } = await db
+      .from("seo_action_drafts")
+      .select("execution_path")
+      .eq("id", draftId)
+      .eq("project_id", job.project_id)
+      .maybeSingle();
+    if (!draft) {
+      throw new ApiError("The implementation draft is unavailable.", 409, "CONFLICT");
+    }
+    if (draft.execution_path === "repository") {
+      requireLivePermission(role, "execution.approve");
+      const readiness = await db.rpc("github_execution_readiness", {
+        target_agency: agencyId,
+        target_project: job.project_id,
+      });
+      if (!readiness.data?.ready) {
+        throw new ApiError(
+          `Repository execution is blocked: ${(readiness.data?.blockers ?? []).join(", ")}.`,
+          409,
+          "CONFLICT",
+        );
+      }
+      await db
+        .from("seo_campaign_jobs")
+        .update({
+          status: "queued",
+          current_stage: "inspect_repository",
+          next_attempt_at: nowIso(),
+          updated_at: nowIso(),
+        })
+        .eq("id", input.jobId)
+        .eq("status", "awaiting_opportunity_review");
+      await db
+        .from("seo_opportunities")
+        .update({ status: "approved", updated_at: nowIso() })
+        .eq("id", opportunityId)
+        .eq("agency_id", agencyId);
+    } else {
+      const created = await createManualPackage(db, {
+        agencyId,
+        clientId: job.client_organization_id,
+        projectId: job.project_id,
+        opportunityId,
+        draftId,
+        createdBy: userId,
+        requestedPath: draft.execution_path,
+      });
+      await Promise.all([
+        db
+          .from("seo_campaign_jobs")
+          .update({
+            status: "awaiting_manual_completion",
+            progress_percent: 75,
+            result: {
+              ...result,
+              packageId: created.id,
+              taskId: created.taskId,
+            },
+            updated_at: nowIso(),
+          })
+          .eq("id", input.jobId)
+          .eq("status", "awaiting_opportunity_review"),
+        db
+          .from("seo_opportunities")
+          .update({ status: "in_progress", updated_at: nowIso() })
+          .eq("id", opportunityId)
+          .eq("agency_id", agencyId),
+      ]);
+    }
+  }
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: `automation_run.recommendation_${input.decision}`,
+    resourceType: "seo_campaign_job",
+    resourceId: input.jobId,
+    afterState: { opportunityId },
+  });
 }
 
 export async function advancePackage(
   email: string,
   packageId: string,
-  action: "publish_package" | "mark_implemented" | "verify_package",
+  action:
+    | "approve_package"
+    | "publish_package"
+    | "mark_implemented"
+    | "verify_package",
+  details: {
+    liveUrl?: string;
+    proof?: Record<string, unknown>;
+    checks?: Record<string, boolean>;
+  } = {},
 ): Promise<void> {
-  const { db, agencyId, userId } = await agencyContext(email);
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  if (action === "approve_package") {
+    requireLivePermission(role, "draft.approve");
+  } else if (action === "publish_package") {
+    requireLivePermission(role, "client_portal.manage");
+  } else if (action === "mark_implemented") {
+    requireLivePermission(role, "seo.write", "execution.edit");
+  } else {
+    requireLivePermission(role, "execution.approve");
+  }
   const { data: pkg } = await db
     .from("implementation_packages")
     .select("*")
@@ -1427,23 +1871,205 @@ export async function advancePackage(
     throw new ApiError("Implementation package not found.", 404, "NOT_FOUND");
   }
 
-  const status =
-    action === "publish_package"
-      ? "client_review"
-      : action === "mark_implemented"
-        ? "implemented"
-        : "verified";
+  const expectedStatuses = {
+    approve_package: ["agency_review", "awaiting_agency_review"],
+    publish_package: ["approved"],
+    mark_implemented: ["client_approved"],
+    verify_package: ["implemented", "implemented_unverified"],
+  }[action];
+  if (!expectedStatuses.includes(pkg.status)) {
+    throw new ApiError(
+      `This package cannot move from ${pkg.status} using ${action.replaceAll("_", " ")}.`,
+      409,
+      "CONFLICT",
+    );
+  }
+
+  const status = {
+    approve_package: "approved",
+    publish_package: "awaiting_client",
+    mark_implemented: "implemented_unverified",
+    verify_package: "verified",
+  }[action];
   const title =
-    action === "publish_package"
+    action === "approve_package"
+      ? "Agency approval completed"
+      : action === "publish_package"
       ? "Client approval requested"
       : action === "mark_implemented"
         ? "Implementation reported"
         : "Implementation verified";
 
-  const patch: Record<string, unknown> = { status, updated_at: nowIso() };
-  if (action === "mark_implemented") patch.implemented_at = nowIso();
+  if (action === "mark_implemented") {
+    if (!details.liveUrl) {
+      throw new ApiError(
+        "A live implementation URL is required before verification.",
+        400,
+        "VALIDATION_ERROR",
+      );
+    }
+    const verification = await db.from("implementation_verifications").upsert(
+      {
+        agency_id: agencyId,
+        client_organization_id: pkg.client_organization_id,
+        project_id: pkg.project_id,
+        package_id: packageId,
+        live_url: details.liveUrl,
+        status: "pending",
+        proof: details.proof ?? {},
+      },
+      { onConflict: "package_id" },
+    );
+    if (verification.error) {
+      throw new ApiError(
+        "Implementation proof could not be stored.",
+        500,
+        "OPERATION_FAILED",
+      );
+    }
+  }
 
-  await db.from("implementation_packages").update(patch).eq("id", packageId);
+  if (action === "verify_package") {
+    if (
+      !details.checks ||
+      !Object.values(details.checks).length ||
+      Object.values(details.checks).some((value) => !value)
+    ) {
+      throw new ApiError(
+        "Every required live verification check must pass.",
+        409,
+        "CONFLICT",
+      );
+    }
+    const verification = await db
+      .from("implementation_verifications")
+      .update({
+        status: "passed",
+        checks: details.checks,
+        proof: details.proof ?? {},
+        verified_by: userId,
+        verified_at: nowIso(),
+        updated_at: nowIso(),
+      })
+      .eq("package_id", packageId)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (!verification.data) {
+      throw new ApiError(
+        "Record implementation proof before verification.",
+        409,
+        "CONFLICT",
+      );
+    }
+    const plan = await db.rpc("create_manual_monitoring_plan", {
+      p_package_id: packageId,
+      p_verified_by: userId,
+    });
+    if (plan.error) {
+      await db
+        .from("implementation_verifications")
+        .update({ status: "pending", verified_by: null, verified_at: null })
+        .eq("package_id", packageId)
+        .eq("status", "passed");
+      throw new ApiError(
+        "Monitoring checkpoints could not be scheduled.",
+        500,
+        "OPERATION_FAILED",
+      );
+    }
+  } else {
+    const packagePatch: Record<string, unknown> = {
+      status,
+      updated_at: nowIso(),
+    };
+    if (action === "approve_package") {
+      packagePatch.approved_by = userId;
+      packagePatch.approved_at = nowIso();
+    }
+    if (action === "mark_implemented") packagePatch.implemented_at = nowIso();
+    const updated = await db
+      .from("implementation_packages")
+      .update(packagePatch)
+      .eq("id", packageId)
+      .in("status", expectedStatuses)
+      .select("id")
+      .maybeSingle();
+    if (!updated.data) {
+      throw new ApiError(
+        "The package changed while this action was being processed.",
+        409,
+        "CONFLICT",
+      );
+    }
+  }
+
+  if (action === "publish_package") {
+    const packageData = asRecord(pkg.package_data);
+    const publication = await db.from("client_portal_publications").upsert(
+      {
+        agency_id: agencyId,
+        client_organization_id: pkg.client_organization_id,
+        project_id: pkg.project_id,
+        record_type: "implementation_package",
+        source_id: packageId,
+        title: (packageData.title as string) || "SEO implementation approval",
+        summary:
+          "Review the proposed SEO implementation, its evidence, and acceptance checks.",
+        status: "awaiting_client",
+        payload: {
+          implementationPath: pkg.implementation_path,
+          metadata: packageData.metadata ?? {},
+          acceptanceCriteria: packageData.acceptanceCriteria ?? [],
+          verificationChecklist: packageData.verificationChecklist ?? [],
+        },
+        published_by: userId,
+        published_at: nowIso(),
+        revoked_at: null,
+      },
+      { onConflict: "project_id,record_type,source_id" },
+    );
+    if (publication.error) {
+      await db
+        .from("implementation_packages")
+        .update({ status: "approved", updated_at: nowIso() })
+        .eq("id", packageId)
+        .eq("status", status);
+      throw new ApiError(
+        "The package could not be published to the client portal.",
+        500,
+        "OPERATION_FAILED",
+      );
+    }
+  } else if (action !== "approve_package") {
+    await db
+      .from("client_portal_publications")
+      .update({ status })
+      .eq("project_id", pkg.project_id)
+      .eq("record_type", "implementation_package")
+      .eq("source_id", packageId)
+      .is("revoked_at", null);
+  }
+
+  if (action === "verify_package") {
+    await db
+      .from("seo_campaign_jobs")
+      .update({
+        status: "completed",
+        progress_percent: 100,
+        completed_at: nowIso(),
+        updated_at: nowIso(),
+      })
+      .eq("agency_id", agencyId)
+      .eq("project_id", pkg.project_id)
+      .eq("status", "awaiting_manual_completion")
+      .contains("result", { packageId });
+    await db
+      .from("seo_opportunities")
+      .update({ status: "monitoring", updated_at: nowIso() })
+      .eq("id", pkg.opportunity_id)
+      .eq("agency_id", agencyId);
+  }
 
   await recordEvent(db, {
     agencyId,
@@ -1453,11 +2079,19 @@ export async function advancePackage(
     title,
     description:
       action === "verify_package"
-        ? "Verification recorded. Monitoring checkpoints are now eligible."
+        ? "Verification passed and 7/14/30/60/90-day monitoring was scheduled."
         : "Workflow status updated.",
     actorUserId: userId,
     actorEmail: email,
     clientVisible: true,
+  });
+  await recordAudit(db, {
+    agencyId,
+    actorUserId: userId,
+    action: `implementation_package.${action}`,
+    resourceType: "implementation_package",
+    resourceId: packageId,
+    afterState: { status },
   });
 }
 
@@ -1482,7 +2116,7 @@ export async function recordClientPackageDecision(
 
   const { data: member } = await db
     .from("client_members")
-    .select("id")
+    .select("id,role")
     .eq("user_id", userId)
     .eq("client_organization_id", pkg.client_organization_id)
     .eq("status", "active")
@@ -1490,11 +2124,54 @@ export async function recordClientPackageDecision(
   if (!member) {
     throw new ApiError("Client approval access denied.", 403, "TENANT_DENIED");
   }
+  if (!["client_admin", "client_approver"].includes(member.role)) {
+    throw new ApiError(
+      "This client role cannot make approval decisions.",
+      403,
+      "ROLE_FORBIDDEN",
+    );
+  }
+  if (!["client_review", "awaiting_client"].includes(pkg.status)) {
+    throw new ApiError(
+      "This approval request has already been decided.",
+      409,
+      "CONFLICT",
+    );
+  }
 
-  await db
+  const { data: publication } = await db
+    .from("client_portal_publications")
+    .select("id,status")
+    .eq("agency_id", pkg.agency_id)
+    .eq("client_organization_id", pkg.client_organization_id)
+    .eq("project_id", pkg.project_id)
+    .eq("record_type", "implementation_package")
+    .eq("source_id", input.packageId)
+    .is("revoked_at", null)
+    .maybeSingle();
+  if (!publication || publication.status !== "awaiting_client") {
+    throw new ApiError(
+      "The published approval request was not found or was already decided.",
+      409,
+      "CONFLICT",
+    );
+  }
+
+  const packageUpdate = await db
     .from("implementation_packages")
     .update({ status: input.decision, updated_at: nowIso() })
-    .eq("id", input.packageId);
+    .eq("id", input.packageId)
+    .in("status", ["client_review", "awaiting_client"])
+    .select("id")
+    .maybeSingle();
+  if (!packageUpdate.data) {
+    throw new ApiError("This approval was already processed.", 409, "CONFLICT");
+  }
+  await db
+    .from("client_portal_publications")
+    .update({ status: input.decision })
+    .eq("id", publication.id)
+    .eq("status", "awaiting_client");
 
   await recordEvent(db, {
     agencyId: pkg.agency_id,
@@ -1506,5 +2183,13 @@ export async function recordClientPackageDecision(
     actorUserId: userId,
     actorEmail: email,
     clientVisible: true,
+  });
+  await recordAudit(db, {
+    agencyId: pkg.agency_id,
+    actorUserId: userId,
+    action: "implementation_package.client_decision",
+    resourceType: "implementation_package",
+    resourceId: input.packageId,
+    afterState: { decision: input.decision, clientRole: member.role },
   });
 }

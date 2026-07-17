@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { parseJson } from "@/lib/api/request";
 import { ApiError, jsonError } from "@/lib/api/errors";
+import { enforceRateLimit } from "@/lib/automation/control-plane";
 import {
   advancePackage,
   agencyMembership,
@@ -11,11 +13,13 @@ import {
   createClientWithProject,
   createOpportunity,
   createPackage,
+  controlCampaignJob,
   discoverKeywordOpportunities,
   liveAdminSnapshot,
   liveAgencySnapshot,
   liveClientSnapshot,
   recordClientPackageDecision,
+  reviewCampaignJob,
   updateTaskStatus,
   upsertLiveUser,
 } from "@/lib/live/store";
@@ -66,6 +70,10 @@ const schema = z.discriminatedUnion("action", [
     ]),
   }),
   z.object({
+    action: z.literal("approve_package"),
+    packageId: z.string().uuid(),
+  }),
+  z.object({
     action: z.literal("publish_package"),
     packageId: z.string().uuid(),
   }),
@@ -88,10 +96,31 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("mark_implemented"),
     packageId: z.string().uuid(),
+    liveUrl: z.string().url(),
+    proof: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
     action: z.literal("verify_package"),
     packageId: z.string().uuid(),
+    checks: z.object({
+      pageResolves: z.literal(true),
+      contentPresent: z.literal(true),
+      metadataCorrect: z.literal(true),
+      schemaValid: z.literal(true),
+      internalLinksPresent: z.literal(true),
+      noIndexingRegression: z.literal(true),
+    }),
+    proof: z.record(z.string(), z.unknown()).optional(),
+  }),
+  z.object({
+    action: z.literal("control_job"),
+    jobId: z.string().uuid(),
+    command: z.enum(["cancel", "retry"]),
+  }),
+  z.object({
+    action: z.literal("review_job"),
+    jobId: z.string().uuid(),
+    decision: z.enum(["proceed", "dismiss"]),
   }),
 ]);
 
@@ -144,6 +173,15 @@ export async function POST(request: Request) {
   try {
     const user = await identity();
     const input = await parseJson(request, schema);
+    const actorScope = `live:${createHash("sha256").update(user.email).digest("hex")}`;
+    await enforceRateLimit(actorScope, "mutation", 120, 60);
+    if (input.action === "discover_keywords") {
+      await enforceRateLimit(actorScope, "paid_keyword_discovery", 6, 3600);
+    } else if (input.action === "create_agency") {
+      await enforceRateLimit(actorScope, "agency_creation", 3, 86400);
+    } else if (input.action === "package_decision") {
+      await enforceRateLimit(actorScope, "client_decision", 30, 3600);
+    }
 
     if (input.action === "create_agency") {
       if (await agencyMembership(user.email)) {
@@ -194,7 +232,7 @@ export async function POST(request: Request) {
         return Response.json({
           ok: true,
           data: await liveAgencySnapshot(user.email),
-          message: `${summary.selected} best-value keyword opportunities found from ${summary.analyzed} site-relevant records. Provider cost: $${summary.providerCost.toFixed(2)}.`,
+          message: `${summary.selected} best-value keyword opportunities found from ${summary.analyzed} site-relevant records. Provider cost: $${summary.providerCost.toFixed(2)}.${summary.jobId ? " The autonomous planning run is now queued." : ""}`,
           summary,
         });
       }
@@ -210,10 +248,27 @@ export async function POST(request: Request) {
           status: input.status,
         });
         break;
+      case "control_job":
+        await controlCampaignJob(user.email, {
+          jobId: input.jobId,
+          command: input.command,
+        });
+        break;
+      case "review_job":
+        await reviewCampaignJob(user.email, {
+          jobId: input.jobId,
+          decision: input.decision,
+        });
+        break;
+      case "approve_package":
       case "publish_package":
       case "mark_implemented":
       case "verify_package":
-        await advancePackage(user.email, input.packageId, input.action);
+        await advancePackage(user.email, input.packageId, input.action, {
+          liveUrl: "liveUrl" in input ? input.liveUrl : undefined,
+          proof: "proof" in input ? input.proof : undefined,
+          checks: "checks" in input ? input.checks : undefined,
+        });
         break;
     }
 
