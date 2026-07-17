@@ -35,6 +35,8 @@ describe("website connections",()=>{
     for(const label of ["WordPress","Shopify","Webflow","GitHub + Vercel","Another website platform","Monitoring only","HD SEO managed migration"])expect(ui).toContain(label);
     expect(ui).toContain("Application Password");
     expect(ui).toContain("connect_website");
+    expect(ui).toContain("Reload authorized properties");
+    expect(ui).toContain('method:"PUT"');
     expect(dashboard).toContain('"Websites"');
     expect(dashboard).toContain("WebsiteConnections");
   });
