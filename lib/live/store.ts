@@ -80,6 +80,21 @@ export type LiveProject = {
   createdAt: string;
 };
 
+export type LiveWebsite = {
+  id: string;
+  projectId: string;
+  name: string;
+  siteUrl: string;
+  canonicalDomain: string;
+  cmsType: string;
+  status: string;
+  lastVerifiedAt: string | null;
+  connectionId: string | null;
+  connectionMode: string | null;
+  connectionStatus: string | null;
+  editorMode: string | null;
+};
+
 export type LiveOpportunity = {
   id: string;
   agencyId: string;
@@ -227,6 +242,8 @@ type DatabaseRow = Record<string, unknown>;
 
 const rowText = (row: DatabaseRow, key: string, fallback = "") =>
   typeof row[key] === "string" ? (row[key] as string) : fallback;
+const rowNullableText = (row: DatabaseRow, key: string) =>
+  typeof row[key] === "string" ? (row[key] as string) : null;
 
 function mapAgency(row: DatabaseRow): LiveAgency {
   return {
@@ -537,6 +554,7 @@ export async function liveAgencySnapshot(email: string) {
       role: null,
       clients: [] as LiveClient[],
       projects: [] as LiveProject[],
+      websites: [] as LiveWebsite[],
       opportunities: [] as LiveOpportunity[],
       tasks: [] as LiveTask[],
       packages: [] as LivePackage[],
@@ -557,6 +575,8 @@ export async function liveAgencySnapshot(email: string) {
     packagesRes,
     eventsRes,
     jobsRes,
+    websitesRes,
+    connectionsRes,
   ] = await Promise.all([
     db
       .from("client_organizations")
@@ -597,6 +617,16 @@ export async function liveAgencySnapshot(email: string) {
       .eq("agency_id", agencyId)
       .order("created_at", { ascending: false })
       .limit(50),
+    db
+      .from("websites")
+      .select("id,project_id,name,site_url,canonical_domain,cms_type,status,last_verified_at,created_at")
+      .eq("agency_id", agencyId)
+      .order("created_at", { ascending: false }),
+    db
+      .from("cms_connections")
+      .select("id,website_id,editor_mode,connection_mode,status,last_verified_at,updated_at")
+      .eq("agency_id", agencyId)
+      .order("updated_at", { ascending: false }),
   ]);
 
   const clients = clientsRes.data ?? [];
@@ -608,12 +638,35 @@ export async function liveAgencySnapshot(email: string) {
     db,
     (eventsRes.data ?? []).map((row) => row.actor_user_id),
   );
+  const connectionByWebsite = new Map<string, DatabaseRow>();
+  for (const row of connectionsRes.data ?? []) {
+    if (!connectionByWebsite.has(rowText(row, "website_id"))) {
+      connectionByWebsite.set(rowText(row, "website_id"), row);
+    }
+  }
 
   return {
     agency: membership.agency,
     role: membership.role,
     clients: clients.map((row) => mapClient(row, domainByOrg)),
     projects: (projectsRes.data ?? []).map(mapProject),
+    websites: (websitesRes.data ?? []).map((row) => {
+      const connection = connectionByWebsite.get(rowText(row, "id"));
+      return {
+        id: rowText(row, "id"),
+        projectId: rowText(row, "project_id"),
+        name: rowText(row, "name"),
+        siteUrl: rowText(row, "site_url"),
+        canonicalDomain: rowText(row, "canonical_domain"),
+        cmsType: rowText(row, "cms_type", "unknown"),
+        status: rowText(row, "status", "connection_required"),
+        lastVerifiedAt: rowNullableText(row, "last_verified_at"),
+        connectionId: connection ? rowText(connection, "id") : null,
+        connectionMode: connection ? rowNullableText(connection, "connection_mode") : null,
+        connectionStatus: connection ? rowNullableText(connection, "status") : null,
+        editorMode: connection ? rowNullableText(connection, "editor_mode") : null,
+      } satisfies LiveWebsite;
+    }),
     opportunities: (opportunitiesRes.data ?? []).map(mapOpportunity),
     tasks: (tasksRes.data ?? []).map(mapTask),
     packages: (packagesRes.data ?? []).map(mapPackage),
@@ -944,6 +997,25 @@ export async function createClientWithProject(
       `Unable to create project: ${projectError?.message ?? "unknown error"}`,
       500,
       "OPERATION_FAILED",
+    );
+  }
+
+  const { error: websiteError } = await db.from("websites").insert({
+    agency_id: agencyId,
+    client_organization_id: org.id,
+    project_id: project.id,
+    name: input.name,
+    site_url: `https://${cleanDomain}`,
+    canonical_domain: cleanDomain,
+    cms_type: "unknown",
+    is_primary: true,
+    status: "connection_required",
+  });
+  if (websiteError) {
+    throw new ApiError(
+      `The client was created, but its website onboarding record could not be saved: ${websiteError.message}`,
+      500,
+      "DATABASE_BINDING_FAILED",
     );
   }
 

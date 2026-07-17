@@ -7,6 +7,7 @@ import { getInstallation, listAppInstallations, listInstallationRepositories } f
 import type { GitHubManagementContext } from "@/lib/github/integration-context";
 import { saveRepositoryConnection } from "@/lib/github/repository-connection";
 import { selectRepositoryForProject } from "@/lib/github/repository-selection";
+import { upsertGitHubWebsite } from "@/lib/websites/connections";
 
 function databaseBindingError(message:string,error:unknown,context:GitHubManagementContext,stage:string):never{
   const apiError=new ApiError(message,500,"DATABASE_BINDING_FAILED");
@@ -55,7 +56,11 @@ export async function bindGitHubInstallation(input:{context:GitHubManagementCont
       : selectRepositoryForProject(repositories,{clientName:context.client.name,projectName:context.project.name,domain:context.project.domain});
     if(currentRepositoryId&&!selected)throw new ApiError("The repository previously assigned to this project is not authorized for this GitHub installation.",409,"REPOSITORY_NOT_AUTHORIZED");
     if(!repositories.length)throw new ApiError("The GitHub installation does not grant access to a repository for this project.",409,"REPOSITORY_NOT_AUTHORIZED");
-    if(selected){await saveRepositoryConnection(context,{installationRecordId:saved.data.id,installationId:installation.id,repository:selected});repositorySaved=true;}
+    if(selected){
+      await saveRepositoryConnection(context,{installationRecordId:saved.data.id,installationId:installation.id,repository:selected});
+      await upsertGitHubWebsite({db:context.db,agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,projectName:context.client.name,domain:context.project.domain});
+      repositorySaved=true;
+    }
   }
   try{await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"github.installation.bound",resourceType:"github_installation",resourceId:String(installation.id),request:input.request,afterState:{setupAction:input.setupAction,accountLogin:installation.account.login,repositoryCount:repositories.length,repositorySaved,projectId:context.project?.id??null}});}catch(error){databaseBindingError("GitHub installation audit record could not be saved.",error,context,"audit.insert");}
   const result={installationId:installation.id,accountLogin:installation.account.login,repositories:repositories.map(repo=>repo.full_name),installationSaved:true,repositorySaved};
