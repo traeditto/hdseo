@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { DeploymentSetupWizard } from "@/app/ui/deployment-setup-wizard";
 
 type Project = { id:string; clientId:string; name:string; domain:string };
 type SearchConsoleProperty = {siteUrl:string;permissionLevel?:string};
@@ -24,13 +25,14 @@ const methods:Array<{mode:Mode;title:string;description:string;icon:string}>=[
 
 function human(value:string|null|undefined){return (value||"not connected").replaceAll("_"," ");}
 
-export function WebsiteConnections({agencyId,projects,websites,canManage,busy,onAction}:{agencyId:string;projects:Project[];websites:Website[];canManage:boolean;busy:boolean;onAction:(body:Record<string,unknown>)=>Promise<boolean>}){
+export function WebsiteConnections({agencyId,projects,websites,canManage,busy,onAction,onOpenPackages}:{agencyId:string;projects:Project[];websites:Website[];canManage:boolean;busy:boolean;onAction:(body:Record<string,unknown>)=>Promise<boolean>;onOpenPackages:()=>void}){
   const [projectId,setProjectId]=useState(projects[0]?.id??"");
   const [open,setOpen]=useState(false);
   const [mode,setMode]=useState<Mode>("wordpress");
   const [integrationBusy,setIntegrationBusy]=useState<string|null>(null);
   const [integrationMessage,setIntegrationMessage]=useState("");
   const [propertyOptions,setPropertyOptions]=useState<Record<string,SearchConsoleProperty[]>>({});
+  const [setupProject,setSetupProject]=useState<Project|null>(null);
   const selected=projects.find(project=>project.id===projectId)??projects[0];
   const websiteByProject=useMemo(()=>new Map(websites.map(website=>[website.projectId,website])),[websites]);
   function begin(nextProjectId:string){setProjectId(nextProjectId);setMode("wordpress");setOpen(true);}
@@ -55,18 +57,18 @@ export function WebsiteConnections({agencyId,projects,websites,canManage,busy,on
   if(!projects.length)return <section className="live-section"><div className="live-empty"><strong>Add a client before connecting a website</strong><p>Every website connection belongs to a client SEO project.</p></div></section>;
   return <>
     <div className="live-heading website-heading"><div><small>CLIENT WEBSITE ACCESS</small><h1>Website connections</h1><p>Connect each client using the method that matches how their site is managed. GitHub is optional.</p></div>{canManage&&<button onClick={()=>begin(projects[0].id)}>＋ Connect website</button>}</div>
-    {canManage&&<section className="website-evidence"><header><div><small>AGENCY DEPLOYMENT ACCESS</small><strong>Vercel team connection</strong></div></header><p>Bind this agency to the server-configured Vercel team for project creation, deployment monitoring, and guarded rollback. The platform token never enters the browser.</p><div className="evidence-actions"><button disabled={integrationBusy!==null} onClick={()=>void integration("/api/vercel/connect",{agencyId,usePlatformToken:true},"vercel")}>{integrationBusy==="vercel"?"Verifying…":"Connect agency Vercel"}</button></div>{integrationMessage&&<div className="evidence-message">{integrationMessage}</div>}</section>}
+    {canManage&&<section className="website-evidence deployment-launcher"><header><div><small>DEPLOYMENT AUTOMATION</small><strong>GitHub + Vercel guided setup</strong></div></header><p>Connect the repository, map or create its Vercel project, satisfy the first-change safety check, and activate guarded deployments from one guided workflow.</p><div className="evidence-actions"><button onClick={()=>setSetupProject(projects[0])}>Set up GitHub + Vercel</button></div></section>}
     <section className="website-grid">
       {projects.map(project=>{const website=websiteByProject.get(project.id),connected=website?.connectionStatus==="active"||website?.status==="active",google=website?.googleSearchConsole,properties=propertyOptions[project.id]??google?.properties??[];return <article className="website-card" key={project.id}>
         <header><span className={connected?"website-dot connected":"website-dot"}/><div><strong>{project.domain}</strong><small>{project.name}</small></div><em className={connected?"connected":""}>{connected?"CONNECTED":human(website?.status).toUpperCase()}</em></header>
         <dl><div><dt>Connection</dt><dd>{human(website?.connectionMode)}</dd></div><div><dt>Platform</dt><dd>{human(website?.cmsType)}</dd></div><div><dt>Last verified</dt><dd>{website?.lastVerifiedAt?new Date(website.lastVerifiedAt).toLocaleString():"Not yet"}</dd></div></dl>
-        <footer>{canManage&&<button onClick={()=>begin(project.id)}>{website?.connectionId?"Reconnect":"Choose connection"}</button>}{website?.connectionId&&canManage&&<button disabled={busy} onClick={()=>void onAction({action:"test_website",websiteId:website.id})}>Test connection</button>}{website?.connectionId&&canManage&&<button className="danger" disabled={busy} onClick={()=>{if(window.confirm(`Disconnect ${project.domain} and remove its stored credentials?`))void onAction({action:"disconnect_website",websiteId:website.id,confirm:true});}}>Disconnect</button>}</footer>
+        <footer>{canManage&&<button onClick={()=>begin(project.id)}>{website?.connectionId?"Reconnect":"Choose connection"}</button>}{website?.connectionId&&canManage&&<button disabled={busy} onClick={()=>void onAction({action:"test_website",websiteId:website.id})}>Test connection</button>}{canManage&&<button onClick={()=>setSetupProject(project)}>GitHub + Vercel setup</button>}{website?.connectionId&&canManage&&<button className="danger" disabled={busy} onClick={()=>{if(window.confirm(`Disconnect ${project.domain} and remove its stored credentials?`))void onAction({action:"disconnect_website",websiteId:website.id,confirm:true});}}>Disconnect</button>}</footer>
         <div className="website-evidence"><header><div><small>SEARCH CONSOLE EVIDENCE</small><strong>{google?.selectedProperty??"Not connected"}</strong></div><em className={google?.status==="active"?"connected":""}>{google?.status==="active"?"CONNECTED":"NOT CONNECTED"}</em></header>{google?.status!=="active"?<a className="evidence-link" href={`/api/google/connect?projectId=${encodeURIComponent(project.id)}`}>Connect Google Search Console →</a>:<>{!google.selectedProperty&&<div className="evidence-actions"><button disabled={integrationBusy!==null} onClick={()=>void refreshProperties(project.id)}>{integrationBusy==="properties"?"Checking…":"Reload authorized properties"}</button></div>}{!google.selectedProperty&&properties.length>0&&<div className="evidence-property"><select defaultValue="" onChange={event=>void chooseProperty(project.id,event.target.value)} disabled={integrationBusy!==null}><option value="" disabled>Select authorized property</option>{properties.map(property=><option value={property.siteUrl} key={property.siteUrl}>{property.siteUrl}</option>)}</select></div>}<div className="evidence-actions"><button disabled={integrationBusy!==null||!google.selectedProperty} onClick={()=>void integration("/api/google/sync",{projectId:project.id},"sync")}>{integrationBusy==="sync"?"Queueing…":"Refresh Search Console"}</button><button disabled={integrationBusy!==null} onClick={()=>void integration("/api/crawler/run",{projectId:project.id},"crawl")}>{integrationBusy==="crawl"?"Queueing…":"Crawl website"}</button><button className="danger" disabled={integrationBusy!==null} onClick={()=>{if(window.confirm("Disconnect Search Console and remove its stored authorization?"))void integration("/api/google/disconnect",{projectId:project.id,confirm:true},"disconnect");}}>Disconnect</button></div><small className="evidence-last">Last sync: {google.lastSyncedAt?new Date(google.lastSyncedAt).toLocaleString():"Not yet"}</small></>}</div>{integrationMessage&&<div className="evidence-message">{integrationMessage}</div>}
       </article>})}
     </section>
     {open&&selected&&<div className="modal-backdrop" onMouseDown={()=>!busy&&setOpen(false)}><div className="modal website-modal live-dialog" onMouseDown={event=>event.stopPropagation()}><button className="modal-close" disabled={busy} onClick={()=>setOpen(false)}>×</button><small>CONNECT {selected.domain.toUpperCase()}</small><h2>How is this website managed?</h2><p>Choose one option. Credentials are verified on the server, encrypted before storage, and never returned to the browser.</p>
       <div className="connection-methods">{methods.map(method=><button type="button" key={method.mode} className={mode===method.mode?"active":""} onClick={()=>setMode(method.mode)}><b>{method.icon}</b><span><strong>{method.title}</strong><small>{method.description}</small></span></button>)}</div>
-      {mode==="github"?<div className="connection-provider-action"><p>GitHub will ask which repository HD SEO may access, then return you to this workspace.</p><a className="github-primary" href={`/api/github/install?agencyId=${encodeURIComponent(agencyId)}&clientId=${encodeURIComponent(selected.clientId)}&projectId=${encodeURIComponent(selected.id)}&returnUrl=${encodeURIComponent("/portal/agency?github=connected")}`}>Connect GitHub repository →</a></div>:
+      {mode==="github"?<div className="connection-provider-action"><p>Use the guided workflow to connect or verify GitHub, map the Vercel project, and activate approval-gated deployments.</p><button className="github-primary" onClick={()=>{setOpen(false);setSetupProject(selected);}}>Continue GitHub + Vercel setup →</button></div>:
       <form className="workflow-form website-form" onSubmit={submit}>
         {mode!=="shopify"&&<label>Public website URL<input name="siteUrl" defaultValue={`https://${selected.domain}`} type="url" inputMode="url" required/></label>}
         {mode==="wordpress"&&<><label>WordPress username<input name="username" autoComplete="username" required/></label><label>WordPress Application Password<input name="applicationPassword" type="password" autoComplete="new-password" required/><small>Create this under WordPress → Users → Profile → Application Passwords. Do not use the normal account password.</small></label></>}
@@ -78,5 +80,6 @@ export function WebsiteConnections({agencyId,projects,websites,canManage,busy,on
         <button disabled={busy}>{busy?"Verifying secure connection…":mode==="managed"?"Request managed onboarding":mode==="monitoring"?"Enable monitoring":"Verify and connect website"}</button>
       </form>}
     </div></div>}
+    {setupProject&&<DeploymentSetupWizard agencyId={agencyId} project={setupProject} onOpenPackages={onOpenPackages} onClose={(refresh)=>{setSetupProject(null);if(refresh)window.location.reload();}}/>}
   </>;
 }

@@ -814,6 +814,7 @@ export function LiveAgencyDashboard({
               canManage={can("integrations.manage")}
               busy={busy}
               onAction={act}
+              onOpenPackages={() => setTab("Packages")}
             />
           )}
           {tab === "Opportunities" && (

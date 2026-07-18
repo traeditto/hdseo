@@ -22,14 +22,15 @@ export async function vercelRequest<T>(path: string, credentials: VercelCredenti
     if (!response.ok) {
       const providerRequestId = response.headers.get("x-vercel-id") ?? undefined;
       const providerCode = await response.json().then((value: { error?: { code?: string } }) => value.error?.code).catch(() => undefined);
-      throw new ApiError(`Vercel request failed with HTTP ${response.status}${providerCode ? ` (${providerCode})` : ""}.`, response.status === 429 ? 429 : 502, response.status === 429 ? "RATE_LIMITED" : "OPERATION_FAILED", providerRequestId);
+      const safeStatus = response.status === 404 || response.status === 409 || response.status === 429 ? response.status : 502;
+      throw new ApiError(`Vercel request failed with HTTP ${response.status}${providerCode ? ` (${providerCode})` : ""}.`, safeStatus, response.status === 429 ? "RATE_LIMITED" : response.status === 404 ? "NOT_FOUND" : response.status === 409 ? "CONFLICT" : "OPERATION_FAILED", providerRequestId);
     }
     if (response.status === 204 || response.headers.get("content-length") === "0") return undefined as T;
     return await response.json() as T;
   } finally { clearTimeout(timer); }
 }
 
-export interface VercelProject { id: string; name: string; framework?: string | null; link?: { productionBranch?: string }; accountId?: string }
+export interface VercelProject { id: string; name: string; framework?: string | null; link?: { type?:string;org?:string;repo?:string;repoId?:number;productionBranch?: string }; accountId?: string }
 export function getVercelProject(credentials: VercelCredentials, idOrName: string) {
   return vercelRequest<VercelProject>(`/v9/projects/${encodeURIComponent(idOrName)}`, credentials);
 }

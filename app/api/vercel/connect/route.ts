@@ -61,9 +61,24 @@ export async function POST(request:Request){try{
   else credentials=await loadVercelCredentials(connectionId!,context.agency.id);
   let providerProject;
   if(input.vercelProjectId)providerProject=await getVercelProject(credentials,input.vercelProjectId);
-  else if(input.createIfMissing)providerProject=await createVercelProject(credentials,{name:input.projectName,repository:repositoryResult.data.full_name,framework:input.framework,rootDirectory:input.rootDirectory});
+  else if(input.createIfMissing){
+    try{providerProject=await getVercelProject(credentials,input.projectName);}
+    catch(error){
+      if(!(error instanceof ApiError)||error.status!==404)throw error;
+      try{providerProject=await createVercelProject(credentials,{name:input.projectName,repository:repositoryResult.data.full_name,framework:input.framework,rootDirectory:input.rootDirectory});}
+      catch(createError){
+        if(createError instanceof ApiError&&createError.code==="RATE_LIMITED")throw createError;
+        throw new ApiError(`Vercel could not import ${repositoryResult.data.full_name}. Confirm the Vercel GitHub integration can access this repository.`,409,"CONFLICT",createError instanceof ApiError?createError.referenceId:undefined);
+      }
+    }
+  }
   else throw new ApiError("A Vercel project ID is required.",400,"VALIDATION_ERROR");
+  const linkedRepository=providerProject.link?.org&&providerProject.link?.repo?`${providerProject.link.org}/${providerProject.link.repo}`:null;
+  if(providerProject.link?.type&&providerProject.link.type!=="github")throw new ApiError("The selected Vercel project is connected to a different Git provider.",409,"CONFLICT");
+  if(linkedRepository&&linkedRepository.toLowerCase()!==repositoryResult.data.full_name.toLowerCase())throw new ApiError(`The selected Vercel project is connected to ${linkedRepository}, not ${repositoryResult.data.full_name}.`,409,"CONFLICT");
   const existingDomains=input.productionDomains.length?await listVercelProjectDomains(credentials,providerProject.id):{domains:[]},domainResults=await Promise.all(input.productionDomains.map(domain=>existingDomains.domains.find(item=>item.name===domain)??addVercelProjectDomain(credentials,providerProject.id,domain)));
+  const currentMapping=await db.from("vercel_projects").select("id,project_id").eq("connection_id",connectionId!).eq("vercel_project_id",providerProject.id).maybeSingle();
+  if(currentMapping.data&&currentMapping.data.project_id!==input.projectId)throw new ApiError("This Vercel project is already assigned to another client project. Choose a different Vercel project.",409,"CONFLICT");
   const clientId=await enterpriseClientId(input.clientId,context.agency.id),savedProject=await db.from("vercel_projects").upsert({agency_id:context.agency.id,client_id:clientId,project_id:input.projectId,connection_id:connectionId!,repository_id:input.repositoryId,vercel_project_id:providerProject.id,name:providerProject.name,framework:providerProject.framework??input.framework??null,root_directory:input.rootDirectory??null,production_branch:providerProject.link?.productionBranch??repositoryResult.data.default_branch,production_domains:input.productionDomains,environment_config:{domainVerification:domainResults},status:"active",last_synced_at:new Date().toISOString(),updated_at:new Date().toISOString()},{onConflict:"connection_id,vercel_project_id"}).select("id").single();
   if(!savedProject.data)throw new ApiError("Vercel project connection could not be stored.",500,"OPERATION_FAILED");
   await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"vercel.project.connected",resourceType:"vercel_project",resourceId:savedProject.data.id,request,afterState:{vercelProjectId:providerProject.id,repositoryId:input.repositoryId}});
