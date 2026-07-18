@@ -20,6 +20,7 @@ export type ServiceAreaPolicy = {
   serviceAreas: ServiceArea[];
   services: ServiceDefinition[];
   local: boolean;
+  marketScope: "service_area" | "nationwide";
 };
 
 export type ServiceAreaAssessment = {
@@ -42,48 +43,201 @@ const broadMarkets = new Set([
 ]);
 
 const stateNames = [
-  "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
-  "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
-  "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
-  "maine", "maryland", "massachusetts", "michigan", "minnesota",
-  "mississippi", "missouri", "montana", "nebraska", "nevada",
-  "new hampshire", "new jersey", "new mexico", "new york",
-  "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
-  "pennsylvania", "rhode island", "south carolina", "south dakota",
-  "tennessee", "texas", "utah", "vermont", "virginia", "washington",
-  "west virginia", "wisconsin", "wyoming", "district of columbia",
+  "alabama",
+  "alaska",
+  "arizona",
+  "arkansas",
+  "california",
+  "colorado",
+  "connecticut",
+  "delaware",
+  "florida",
+  "georgia",
+  "hawaii",
+  "idaho",
+  "illinois",
+  "indiana",
+  "iowa",
+  "kansas",
+  "kentucky",
+  "louisiana",
+  "maine",
+  "maryland",
+  "massachusetts",
+  "michigan",
+  "minnesota",
+  "mississippi",
+  "missouri",
+  "montana",
+  "nebraska",
+  "nevada",
+  "new hampshire",
+  "new jersey",
+  "new mexico",
+  "new york",
+  "north carolina",
+  "north dakota",
+  "ohio",
+  "oklahoma",
+  "oregon",
+  "pennsylvania",
+  "rhode island",
+  "south carolina",
+  "south dakota",
+  "tennessee",
+  "texas",
+  "utah",
+  "vermont",
+  "virginia",
+  "washington",
+  "west virginia",
+  "wisconsin",
+  "wyoming",
+  "district of columbia",
 ];
 
 // Used only to detect an explicit out-of-area modifier. Generic searches remain
 // eligible because their demand and rankings are collected in the target market.
 const commonUsCities = [
-  "new york", "los angeles", "chicago", "houston", "phoenix", "philadelphia",
-  "san antonio", "san diego", "dallas", "san jose", "austin", "jacksonville",
-  "fort worth", "columbus", "indianapolis", "charlotte", "seattle", "denver",
-  "washington dc", "nashville", "oklahoma city", "el paso", "boston",
-  "portland", "las vegas", "detroit", "memphis", "louisville", "baltimore",
-  "milwaukee", "albuquerque", "tucson", "fresno", "sacramento", "mesa",
-  "kansas city", "atlanta", "omaha", "colorado springs", "raleigh",
-  "long beach", "virginia beach", "miami", "oakland", "minneapolis",
-  "tulsa", "bakersfield", "wichita", "arlington", "aurora", "tampa",
-  "new orleans", "cleveland", "honolulu", "anaheim", "lexington",
-  "stockton", "corpus christi", "henderson", "riverside", "newark",
-  "saint paul", "st paul", "santa ana", "cincinnati", "orlando",
-  "pittsburgh", "st louis", "saint louis", "greensboro", "jersey city",
-  "durham", "lincoln", "plano", "anchorage", "irvine", "chandler",
-  "chula vista", "buffalo", "gilbert", "reno", "madison", "fort wayne",
-  "north las vegas", "st petersburg", "saint petersburg", "lubbock",
-  "toledo", "laredo", "glendale", "scottsdale", "winston salem",
-  "chesapeake", "norfolk", "fremont", "garland", "boise", "richmond",
-  "baton rouge", "spokane", "des moines", "tacoma", "san bernardino",
-  "modesto", "fontana", "moreno valley", "fayetteville", "yonkers",
-  "rochester", "montgomery", "little rock", "akron", "augusta",
-  "grand rapids", "salt lake city", "tallahassee", "huntsville",
-  "knoxville", "worcester", "newport news", "brownsville", "overland park",
-  "santa clarita", "providence", "garden grove", "chattanooga", "oceanside",
-  "fort lauderdale", "cape coral", "gainesville", "ocala", "lakeland",
-  "pensacola", "daytona beach", "palm bay", "port st lucie",
-  "st augustine", "saint augustine", "orange park",
+  "new york",
+  "los angeles",
+  "chicago",
+  "houston",
+  "phoenix",
+  "philadelphia",
+  "san antonio",
+  "san diego",
+  "dallas",
+  "san jose",
+  "austin",
+  "jacksonville",
+  "fort worth",
+  "columbus",
+  "indianapolis",
+  "charlotte",
+  "seattle",
+  "denver",
+  "washington dc",
+  "nashville",
+  "oklahoma city",
+  "el paso",
+  "boston",
+  "portland",
+  "las vegas",
+  "detroit",
+  "memphis",
+  "louisville",
+  "baltimore",
+  "milwaukee",
+  "albuquerque",
+  "tucson",
+  "fresno",
+  "sacramento",
+  "mesa",
+  "kansas city",
+  "atlanta",
+  "omaha",
+  "colorado springs",
+  "raleigh",
+  "long beach",
+  "virginia beach",
+  "miami",
+  "oakland",
+  "minneapolis",
+  "tulsa",
+  "bakersfield",
+  "wichita",
+  "arlington",
+  "aurora",
+  "tampa",
+  "new orleans",
+  "cleveland",
+  "honolulu",
+  "anaheim",
+  "lexington",
+  "stockton",
+  "corpus christi",
+  "henderson",
+  "riverside",
+  "newark",
+  "saint paul",
+  "st paul",
+  "santa ana",
+  "cincinnati",
+  "orlando",
+  "pittsburgh",
+  "st louis",
+  "saint louis",
+  "greensboro",
+  "jersey city",
+  "durham",
+  "lincoln",
+  "plano",
+  "anchorage",
+  "irvine",
+  "chandler",
+  "chula vista",
+  "buffalo",
+  "gilbert",
+  "reno",
+  "madison",
+  "fort wayne",
+  "north las vegas",
+  "st petersburg",
+  "saint petersburg",
+  "lubbock",
+  "toledo",
+  "laredo",
+  "glendale",
+  "scottsdale",
+  "winston salem",
+  "chesapeake",
+  "norfolk",
+  "fremont",
+  "garland",
+  "boise",
+  "richmond",
+  "baton rouge",
+  "spokane",
+  "des moines",
+  "tacoma",
+  "san bernardino",
+  "modesto",
+  "fontana",
+  "moreno valley",
+  "fayetteville",
+  "yonkers",
+  "rochester",
+  "montgomery",
+  "little rock",
+  "akron",
+  "augusta",
+  "grand rapids",
+  "salt lake city",
+  "tallahassee",
+  "huntsville",
+  "knoxville",
+  "worcester",
+  "newport news",
+  "brownsville",
+  "overland park",
+  "santa clarita",
+  "providence",
+  "garden grove",
+  "chattanooga",
+  "oceanside",
+  "fort lauderdale",
+  "cape coral",
+  "gainesville",
+  "ocala",
+  "lakeland",
+  "pensacola",
+  "daytona beach",
+  "palm bay",
+  "port st lucie",
+  "st augustine",
+  "saint augustine",
+  "orange park",
 ];
 
 export function normalizeGeography(value: string) {
@@ -104,13 +258,13 @@ function containsPhrase(text: string, phrase: string) {
 }
 
 function areaPhrases(area: ServiceArea) {
-  return [...new Set([
-    area.name,
-    area.city,
-    area.county,
-    area.state,
-    area.postalCode,
-  ].filter((value): value is string => Boolean(value?.trim())).map(normalizeGeography))];
+  return [
+    ...new Set(
+      [area.name, area.city, area.county, area.state, area.postalCode]
+        .filter((value): value is string => Boolean(value?.trim()))
+        .map(normalizeGeography),
+    ),
+  ];
 }
 
 function specificMarket(value?: string | null) {
@@ -123,6 +277,7 @@ export function buildServiceAreaPolicy(input: {
   requestedMarket?: string | null;
   serviceAreas?: ServiceArea[];
   services?: ServiceDefinition[];
+  marketScope?: "service_area" | "nationwide" | null;
 }): ServiceAreaPolicy {
   const serviceAreas = [...(input.serviceAreas ?? [])].sort(
     (a, b) => Number(b.priority ?? 0) - Number(a.priority ?? 0),
@@ -131,6 +286,20 @@ export function buildServiceAreaPolicy(input: {
     (a, b) => Number(b.priority ?? 0) - Number(a.priority ?? 0),
   );
   const configuredPhrases = new Set(serviceAreas.flatMap(areaPhrases));
+  const marketScope =
+    input.marketScope === "nationwide" ? "nationwide" : "service_area";
+  if (marketScope === "nationwide") {
+    const broadTarget = [input.requestedMarket, input.primaryMarket]
+      .map((value) => value?.trim())
+      .find((value) => value && broadMarkets.has(normalizeGeography(value)));
+    return {
+      targetMarket: broadTarget ?? "United States",
+      serviceAreas,
+      services,
+      local: false,
+      marketScope,
+    };
+  }
   const requested = specificMarket(input.requestedMarket);
   const primary = specificMarket(input.primaryMarket);
   const requestedIsConfigured = requested
@@ -141,13 +310,24 @@ export function buildServiceAreaPolicy(input: {
   const targetMarket = serviceAreas.length
     ? requestedIsConfigured
       ? requested!
-      : primary && [...configuredPhrases].some((phrase) =>
-          containsPhrase(normalizeGeography(primary), phrase),
-        )
+      : primary &&
+          [...configuredPhrases].some((phrase) =>
+            containsPhrase(normalizeGeography(primary), phrase),
+          )
         ? primary
         : serviceAreas[0].name
-    : primary ?? requested ?? input.primaryMarket?.trim() ?? input.requestedMarket?.trim() ?? "United States";
-  return { targetMarket, serviceAreas, services, local: serviceAreas.length > 0 };
+    : (primary ??
+      requested ??
+      input.primaryMarket?.trim() ??
+      input.requestedMarket?.trim() ??
+      "United States");
+  return {
+    targetMarket,
+    serviceAreas,
+    services,
+    local: serviceAreas.length > 0,
+    marketScope,
+  };
 }
 
 export function assessKeywordServiceArea(
@@ -169,7 +349,11 @@ export function assessKeywordServiceArea(
       serviceRelevance: matchedService ? 95 : policy.services.length ? 60 : 70,
       locationId: null,
       serviceId: matchedService?.id ?? null,
-      reasonCodes: ["MARKET_SCOPED"],
+      reasonCodes: [
+        policy.marketScope === "nationwide"
+          ? "NATIONWIDE_SCOPE"
+          : "MARKET_SCOPED",
+      ],
     };
   }
 
@@ -184,8 +368,12 @@ export function assessKeywordServiceArea(
     };
   }
 
-  const explicitState = stateNames.find((state) => containsPhrase(normalized, state));
-  const explicitCity = commonUsCities.find((city) => containsPhrase(normalized, city));
+  const explicitState = stateNames.find((state) =>
+    containsPhrase(normalized, state),
+  );
+  const explicitCity = commonUsCities.find((city) =>
+    containsPhrase(normalized, city),
+  );
   const explicitPostalCode = /\b\d{5}(?:-\d{4})?\b/.test(keyword);
   if (explicitState || explicitCity || explicitPostalCode) {
     return {

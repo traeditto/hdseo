@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(join(process.cwd(), path), "utf8");
+const compact = (value: string) => value.replace(/\s+/g, " ");
 
 describe("retail business-owner experience", () => {
   it("creates an atomic, tenant-scoped retail workspace", () => {
@@ -16,14 +17,14 @@ describe("retail business-owner experience", () => {
   it("never asks an owner to research or enter keywords", () => {
     const portal = read("app/ui/live-client-dashboard.tsx");
     expect(portal).toContain("No keywords required");
-    expect(portal).toContain("find them for you");
+    expect(compact(portal)).toContain("discover the relevant searches automatically");
     expect(portal).not.toContain('name="keyword"');
   });
 
   it("provides simple owner navigation and protected control modes", () => {
     const portal = read("app/ui/live-client-dashboard.tsx");
     for (const label of ["Home", "My Plan", "Approvals", "Results", "My Business", "Safe Autopilot", "Human-reviewed"]) expect(portal).toContain(label);
-    expect(portal).toContain("High-risk, legal, pricing, DNS and destructive work always pauses");
+    expect(compact(portal)).toContain("High-risk, legal, pricing, DNS and destructive work always pauses");
   });
 
   it("uses real checkout, billing portal and signed Stripe webhooks", () => {

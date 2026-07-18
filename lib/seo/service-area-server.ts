@@ -13,7 +13,11 @@ export async function loadProjectServiceAreaPolicy(
   requestedMarket?: string | null,
 ): Promise<ServiceAreaPolicy> {
   const [project, locations, services] = await Promise.all([
-    db.from("seo_projects").select("primary_market").eq("id", projectId).single(),
+    db
+      .from("seo_projects")
+      .select("primary_market,market_scope")
+      .eq("id", projectId)
+      .single(),
     db
       .from("seo_locations")
       .select("id,name,city,county,state,postal_code,country_code,priority")
@@ -32,6 +36,10 @@ export async function loadProjectServiceAreaPolicy(
   if (services.error) throw services.error;
   return buildServiceAreaPolicy({
     primaryMarket: project.data?.primary_market,
+    marketScope:
+      project.data?.market_scope === "nationwide"
+        ? "nationwide"
+        : "service_area",
     requestedMarket,
     serviceAreas: (locations.data ?? []).map((row) => ({
       id: row.id,

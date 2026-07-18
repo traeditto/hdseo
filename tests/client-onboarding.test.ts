@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(join(process.cwd(), path), "utf8");
+const compact = (value: string) => value.replace(/\s+/g, " ");
 
 describe("five-minute client onboarding", () => {
   it("detects common website platforms without requesting credentials", () => {
@@ -18,7 +19,7 @@ describe("five-minute client onboarding", () => {
   it("does not ask clients to supply keywords", () => {
     const wizard = read("app/ui/client-onboarding-wizard.tsx");
     expect(wizard).toContain("No keywords required");
-    expect(wizard).toContain("HD SEO turns these into search opportunities");
+    expect(compact(wizard)).toContain("HD SEO turns these into search opportunities");
     expect(wizard).not.toContain('name="keyword"');
   });
 
@@ -27,7 +28,7 @@ describe("five-minute client onboarding", () => {
     for (const label of ["Website monitoring", "Connect Google", "Recommend changes", "Fix safe issues automatically", "Full autopilot", "Start My SEO"]) {
       expect(wizard).toContain(label);
     }
-    expect(wizard).toContain("DNS, legal claims, pricing, and major design changes always stay protected");
+    expect(compact(wizard)).toContain("DNS, legal claims, pricing, and major design changes always stay protected");
   });
 
   it("persists the business profile and launches real evidence jobs", () => {

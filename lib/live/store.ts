@@ -43,7 +43,10 @@ import {
   type WebsitePlatformAnalysis,
 } from "@/lib/websites/platform-detection";
 import { seedOnboardingAgentTeam } from "@/lib/agents/control-plane";
-import { publishCmsPackage,rollbackCmsPublication } from "@/lib/websites/publishing";
+import {
+  publishCmsPackage,
+  rollbackCmsPublication,
+} from "@/lib/websites/publishing";
 
 /**
  * The portal store used to be backed by a Cloudflare D1 database. It now reads
@@ -91,6 +94,7 @@ export type LiveProject = {
   name: string;
   domain: string;
   status: string;
+  marketScope: "service_area" | "nationwide";
   createdAt: string;
 };
 
@@ -113,7 +117,7 @@ export type LiveWebsite = {
     selectedProperty: string | null;
     lastSyncedAt: string | null;
     lastVerifiedAt: string | null;
-    properties: Array<{siteUrl: string;permissionLevel?: string}>;
+    properties: Array<{ siteUrl: string; permissionLevel?: string }>;
     health: string;
   } | null;
 };
@@ -199,6 +203,7 @@ export type LiveClientOnboarding = {
   status: string;
   monthlyBudget: number;
   targetMarket: string;
+  marketScope: "service_area" | "nationwide";
   services: string[];
   serviceAreas: string[];
   phone: string | null;
@@ -218,6 +223,7 @@ export type LiveClientGrowthProfile = {
   businessGoal: string;
   services: string[];
   serviceAreas: string[];
+  marketScope: "service_area" | "nationwide";
   priorityServices: string[];
   idealCustomer: string | null;
   averageCustomerValue: number | null;
@@ -340,10 +346,7 @@ async function emailMap(
   const ids = [...new Set(userIds.filter(Boolean) as string[])];
   const map = new Map<string, string>();
   if (!ids.length) return map;
-  const { data } = await db
-    .from("profiles")
-    .select("id,email")
-    .in("id", ids);
+  const { data } = await db.from("profiles").select("id,email").in("id", ids);
   for (const row of data ?? []) {
     if (row.email) map.set(row.id as string, row.email as string);
   }
@@ -398,6 +401,10 @@ function mapProject(row: DatabaseRow): LiveProject {
     name: rowText(row, "name"),
     domain: rowText(row, "domain"),
     status: rowText(row, "status"),
+    marketScope:
+      rowText(row, "market_scope") === "nationwide"
+        ? "nationwide"
+        : "service_area",
     createdAt: toIso(row.created_at),
   };
 }
@@ -411,8 +418,7 @@ function mapOpportunity(row: DatabaseRow): LiveOpportunity {
     id: rowText(row, "id"),
     agencyId: rowText(row, "agency_id"),
     projectId: rowText(row, "project_id"),
-    keyword:
-      (evidence.keyword as string) ?? rowText(row, "opportunity_key"),
+    keyword: (evidence.keyword as string) ?? rowText(row, "opportunity_key"),
     currentRank:
       typeof evidence.current_rank === "number"
         ? (evidence.current_rank as number)
@@ -427,7 +433,9 @@ function mapOpportunity(row: DatabaseRow): LiveOpportunity {
     reason: (evidence.reason as string) ?? reasonFromCodes,
     status: rowText(row, "status"),
     searchVolume:
-      typeof evidence.search_volume === "number" ? evidence.search_volume : null,
+      typeof evidence.search_volume === "number"
+        ? evidence.search_volume
+        : null,
     cpc: typeof evidence.cpc === "number" ? evidence.cpc : null,
     difficulty:
       typeof evidence.keyword_difficulty === "number"
@@ -467,7 +475,7 @@ function mapTask(row: DatabaseRow): LiveTask {
   };
 }
 
-function mapPackage(row: DatabaseRow,publication?:DatabaseRow): LivePackage {
+function mapPackage(row: DatabaseRow, publication?: DatabaseRow): LivePackage {
   const data = asRecord(row.package_data);
   return {
     id: rowText(row, "id"),
@@ -478,18 +486,15 @@ function mapPackage(row: DatabaseRow,publication?:DatabaseRow): LivePackage {
     implementationPath: rowText(row, "implementation_path"),
     status: rowText(row, "status"),
     packageData: data,
-    publicationId: publication ? rowText(publication,"id") : null,
-    publicationStatus: publication ? rowText(publication,"status") : null,
-    publicationProvider: publication ? rowText(publication,"provider") : null,
+    publicationId: publication ? rowText(publication, "id") : null,
+    publicationStatus: publication ? rowText(publication, "status") : null,
+    publicationProvider: publication ? rowText(publication, "provider") : null,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
 }
 
-function mapEvent(
-  row: DatabaseRow,
-  emails: Map<string, string>,
-): LiveEvent {
+function mapEvent(row: DatabaseRow, emails: Map<string, string>): LiveEvent {
   const metadata = asRecord(row.metadata);
   return {
     id: rowText(row, "id"),
@@ -500,9 +505,7 @@ function mapEvent(
     description: rowText(row, "description") || null,
     actorEmail:
       (metadata.actor_email as string) ??
-      (row.actor_user_id
-        ? emails.get(String(row.actor_user_id)) ?? ""
-        : ""),
+      (row.actor_user_id ? (emails.get(String(row.actor_user_id)) ?? "") : ""),
     clientVisible: Boolean(row.client_visible),
     createdAt: toIso(row.occurred_at),
   };
@@ -579,7 +582,11 @@ export async function createAgencyForUser(
   const db = admin();
   const userId = await resolveUserId(db, email);
   if (!userId) {
-    throw new ApiError("Sign in before creating an agency.", 403, "TENANT_DENIED");
+    throw new ApiError(
+      "Sign in before creating an agency.",
+      403,
+      "TENANT_DENIED",
+    );
   }
 
   const slugBase =
@@ -750,17 +757,23 @@ export async function liveAgencySnapshot(email: string) {
       .limit(50),
     db
       .from("websites")
-      .select("id,project_id,name,site_url,canonical_domain,cms_type,status,last_verified_at,created_at")
+      .select(
+        "id,project_id,name,site_url,canonical_domain,cms_type,status,last_verified_at,created_at",
+      )
       .eq("agency_id", agencyId)
       .order("created_at", { ascending: false }),
     db
       .from("cms_connections")
-      .select("id,website_id,editor_mode,connection_mode,status,last_verified_at,updated_at")
+      .select(
+        "id,website_id,editor_mode,connection_mode,status,last_verified_at,updated_at",
+      )
       .eq("agency_id", agencyId)
       .order("updated_at", { ascending: false }),
     db
       .from("integration_connections")
-      .select("id,project_id,status,selected_resource,last_synced_at,last_verified_at,metadata,updated_at")
+      .select(
+        "id,project_id,status,selected_resource,last_synced_at,last_verified_at,metadata,updated_at",
+      )
       .eq("agency_id", agencyId)
       .eq("provider", "google_search_console")
       .order("updated_at", { ascending: false }),
@@ -787,35 +800,79 @@ export async function liveAgencySnapshot(email: string) {
     }
   }
   const googleByProject = new Map<string, DatabaseRow>();
-  for (const row of googleRes.data ?? []) if (!googleByProject.has(rowText(row, "project_id"))) googleByProject.set(rowText(row, "project_id"), row);
+  for (const row of googleRes.data ?? [])
+    if (!googleByProject.has(rowText(row, "project_id")))
+      googleByProject.set(rowText(row, "project_id"), row);
   const publicationByPackage = new Map<string, DatabaseRow>();
-  for (const row of publicationsRes.data ?? []) if (!publicationByPackage.has(rowText(row,"package_id"))) publicationByPackage.set(rowText(row,"package_id"),row);
+  for (const row of publicationsRes.data ?? [])
+    if (!publicationByPackage.has(rowText(row, "package_id")))
+      publicationByPackage.set(rowText(row, "package_id"), row);
   const projectByClient = new Map<string, DatabaseRow>();
-  for (const row of projectsRes.data ?? []) if (!projectByClient.has(rowText(row, "client_organization_id"))) projectByClient.set(rowText(row, "client_organization_id"), row);
+  for (const row of projectsRes.data ?? [])
+    if (!projectByClient.has(rowText(row, "client_organization_id")))
+      projectByClient.set(rowText(row, "client_organization_id"), row);
   const onboardings = (enterpriseClientsRes.data ?? []).flatMap((row) => {
     const config = asRecord(row.automation_config);
     if (Number(config.onboardingVersion ?? 0) < 1) return [];
     const project = projectByClient.get(rowText(row, "organization_id"));
     if (!project) return [];
-    const automationLevel = ["recommend", "safe", "autopilot"].includes(String(config.automationLevel))
-      ? String(config.automationLevel) as LiveClientOnboarding["automationLevel"]
+    const automationLevel = ["recommend", "safe", "autopilot"].includes(
+      String(config.automationLevel),
+    )
+      ? (String(
+          config.automationLevel,
+        ) as LiveClientOnboarding["automationLevel"])
       : "safe";
-    return [{
-      clientId: rowText(row, "organization_id"),
-      projectId: rowText(project, "id"),
-      status: typeof config.onboardingStatus === "string" ? config.onboardingStatus : "business_saved",
-      monthlyBudget: typeof config.monthlyBudget === "number" ? config.monthlyBudget : 1500,
-      targetMarket: typeof config.targetMarket === "string" ? config.targetMarket : "United States",
-      services: Array.isArray(config.services) ? config.services.filter((item): item is string => typeof item === "string") : [],
-      serviceAreas: Array.isArray(config.serviceAreas) ? config.serviceAreas.filter((item): item is string => typeof item === "string") : [],
-      phone: typeof config.phone === "string" ? config.phone : null,
-      automationLevel,
-      detectedPlatform: typeof config.detectedPlatform === "string" ? config.detectedPlatform : "custom",
-      platformLabel: typeof config.platformLabel === "string" ? config.platformLabel : "Website",
-      platformConfidence: typeof config.platformConfidence === "string" ? config.platformConfidence : "low",
-      websiteReachable: config.websiteReachable === true,
-      launchedAt: typeof config.launchedAt === "string" ? config.launchedAt : null,
-    } satisfies LiveClientOnboarding];
+    return [
+      {
+        clientId: rowText(row, "organization_id"),
+        projectId: rowText(project, "id"),
+        status:
+          typeof config.onboardingStatus === "string"
+            ? config.onboardingStatus
+            : "business_saved",
+        monthlyBudget:
+          typeof config.monthlyBudget === "number"
+            ? config.monthlyBudget
+            : 1500,
+        targetMarket:
+          typeof config.targetMarket === "string"
+            ? config.targetMarket
+            : "United States",
+        marketScope:
+          rowText(project, "market_scope") === "nationwide" ||
+          config.marketScope === "nationwide"
+            ? "nationwide"
+            : "service_area",
+        services: Array.isArray(config.services)
+          ? config.services.filter(
+              (item): item is string => typeof item === "string",
+            )
+          : [],
+        serviceAreas: Array.isArray(config.serviceAreas)
+          ? config.serviceAreas.filter(
+              (item): item is string => typeof item === "string",
+            )
+          : [],
+        phone: typeof config.phone === "string" ? config.phone : null,
+        automationLevel,
+        detectedPlatform:
+          typeof config.detectedPlatform === "string"
+            ? config.detectedPlatform
+            : "custom",
+        platformLabel:
+          typeof config.platformLabel === "string"
+            ? config.platformLabel
+            : "Website",
+        platformConfidence:
+          typeof config.platformConfidence === "string"
+            ? config.platformConfidence
+            : "low",
+        websiteReachable: config.websiteReachable === true,
+        launchedAt:
+          typeof config.launchedAt === "string" ? config.launchedAt : null,
+      } satisfies LiveClientOnboarding,
+    ];
   });
 
   return {
@@ -837,26 +894,48 @@ export async function liveAgencySnapshot(email: string) {
         status: rowText(row, "status", "connection_required"),
         lastVerifiedAt: rowNullableText(row, "last_verified_at"),
         connectionId: connection ? rowText(connection, "id") : null,
-        connectionMode: connection ? rowNullableText(connection, "connection_mode") : null,
-        connectionStatus: connection ? rowNullableText(connection, "status") : null,
-        editorMode: connection ? rowNullableText(connection, "editor_mode") : null,
-        googleSearchConsole: google ? {
-          id: rowText(google, "id"),
-          status: rowText(google, "status"),
-          selectedProperty: rowNullableText(google, "selected_resource"),
-          lastSyncedAt: rowNullableText(google, "last_synced_at"),
-          lastVerifiedAt: rowNullableText(google, "last_verified_at"),
-          properties: Array.isArray(metadata.properties) ? metadata.properties.flatMap((item) => {
-            const property = asRecord(item);
-            return typeof property.siteUrl === "string" ? [{ siteUrl: property.siteUrl, permissionLevel: typeof property.permissionLevel === "string" ? property.permissionLevel : undefined }] : [];
-          }) : [],
-          health: rowText(metadata, "health", "unknown"),
-        } : null,
+        connectionMode: connection
+          ? rowNullableText(connection, "connection_mode")
+          : null,
+        connectionStatus: connection
+          ? rowNullableText(connection, "status")
+          : null,
+        editorMode: connection
+          ? rowNullableText(connection, "editor_mode")
+          : null,
+        googleSearchConsole: google
+          ? {
+              id: rowText(google, "id"),
+              status: rowText(google, "status"),
+              selectedProperty: rowNullableText(google, "selected_resource"),
+              lastSyncedAt: rowNullableText(google, "last_synced_at"),
+              lastVerifiedAt: rowNullableText(google, "last_verified_at"),
+              properties: Array.isArray(metadata.properties)
+                ? metadata.properties.flatMap((item) => {
+                    const property = asRecord(item);
+                    return typeof property.siteUrl === "string"
+                      ? [
+                          {
+                            siteUrl: property.siteUrl,
+                            permissionLevel:
+                              typeof property.permissionLevel === "string"
+                                ? property.permissionLevel
+                                : undefined,
+                          },
+                        ]
+                      : [];
+                  })
+                : [],
+              health: rowText(metadata, "health", "unknown"),
+            }
+          : null,
       } satisfies LiveWebsite;
     }),
     opportunities: (opportunitiesRes.data ?? []).map(mapOpportunity),
     tasks: (tasksRes.data ?? []).map(mapTask),
-    packages: (packagesRes.data ?? []).map(row=>mapPackage(row,publicationByPackage.get(rowText(row,"id")))),
+    packages: (packagesRes.data ?? []).map((row) =>
+      mapPackage(row, publicationByPackage.get(rowText(row, "id"))),
+    ),
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
     jobs: (jobsRes.data ?? []).map(mapCampaignJob),
     onboardings,
@@ -955,14 +1034,8 @@ export async function liveClientSnapshot(email: string) {
       .eq("client_visible", true)
       .order("occurred_at", { ascending: false })
       .limit(100),
-    db
-      .from("client_growth_profiles")
-      .select("*")
-      .in("project_id", projectIds),
-    db
-      .from("client_subscriptions")
-      .select("*")
-      .in("project_id", projectIds),
+    db.from("client_growth_profiles").select("*").in("project_id", projectIds),
+    db.from("client_subscriptions").select("*").in("project_id", projectIds),
     db
       .from("websites")
       .select("id,project_id,site_url,cms_type,status,last_verified_at")
@@ -974,7 +1047,9 @@ export async function liveClientSnapshot(email: string) {
       .in("project_id", projectIds),
     db
       .from("agent_work_items")
-      .select("id,project_id,assigned_agent_key,goal,status,spent_amount,updated_at")
+      .select(
+        "id,project_id,assigned_agent_key,goal,status,spent_amount,updated_at",
+      )
       .in("project_id", projectIds)
       .in("status", [
         "queued",
@@ -1027,7 +1102,9 @@ export async function liveClientSnapshot(email: string) {
         .in("id", opportunityIds)
         .order("opportunity_score", { ascending: false })
     : { data: [] };
-  const retailProjectIds = (profilesRes.data ?? []).map((row) => row.project_id as string).filter(Boolean);
+  const retailProjectIds = (profilesRes.data ?? [])
+    .map((row) => row.project_id as string)
+    .filter(Boolean);
   const retailOpportunitiesRes = retailProjectIds.length
     ? await db
         .from("seo_opportunities")
@@ -1037,10 +1114,14 @@ export async function liveClientSnapshot(email: string) {
         .order("opportunity_score", { ascending: false })
         .limit(100)
     : { data: [] };
-  const opportunityRows = [...new Map(
-    [...(publishedOpportunitiesRes.data ?? []), ...(retailOpportunitiesRes.data ?? [])]
-      .map((row) => [row.id as string, row]),
-  ).values()];
+  const opportunityRows = [
+    ...new Map(
+      [
+        ...(publishedOpportunitiesRes.data ?? []),
+        ...(retailOpportunitiesRes.data ?? []),
+      ].map((row) => [row.id as string, row]),
+    ).values(),
+  ];
 
   const emails = await emailMap(
     db,
@@ -1080,7 +1161,7 @@ export async function liveClientSnapshot(email: string) {
     clients,
     projects: projects.map(mapProject),
     opportunities: opportunityRows.map(mapOpportunity),
-    packages: (packagesRes.data ?? []).map(row=>mapPackage(row)),
+    packages: (packagesRes.data ?? []).map((row) => mapPackage(row)),
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
     growthProfiles: (profilesRes.data ?? []).map((raw) => {
       const row = raw as DatabaseRow;
@@ -1091,16 +1172,40 @@ export async function liveClientSnapshot(email: string) {
         onboardingStep: rowNumber(row, "onboarding_step", 1),
         businessGoal: rowText(row, "business_goal", "more_qualified_leads"),
         services: Array.isArray(row.services) ? (row.services as string[]) : [],
-        serviceAreas: Array.isArray(row.service_areas) ? (row.service_areas as string[]) : [],
-        priorityServices: Array.isArray(row.priority_services) ? (row.priority_services as string[]) : [],
+        serviceAreas: Array.isArray(row.service_areas)
+          ? (row.service_areas as string[])
+          : [],
+        marketScope: (
+          rowText(
+            projects.find(
+              (item) => rowText(item, "id") === rowText(row, "project_id"),
+            ) ?? {},
+            "market_scope",
+          ) === "nationwide"
+            ? "nationwide"
+            : "service_area"
+        ) as LiveClientGrowthProfile["marketScope"],
+        priorityServices: Array.isArray(row.priority_services)
+          ? (row.priority_services as string[])
+          : [],
         idealCustomer: rowNullableText(row, "ideal_customer"),
-        averageCustomerValue: row.average_customer_value == null ? null : rowNumber(row, "average_customer_value"),
+        averageCustomerValue:
+          row.average_customer_value == null
+            ? null
+            : rowNumber(row, "average_customer_value"),
         monthlyBudget: rowNumber(row, "monthly_budget", 99),
-        automationLevel: ["recommend", "safe", "concierge"].includes(rowText(row, "automation_level"))
-          ? (rowText(row, "automation_level") as "recommend" | "safe" | "concierge")
+        automationLevel: ["recommend", "safe", "concierge"].includes(
+          rowText(row, "automation_level"),
+        )
+          ? (rowText(row, "automation_level") as
+              | "recommend"
+              | "safe"
+              | "concierge")
           : "safe",
         notificationPreferences: Object.fromEntries(
-          Object.entries(asRecord(row.notification_preferences)).map(([key, value]) => [key, value === true]),
+          Object.entries(asRecord(row.notification_preferences)).map(
+            ([key, value]) => [key, value === true],
+          ),
         ),
       };
     }),
@@ -1108,7 +1213,11 @@ export async function liveClientSnapshot(email: string) {
       const row = raw as DatabaseRow;
       return {
         projectId: rowText(row, "project_id"),
-        planKey: rowText(row, "plan_key", "free_audit") as LiveClientSubscription["planKey"],
+        planKey: rowText(
+          row,
+          "plan_key",
+          "free_audit",
+        ) as LiveClientSubscription["planKey"],
         status: rowText(row, "status", "trialing"),
         billingInterval: rowText(row, "billing_interval", "month"),
         priceCents: rowNumber(row, "price_cents"),
@@ -1375,7 +1484,9 @@ export async function createClientWithProject(
     );
   }
 
-  const { data: website, error: websiteError } = await db.from("websites").insert({
+  const { data: website, error: websiteError } = await db
+    .from("websites")
+    .insert({
       agency_id: agencyId,
       client_organization_id: org.id,
       project_id: project.id,
@@ -1432,7 +1543,11 @@ export async function createClientWithProject(
     resourceId: org.id,
     afterState: { projectId: project.id, domain: cleanDomain },
   });
-  return { clientId: org.id as string, projectId: project.id as string, websiteId: website.id as string };
+  return {
+    clientId: org.id as string,
+    projectId: project.id as string,
+    websiteId: website.id as string,
+  };
 }
 
 export type ClientOnboardingInput = {
@@ -1442,6 +1557,7 @@ export type ClientOnboardingInput = {
   phone?: string;
   services: string[];
   serviceAreas: string[];
+  marketScope: "service_area" | "nationwide";
   monthlyBudget: number;
   targetMarket: string;
 };
@@ -1452,6 +1568,7 @@ export type RetailBusinessInput = {
   phone?: string;
   services: string[];
   serviceAreas: string[];
+  marketScope: "service_area" | "nationwide";
   priorityServices: string[];
   idealCustomer?: string;
   averageCustomerValue?: number;
@@ -1462,13 +1579,15 @@ export type RetailBusinessInput = {
 async function clientProjectContext(email: string, projectId: string) {
   const db = admin();
   const userId = await resolveUserId(db, email);
-  if (!userId) throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
+  if (!userId)
+    throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
   const project = await db
     .from("seo_projects")
     .select("id,agency_id,client_organization_id,primary_market")
     .eq("id", projectId)
     .maybeSingle();
-  if (!project.data) throw new ApiError("Business project not found.", 404, "NOT_FOUND");
+  if (!project.data)
+    throw new ApiError("Business project not found.", 404, "NOT_FOUND");
   const member = await db
     .from("client_members")
     .select("role")
@@ -1476,7 +1595,8 @@ async function clientProjectContext(email: string, projectId: string) {
     .eq("client_organization_id", project.data.client_organization_id)
     .eq("status", "active")
     .maybeSingle();
-  if (!member.data) throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
+  if (!member.data)
+    throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
   return {
     db,
     userId,
@@ -1494,7 +1614,12 @@ export async function createRetailBusiness(
 ) {
   const db = admin();
   const userId = await resolveUserId(db, email);
-  if (!userId) throw new ApiError("Sign in before adding your business.", 403, "TENANT_DENIED");
+  if (!userId)
+    throw new ApiError(
+      "Sign in before adding your business.",
+      403,
+      "TENANT_DENIED",
+    );
   const membership = await db
     .from("client_members")
     .select("id")
@@ -1502,12 +1627,32 @@ export async function createRetailBusiness(
     .eq("status", "active")
     .limit(1)
     .maybeSingle();
-  if (membership.data) throw new ApiError("This account already has a business workspace.", 409, "CONFLICT");
+  if (membership.data)
+    throw new ApiError(
+      "This account already has a business workspace.",
+      409,
+      "CONFLICT",
+    );
 
   const analysis = await detectWebsitePlatform(input.domain);
-  const services = [...new Set(input.services.map((value) => value.trim()).filter(Boolean))].slice(0, 20);
-  const serviceAreas = [...new Set(input.serviceAreas.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
-  const priorityServices = [...new Set(input.priorityServices.map((value) => value.trim()).filter(Boolean))]
+  const services = [
+    ...new Set(input.services.map((value) => value.trim()).filter(Boolean)),
+  ].slice(0, 20);
+  const serviceAreas = [
+    ...new Set(input.serviceAreas.map((value) => value.trim()).filter(Boolean)),
+  ].slice(0, 30);
+  if (input.marketScope === "service_area" && !serviceAreas.length) {
+    throw new ApiError(
+      "Add at least one city or service area, or choose Nationwide.",
+      422,
+      "SERVICE_AREA_REQUIRED",
+    );
+  }
+  const priorityServices = [
+    ...new Set(
+      input.priorityServices.map((value) => value.trim()).filter(Boolean),
+    ),
+  ]
     .filter((value) => services.includes(value))
     .slice(0, 5);
   const result = await db.rpc("create_retail_workspace", {
@@ -1537,20 +1682,39 @@ export async function createRetailBusiness(
       "DATABASE_BINDING_FAILED",
     );
   }
-  if (analysis.reachable) {
-    await db.from("cms_connections").upsert({
-      agency_id: created.agency_id,
-      client_organization_id: created.client_id,
-      project_id: created.project_id,
-      website_id: created.website_id,
-      cms_type: analysis.platform,
-      editor_mode: "read_only",
-      site_url: analysis.siteUrl,
-      connection_mode: "monitor_only",
-      status: "active",
-      last_verified_at: nowIso(),
+  const marketWrite = await db
+    .from("seo_projects")
+    .update({
+      market_scope: input.marketScope,
+      primary_market:
+        input.marketScope === "nationwide" ? "United States" : serviceAreas[0],
       updated_at: nowIso(),
-    }, { onConflict: "project_id,site_url" });
+    })
+    .eq("id", created.project_id);
+  if (marketWrite.error) {
+    throw new ApiError(
+      "The business market scope could not be saved. Apply migration 0023 and retry.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
+  }
+  if (analysis.reachable) {
+    await db.from("cms_connections").upsert(
+      {
+        agency_id: created.agency_id,
+        client_organization_id: created.client_id,
+        project_id: created.project_id,
+        website_id: created.website_id,
+        cms_type: analysis.platform,
+        editor_mode: "read_only",
+        site_url: analysis.siteUrl,
+        connection_mode: "monitor_only",
+        status: "active",
+        last_verified_at: nowIso(),
+        updated_at: nowIso(),
+      },
+      { onConflict: "project_id,site_url" },
+    );
   }
   await recordAudit(db, {
     agencyId: created.agency_id,
@@ -1563,6 +1727,7 @@ export async function createRetailBusiness(
       websiteReachable: analysis.reachable,
       serviceCount: services.length,
       serviceAreaCount: serviceAreas.length,
+      marketScope: input.marketScope,
       automationLevel: input.automationLevel,
     },
   });
@@ -1576,6 +1741,7 @@ export async function updateRetailGrowthProfile(
     businessGoal: string;
     services: string[];
     serviceAreas: string[];
+    marketScope: "service_area" | "nationwide";
     priorityServices: string[];
     idealCustomer?: string;
     averageCustomerValue?: number;
@@ -1585,12 +1751,27 @@ export async function updateRetailGrowthProfile(
   },
 ) {
   const context = await clientProjectContext(email, input.projectId);
-  if (context.role !== "client_admin") throw new ApiError("Only the business owner can change growth controls.", 403, "ROLE_FORBIDDEN");
-  const services = [...new Set(input.services.map((value) => value.trim()).filter(Boolean))].slice(0, 20);
-  const areas = [...new Set(input.serviceAreas.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
-  const update = await context.db
-    .from("client_growth_profiles")
-    .upsert({
+  if (context.role !== "client_admin")
+    throw new ApiError(
+      "Only the business owner can change growth controls.",
+      403,
+      "ROLE_FORBIDDEN",
+    );
+  const services = [
+    ...new Set(input.services.map((value) => value.trim()).filter(Boolean)),
+  ].slice(0, 20);
+  const areas = [
+    ...new Set(input.serviceAreas.map((value) => value.trim()).filter(Boolean)),
+  ].slice(0, 30);
+  if (input.marketScope === "service_area" && !areas.length) {
+    throw new ApiError(
+      "Add at least one city or service area, or choose Nationwide.",
+      422,
+      "SERVICE_AREA_REQUIRED",
+    );
+  }
+  const update = await context.db.from("client_growth_profiles").upsert(
+    {
       agency_id: context.agencyId,
       client_organization_id: context.clientId,
       project_id: input.projectId,
@@ -1600,73 +1781,129 @@ export async function updateRetailGrowthProfile(
       business_goal: input.businessGoal,
       services,
       service_areas: areas,
-      priority_services: input.priorityServices.filter((value) => services.includes(value)).slice(0, 5),
+      priority_services: input.priorityServices
+        .filter((value) => services.includes(value))
+        .slice(0, 5),
       ideal_customer: input.idealCustomer?.trim() || null,
       average_customer_value: input.averageCustomerValue ?? null,
       monthly_budget: input.monthlyBudget,
       automation_level: input.automationLevel,
       notification_preferences: input.notificationPreferences,
       updated_at: nowIso(),
-    }, { onConflict: "project_id" });
-  if (update.error) throw new ApiError("Your growth settings could not be saved. Apply migration 0022 and retry.", 500, "DATABASE_BINDING_FAILED");
+    },
+    { onConflict: "project_id" },
+  );
+  if (update.error)
+    throw new ApiError(
+      "Your growth settings could not be saved. Apply migration 0022 and retry.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
   await Promise.all([
-    context.db.from("clients").update({
-      automation_config: {
-        automationLevel: input.automationLevel,
-        monthlyBudget: input.monthlyBudget,
-        approvalRequired: input.automationLevel !== "safe",
-        safeChangesAutomatic: input.automationLevel === "safe",
-        highRiskApprovalRequired: true,
-        autoRollback: true,
-      },
-      updated_at: nowIso(),
-    }).eq("organization_id", context.clientId),
-    context.db.from("seo_projects").update({
-      primary_market: areas[0] ?? context.primaryMarket,
-      industry: services[0] ?? null,
-      updated_at: nowIso(),
-    }).eq("id", input.projectId),
+    context.db
+      .from("clients")
+      .update({
+        automation_config: {
+          automationLevel: input.automationLevel,
+          monthlyBudget: input.monthlyBudget,
+          approvalRequired: input.automationLevel !== "safe",
+          safeChangesAutomatic: input.automationLevel === "safe",
+          highRiskApprovalRequired: true,
+          autoRollback: true,
+        },
+        updated_at: nowIso(),
+      })
+      .eq("organization_id", context.clientId),
+    context.db
+      .from("seo_projects")
+      .update({
+        market_scope: input.marketScope,
+        primary_market:
+          input.marketScope === "nationwide"
+            ? "United States"
+            : (areas[0] ?? context.primaryMarket),
+        industry: services[0] ?? null,
+        updated_at: nowIso(),
+      })
+      .eq("id", input.projectId),
   ]);
-  await context.db.from("seo_services").delete().eq("project_id", input.projectId);
-  if (services.length) await context.db.from("seo_services").insert(services.map((name, index) => ({
-    agency_id: context.agencyId,
-    client_organization_id: context.clientId,
-    project_id: input.projectId,
-    name,
-    slug: `${onboardingSlug(name)}-${index + 1}`,
-    category: "core_service",
-    priority: Math.max(50, 100 - index * 5),
-    status: "active",
-  })));
-  await context.db.from("seo_locations").delete().eq("project_id", input.projectId);
-  if (areas.length) await context.db.from("seo_locations").insert(areas.map((name, index) => ({
-    agency_id: context.agencyId,
-    client_organization_id: context.clientId,
-    project_id: input.projectId,
-    name,
-    city: name,
-    country_code: "US",
-    priority: Math.max(50, 100 - index * 3),
-    status: "active",
-  })));
+  await context.db
+    .from("seo_services")
+    .delete()
+    .eq("project_id", input.projectId);
+  if (services.length)
+    await context.db.from("seo_services").insert(
+      services.map((name, index) => ({
+        agency_id: context.agencyId,
+        client_organization_id: context.clientId,
+        project_id: input.projectId,
+        name,
+        slug: `${onboardingSlug(name)}-${index + 1}`,
+        category: "core_service",
+        priority: Math.max(50, 100 - index * 5),
+        status: "active",
+      })),
+    );
+  await context.db
+    .from("seo_locations")
+    .delete()
+    .eq("project_id", input.projectId);
+  if (areas.length)
+    await context.db.from("seo_locations").insert(
+      areas.map((name, index) => ({
+        agency_id: context.agencyId,
+        client_organization_id: context.clientId,
+        project_id: input.projectId,
+        name,
+        city: name,
+        country_code: "US",
+        priority: Math.max(50, 100 - index * 3),
+        status: "active",
+      })),
+    );
   await recordAudit(context.db, {
     agencyId: context.agencyId,
     actorUserId: context.userId,
     action: "retail.growth_profile.updated",
     resourceType: "seo_project",
     resourceId: input.projectId,
-    afterState: { businessGoal: input.businessGoal, automationLevel: input.automationLevel, services, serviceAreas: areas },
+    afterState: {
+      businessGoal: input.businessGoal,
+      automationLevel: input.automationLevel,
+      services,
+      serviceAreas: areas,
+      marketScope: input.marketScope,
+    },
   });
 }
 
 export async function activateRetailGrowth(email: string, projectId: string) {
   const context = await clientProjectContext(email, projectId);
-  if (context.role !== "client_admin") throw new ApiError("Only the business owner can start automation.", 403, "ROLE_FORBIDDEN");
+  if (context.role !== "client_admin")
+    throw new ApiError(
+      "Only the business owner can start automation.",
+      403,
+      "ROLE_FORBIDDEN",
+    );
   const [profile, website] = await Promise.all([
-    context.db.from("client_growth_profiles").select("monthly_budget,service_areas,onboarding_status").eq("project_id", projectId).maybeSingle(),
-    context.db.from("websites").select("id").eq("project_id", projectId).eq("is_primary", true).maybeSingle(),
+    context.db
+      .from("client_growth_profiles")
+      .select("monthly_budget,service_areas,onboarding_status")
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    context.db
+      .from("websites")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("is_primary", true)
+      .maybeSingle(),
   ]);
-  if (!profile.data || !website.data) throw new ApiError("Finish the business profile before starting HD SEO.", 409, "ONBOARDING_INCOMPLETE");
+  if (!profile.data || !website.data)
+    throw new ApiError(
+      "Finish the business profile before starting HD SEO.",
+      409,
+      "ONBOARDING_INCOMPLETE",
+    );
   const bucket = new Date().toISOString().slice(0, 10);
   const evidenceJobId = await enqueueEvidenceJob(context.db, {
     agencyId: context.agencyId,
@@ -1677,24 +1914,44 @@ export async function activateRetailGrowth(email: string, projectId: string) {
     idempotencyKey: `retail-crawl:${projectId}:${bucket}`,
     priority: 95,
   });
-  const serviceAreas = Array.isArray(profile.data.service_areas) ? profile.data.service_areas : [];
-  const agentWork = await seedOnboardingAgentTeam(context.db, {
-    agencyId: context.agencyId,
-    clientId: context.clientId,
-    projectId,
-    userId: context.userId,
-  }, {
-    evidenceJobIds: [evidenceJobId],
-    discoveryJobId: null,
-    monthlyBudget: Number(profile.data.monthly_budget) || 99,
-    targetMarket: serviceAreas[0] ?? context.primaryMarket ?? "United States",
-    launchKey: `retail:${projectId}`,
-  });
+  const serviceAreas = Array.isArray(profile.data.service_areas)
+    ? profile.data.service_areas
+    : [];
+  const agentWork = await seedOnboardingAgentTeam(
+    context.db,
+    {
+      agencyId: context.agencyId,
+      clientId: context.clientId,
+      projectId,
+      userId: context.userId,
+    },
+    {
+      evidenceJobIds: [evidenceJobId],
+      discoveryJobId: null,
+      monthlyBudget: Number(profile.data.monthly_budget) || 99,
+      targetMarket: serviceAreas[0] ?? context.primaryMarket ?? "United States",
+      launchKey: `retail:${projectId}`,
+    },
+  );
   const now = nowIso();
   await Promise.all([
-    context.db.from("client_growth_profiles").update({ onboarding_status: "active", onboarding_step: 7, last_owner_reviewed_at: now, updated_at: now }).eq("project_id", projectId),
-    context.db.from("client_organizations").update({ status: "active", updated_at: now }).eq("id", context.clientId),
-    context.db.from("clients").update({ status: "active", updated_at: now }).eq("organization_id", context.clientId),
+    context.db
+      .from("client_growth_profiles")
+      .update({
+        onboarding_status: "active",
+        onboarding_step: 7,
+        last_owner_reviewed_at: now,
+        updated_at: now,
+      })
+      .eq("project_id", projectId),
+    context.db
+      .from("client_organizations")
+      .update({ status: "active", updated_at: now })
+      .eq("id", context.clientId),
+    context.db
+      .from("clients")
+      .update({ status: "active", updated_at: now })
+      .eq("organization_id", context.clientId),
   ]);
   await recordEvent(context.db, {
     agencyId: context.agencyId,
@@ -1702,7 +1959,8 @@ export async function activateRetailGrowth(email: string, projectId: string) {
     projectId,
     eventType: "retail_growth_started",
     title: "Your HD SEO agent team started working",
-    description: "Website analysis and service-area research are queued. Sensitive changes will still pause for your approval.",
+    description:
+      "Website analysis and service-area research are queued. Sensitive changes will still pause for your approval.",
     actorUserId: context.userId,
     actorEmail: email,
     clientVisible: true,
@@ -1712,28 +1970,53 @@ export async function activateRetailGrowth(email: string, projectId: string) {
 
 export async function createClientSupportRequest(
   email: string,
-  input: { projectId: string; category: string; subject: string; message: string },
+  input: {
+    projectId: string;
+    category: string;
+    subject: string;
+    message: string;
+  },
 ) {
   const context = await clientProjectContext(email, input.projectId);
-  const created = await context.db.from("client_support_requests").insert({
-    agency_id: context.agencyId,
-    client_organization_id: context.clientId,
-    project_id: input.projectId,
-    requested_by: context.userId,
-    category: input.category,
-    subject: input.subject.trim(),
-    message: input.message.trim(),
-  }).select("id").single();
-  if (created.error || !created.data) throw new ApiError("Your question could not be sent. Apply migration 0022 and retry.", 500, "DATABASE_BINDING_FAILED");
+  const created = await context.db
+    .from("client_support_requests")
+    .insert({
+      agency_id: context.agencyId,
+      client_organization_id: context.clientId,
+      project_id: input.projectId,
+      requested_by: context.userId,
+      category: input.category,
+      subject: input.subject.trim(),
+      message: input.message.trim(),
+    })
+    .select("id")
+    .single();
+  if (created.error || !created.data)
+    throw new ApiError(
+      "Your question could not be sent. Apply migration 0022 and retry.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
   return created.data.id as string;
 }
 
 function onboardingSlug(value: string) {
-  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || crypto.randomUUID().slice(0, 8);
+  return (
+    value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 80) || crypto.randomUUID().slice(0, 8)
+  );
 }
 
 async function onboardingConfig(db: SupabaseClient, clientId: string) {
-  const result = await db.from("clients").select("automation_config").eq("organization_id", clientId).maybeSingle();
+  const result = await db
+    .from("clients")
+    .select("automation_config")
+    .eq("organization_id", clientId)
+    .maybeSingle();
   return asRecord(result.data?.automation_config);
 }
 
@@ -1745,12 +2028,23 @@ async function updateOnboardingConfig(
   const current = await onboardingConfig(db, clientId);
   const result = await db
     .from("clients")
-    .update({ automation_config: { ...current, ...patch }, updated_at: nowIso() })
+    .update({
+      automation_config: { ...current, ...patch },
+      updated_at: nowIso(),
+    })
     .eq("organization_id", clientId);
-  if (result.error) throw new ApiError("The client onboarding progress could not be saved.", 500, "DATABASE_BINDING_FAILED");
+  if (result.error)
+    throw new ApiError(
+      "The client onboarding progress could not be saved.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
 }
 
-export async function analyzeOnboardingWebsite(email: string, domain: string): Promise<WebsitePlatformAnalysis> {
+export async function analyzeOnboardingWebsite(
+  email: string,
+  domain: string,
+): Promise<WebsitePlatformAnalysis> {
   const { role } = await agencyContext(email);
   requireLivePermission(role, "clients.manage");
   return detectWebsitePlatform(domain);
@@ -1759,19 +2053,36 @@ export async function analyzeOnboardingWebsite(email: string, domain: string): P
 export async function createClientOnboarding(
   email: string,
   input: ClientOnboardingInput,
-): Promise<{ clientId: string; projectId: string; websiteId: string; analysis: WebsitePlatformAnalysis }> {
+): Promise<{
+  clientId: string;
+  projectId: string;
+  websiteId: string;
+  analysis: WebsitePlatformAnalysis;
+}> {
   const analysis = await analyzeOnboardingWebsite(email, input.domain);
   const created = await createClientWithProject(email, input);
   const { db, agencyId, userId, role } = await agencyContext(email);
   requireLivePermission(role, "clients.manage");
   const now = nowIso();
-  const services = [...new Set(input.services.map((item) => item.trim()).filter(Boolean))].slice(0, 30);
-  const serviceAreas = [...new Set(input.serviceAreas.map((item) => item.trim()).filter(Boolean))].slice(0, 50);
+  const services = [
+    ...new Set(input.services.map((item) => item.trim()).filter(Boolean)),
+  ].slice(0, 30);
+  const serviceAreas = [
+    ...new Set(input.serviceAreas.map((item) => item.trim()).filter(Boolean)),
+  ].slice(0, 50);
+  if (input.marketScope === "service_area" && !serviceAreas.length) {
+    throw new ApiError(
+      "Add at least one city or service area, or choose Nationwide.",
+      422,
+      "SERVICE_AREA_REQUIRED",
+    );
+  }
   const config = {
     onboardingVersion: 1,
     onboardingStatus: "connections",
     monthlyBudget: input.monthlyBudget,
     targetMarket: input.targetMarket,
+    marketScope: input.marketScope,
     services,
     serviceAreas,
     phone: input.phone?.trim() || null,
@@ -1785,75 +2096,116 @@ export async function createClientOnboarding(
     autoRollback: true,
   };
   const [projectResult, websiteResult, clientResult] = await Promise.all([
-    db.from("seo_projects").update({
-      primary_market: input.targetMarket,
-      industry: services[0] ?? null,
-      data_readiness_status: "collecting",
-      updated_at: now,
-    }).eq("id", created.projectId).eq("agency_id", agencyId),
-    db.from("websites").update({
-      site_url: analysis.siteUrl,
-      canonical_domain: analysis.canonicalDomain,
-      cms_type: analysis.platform,
-      status: analysis.reachable ? "active" : "connection_required",
-      last_verified_at: analysis.reachable ? now : null,
-      updated_at: now,
-    }).eq("id", created.websiteId).eq("agency_id", agencyId),
-    db.from("clients").upsert({
-      id: created.clientId,
-      agency_id: agencyId,
-      organization_id: created.clientId,
-      name: input.name,
-      status: "onboarding",
-      automation_config: config,
-      updated_at: now,
-    }, { onConflict: "organization_id" }),
+    db
+      .from("seo_projects")
+      .update({
+        primary_market:
+          input.marketScope === "nationwide"
+            ? "United States"
+            : input.targetMarket,
+        market_scope: input.marketScope,
+        industry: services[0] ?? null,
+        data_readiness_status: "collecting",
+        updated_at: now,
+      })
+      .eq("id", created.projectId)
+      .eq("agency_id", agencyId),
+    db
+      .from("websites")
+      .update({
+        site_url: analysis.siteUrl,
+        canonical_domain: analysis.canonicalDomain,
+        cms_type: analysis.platform,
+        status: analysis.reachable ? "active" : "connection_required",
+        last_verified_at: analysis.reachable ? now : null,
+        updated_at: now,
+      })
+      .eq("id", created.websiteId)
+      .eq("agency_id", agencyId),
+    db.from("clients").upsert(
+      {
+        id: created.clientId,
+        agency_id: agencyId,
+        organization_id: created.clientId,
+        name: input.name,
+        status: "onboarding",
+        automation_config: config,
+        updated_at: now,
+      },
+      { onConflict: "organization_id" },
+    ),
   ]);
   if (projectResult.error || websiteResult.error || clientResult.error) {
-    throw new ApiError("The business was created, but its onboarding profile could not be completed.", 500, "DATABASE_BINDING_FAILED");
+    throw new ApiError(
+      "The business was created, but its onboarding profile could not be completed.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
   }
   if (services.length) {
-    const saved = await db.from("seo_services").insert(services.map((name, index) => ({
-      agency_id: agencyId,
-      client_organization_id: created.clientId,
-      project_id: created.projectId,
-      name,
-      slug: `${onboardingSlug(name)}-${index + 1}`,
-      category: "core_service",
-      priority: Math.max(50, 100 - index * 5),
-      status: "active",
-    })));
-    if (saved.error) throw new ApiError("The business services could not be saved.", 500, "DATABASE_BINDING_FAILED");
+    const saved = await db.from("seo_services").insert(
+      services.map((name, index) => ({
+        agency_id: agencyId,
+        client_organization_id: created.clientId,
+        project_id: created.projectId,
+        name,
+        slug: `${onboardingSlug(name)}-${index + 1}`,
+        category: "core_service",
+        priority: Math.max(50, 100 - index * 5),
+        status: "active",
+      })),
+    );
+    if (saved.error)
+      throw new ApiError(
+        "The business services could not be saved.",
+        500,
+        "DATABASE_BINDING_FAILED",
+      );
   }
   if (serviceAreas.length) {
-    const saved = await db.from("seo_locations").insert(serviceAreas.map((name, index) => ({
-      agency_id: agencyId,
-      client_organization_id: created.clientId,
-      project_id: created.projectId,
-      name,
-      city: name,
-      country_code: "US",
-      priority: Math.max(50, 100 - index * 3),
-      status: "active",
-    })));
-    if (saved.error) throw new ApiError("The service areas could not be saved.", 500, "DATABASE_BINDING_FAILED");
+    const saved = await db.from("seo_locations").insert(
+      serviceAreas.map((name, index) => ({
+        agency_id: agencyId,
+        client_organization_id: created.clientId,
+        project_id: created.projectId,
+        name,
+        city: name,
+        country_code: "US",
+        priority: Math.max(50, 100 - index * 3),
+        status: "active",
+      })),
+    );
+    if (saved.error)
+      throw new ApiError(
+        "The service areas could not be saved.",
+        500,
+        "DATABASE_BINDING_FAILED",
+      );
   }
   if (analysis.reachable) {
-    const connected = await db.from("cms_connections").upsert({
-      agency_id: agencyId,
-      client_organization_id: created.clientId,
-      project_id: created.projectId,
-      website_id: created.websiteId,
-      cms_type: analysis.platform,
-      editor_mode: "read_only",
-      site_url: analysis.siteUrl,
-      connection_mode: "monitor_only",
-      status: "active",
-      encrypted_secret_reference: null,
-      last_verified_at: now,
-      updated_at: now,
-    }, { onConflict: "project_id,site_url" });
-    if (connected.error) throw new ApiError("The no-login website monitoring connection could not be saved.", 500, "DATABASE_BINDING_FAILED");
+    const connected = await db.from("cms_connections").upsert(
+      {
+        agency_id: agencyId,
+        client_organization_id: created.clientId,
+        project_id: created.projectId,
+        website_id: created.websiteId,
+        cms_type: analysis.platform,
+        editor_mode: "read_only",
+        site_url: analysis.siteUrl,
+        connection_mode: "monitor_only",
+        status: "active",
+        encrypted_secret_reference: null,
+        last_verified_at: now,
+        updated_at: now,
+      },
+      { onConflict: "project_id,site_url" },
+    );
+    if (connected.error)
+      throw new ApiError(
+        "The no-login website monitoring connection could not be saved.",
+        500,
+        "DATABASE_BINDING_FAILED",
+      );
   }
   await recordEvent(db, {
     agencyId,
@@ -1878,12 +2230,21 @@ export async function createClientOnboarding(
 
 export async function setClientOnboardingAutomation(
   email: string,
-  input: { projectId: string; automationLevel: "recommend" | "safe" | "autopilot" },
+  input: {
+    projectId: string;
+    automationLevel: "recommend" | "safe" | "autopilot";
+  },
 ) {
   const { db, agencyId, userId, role } = await agencyContext(email);
   requireLivePermission(role, "clients.manage");
-  const project = await db.from("seo_projects").select("id,client_organization_id").eq("id", input.projectId).eq("agency_id", agencyId).maybeSingle();
-  if (!project.data) throw new ApiError("Client project not found.", 404, "NOT_FOUND");
+  const project = await db
+    .from("seo_projects")
+    .select("id,client_organization_id")
+    .eq("id", input.projectId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!project.data)
+    throw new ApiError("Client project not found.", 404, "NOT_FOUND");
   await updateOnboardingConfig(db, project.data.client_organization_id, {
     onboardingStatus: "ready",
     automationLevel: input.automationLevel,
@@ -1905,30 +2266,81 @@ export async function setClientOnboardingAutomation(
 export async function launchClientOnboarding(email: string, projectId: string) {
   const { db, agencyId, userId, role } = await agencyContext(email);
   requireLivePermission(role, "clients.manage", "provider.authorize");
-  const project = await db.from("seo_projects").select("id,client_organization_id,primary_market").eq("id", projectId).eq("agency_id", agencyId).maybeSingle();
-  if (!project.data) throw new ApiError("Client project not found.", 404, "NOT_FOUND");
-  const config = await onboardingConfig(db, project.data.client_organization_id);
-  const monthlyBudget = typeof config.monthlyBudget === "number" ? config.monthlyBudget : 1500;
-  const targetMarket = typeof config.targetMarket === "string" ? config.targetMarket : project.data.primary_market || "United States";
-  const website = await db.from("websites").select("id").eq("project_id", projectId).eq("agency_id", agencyId).eq("is_primary", true).limit(1).maybeSingle();
-  if (!website.data) throw new ApiError("The client website is missing.", 409, "WEBSITE_CONNECTION_FAILED");
+  const project = await db
+    .from("seo_projects")
+    .select("id,client_organization_id,primary_market")
+    .eq("id", projectId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!project.data)
+    throw new ApiError("Client project not found.", 404, "NOT_FOUND");
+  const config = await onboardingConfig(
+    db,
+    project.data.client_organization_id,
+  );
+  const monthlyBudget =
+    typeof config.monthlyBudget === "number" ? config.monthlyBudget : 1500;
+  const targetMarket =
+    typeof config.targetMarket === "string"
+      ? config.targetMarket
+      : project.data.primary_market || "United States";
+  const website = await db
+    .from("websites")
+    .select("id")
+    .eq("project_id", projectId)
+    .eq("agency_id", agencyId)
+    .eq("is_primary", true)
+    .limit(1)
+    .maybeSingle();
+  if (!website.data)
+    throw new ApiError(
+      "The client website is missing.",
+      409,
+      "WEBSITE_CONNECTION_FAILED",
+    );
   const bucket = new Date().toISOString().slice(0, 13);
   const evidenceJobs: string[] = [];
-  evidenceJobs.push(await enqueueEvidenceJob(db, {
-    agencyId,
-    clientId: project.data.client_organization_id,
-    projectId,
-    websiteId: website.data.id,
-    jobType: "crawler.crawl",
-    idempotencyKey: `onboarding-crawl:${projectId}:${bucket}`,
-    priority: 90,
-  }));
-  const google = await db.from("integration_connections").select("id,status,selected_resource").eq("project_id", projectId).eq("agency_id", agencyId).eq("provider", "google_search_console").maybeSingle();
+  evidenceJobs.push(
+    await enqueueEvidenceJob(db, {
+      agencyId,
+      clientId: project.data.client_organization_id,
+      projectId,
+      websiteId: website.data.id,
+      jobType: "crawler.crawl",
+      idempotencyKey: `onboarding-crawl:${projectId}:${bucket}`,
+      priority: 90,
+    }),
+  );
+  const google = await db
+    .from("integration_connections")
+    .select("id,status,selected_resource")
+    .eq("project_id", projectId)
+    .eq("agency_id", agencyId)
+    .eq("provider", "google_search_console")
+    .maybeSingle();
   if (google.data?.status === "active" && google.data.selected_resource) {
-    evidenceJobs.push(...await Promise.all([
-      enqueueEvidenceJob(db, { agencyId, clientId: project.data.client_organization_id, projectId, connectionId: google.data.id, jobType: "google.search_analytics", idempotencyKey: `onboarding-gsc-analytics:${projectId}:${bucket}`, priority: 85 }),
-      enqueueEvidenceJob(db, { agencyId, clientId: project.data.client_organization_id, projectId, connectionId: google.data.id, jobType: "google.sitemaps", idempotencyKey: `onboarding-gsc-sitemaps:${projectId}:${bucket}`, priority: 75 }),
-    ]));
+    evidenceJobs.push(
+      ...(await Promise.all([
+        enqueueEvidenceJob(db, {
+          agencyId,
+          clientId: project.data.client_organization_id,
+          projectId,
+          connectionId: google.data.id,
+          jobType: "google.search_analytics",
+          idempotencyKey: `onboarding-gsc-analytics:${projectId}:${bucket}`,
+          priority: 85,
+        }),
+        enqueueEvidenceJob(db, {
+          agencyId,
+          clientId: project.data.client_organization_id,
+          projectId,
+          connectionId: google.data.id,
+          jobType: "google.sitemaps",
+          idempotencyKey: `onboarding-gsc-sitemaps:${projectId}:${bucket}`,
+          priority: 75,
+        }),
+      ])),
+    );
   }
   const discovery = await discoverKeywordOpportunities(email, {
     projectId,
@@ -1937,28 +2349,39 @@ export async function launchClientOnboarding(email: string, projectId: string) {
     limit: 50,
   });
   const launchedAt = nowIso();
-  const agentWorkItems = await seedOnboardingAgentTeam(db, {
-    agencyId,
-    clientId: project.data.client_organization_id,
-    projectId,
-    userId,
-  }, {
-    evidenceJobIds: evidenceJobs,
-    discoveryJobId: discovery.jobId,
-    monthlyBudget,
-    targetMarket,
-    launchKey: projectId,
-  });
+  const agentWorkItems = await seedOnboardingAgentTeam(
+    db,
+    {
+      agencyId,
+      clientId: project.data.client_organization_id,
+      projectId,
+      userId,
+    },
+    {
+      evidenceJobIds: evidenceJobs,
+      discoveryJobId: discovery.jobId,
+      monthlyBudget,
+      targetMarket,
+      launchKey: projectId,
+    },
+  );
   await updateOnboardingConfig(db, project.data.client_organization_id, {
     onboardingStatus: "launched",
     launchedAt,
     firstEvidenceJobIds: evidenceJobs,
     firstDiscoveryJobId: discovery.jobId,
-    firstAgentWorkItemIds: agentWorkItems.map(item => item.workItemId),
+    firstAgentWorkItemIds: agentWorkItems.map((item) => item.workItemId),
   });
   await Promise.all([
-    db.from("clients").update({ status: "active", updated_at: launchedAt }).eq("organization_id", project.data.client_organization_id),
-    db.from("seo_projects").update({ data_readiness_status: "collecting", updated_at: launchedAt }).eq("id", projectId).eq("agency_id", agencyId),
+    db
+      .from("clients")
+      .update({ status: "active", updated_at: launchedAt })
+      .eq("organization_id", project.data.client_organization_id),
+    db
+      .from("seo_projects")
+      .update({ data_readiness_status: "collecting", updated_at: launchedAt })
+      .eq("id", projectId)
+      .eq("agency_id", agencyId),
   ]);
   await recordEvent(db, {
     agencyId,
@@ -1977,7 +2400,12 @@ export async function launchClientOnboarding(email: string, projectId: string) {
     action: "client.onboarding.launched",
     resourceType: "seo_project",
     resourceId: projectId,
-    afterState: { evidenceJobs, discoveryJobId: discovery.jobId, monthlyBudget, targetMarket },
+    afterState: {
+      evidenceJobs,
+      discoveryJobId: discovery.jobId,
+      monthlyBudget,
+      targetMarket,
+    },
   });
   return { evidenceJobs, discovery, agentWorkItems };
 }
@@ -2078,6 +2506,7 @@ export async function discoverKeywordOpportunities(
     projectId: string;
     monthlyBudget: number;
     targetMarket?: string;
+    marketScope?: "service_area" | "nationwide";
     limit: number;
   },
 ): Promise<KeywordDiscoverySummary> {
@@ -2095,12 +2524,50 @@ export async function discoverKeywordOpportunities(
   const { data: project } = await db
     .from("seo_projects")
     .select(
-      "id,name,domain,primary_market,client_organization_id,country_code,language_code,client_organizations(name)",
+      "id,name,domain,primary_market,market_scope,client_organization_id,country_code,language_code,client_organizations(name)",
     )
     .eq("id", input.projectId)
     .eq("agency_id", agencyId)
     .maybeSingle();
   if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
+
+  const marketScope =
+    input.marketScope ??
+    (project.market_scope === "nationwide" ? "nationwide" : "service_area");
+  if (marketScope === "service_area") {
+    const locations = await db
+      .from("seo_locations")
+      .select("id", { count: "exact", head: true })
+      .eq("project_id", project.id)
+      .eq("status", "active");
+    if (locations.error) throw locations.error;
+    if (!locations.count)
+      throw new ApiError(
+        "Add at least one city or service area before using service-area discovery.",
+        422,
+        "SERVICE_AREA_REQUIRED",
+      );
+  }
+  if (marketScope !== project.market_scope) {
+    const marketWrite = await db
+      .from("seo_projects")
+      .update({
+        market_scope: marketScope,
+        primary_market:
+          marketScope === "nationwide"
+            ? "United States"
+            : project.primary_market,
+        updated_at: nowIso(),
+      })
+      .eq("id", project.id)
+      .eq("agency_id", agencyId);
+    if (marketWrite.error)
+      throw new ApiError(
+        "The market scope could not be saved. Apply migration 0023 and retry.",
+        500,
+        "DATABASE_BINDING_FAILED",
+      );
+  }
 
   const serviceAreaPolicy = await loadProjectServiceAreaPolicy(
     db,
@@ -2295,18 +2762,20 @@ export async function discoverKeywordOpportunities(
           value_per_dollar: candidate.valuePerDollar,
         },
       }));
-      const rankingRows = candidates.filter((candidate)=>candidate.currentRank!=null).map((candidate) => ({
-        agency_id: agencyId,
-        client_organization_id: project.client_organization_id,
-        project_id: project.id,
-        keyword_id: keywordIds.get(candidate.normalizedKeyword),
+      const rankingRows = candidates
+        .filter((candidate) => candidate.currentRank != null)
+        .map((candidate) => ({
+          agency_id: agencyId,
+          client_organization_id: project.client_organization_id,
+          project_id: project.id,
+          keyword_id: keywordIds.get(candidate.normalizedKeyword),
           position: candidate.currentRank,
-        ranking_url: candidate.rankingUrl,
-        search_engine: "google",
-        device: "desktop",
-        location_code: targetMarket,
-        collected_at: nowIso(),
-      }));
+          ranking_url: candidate.rankingUrl,
+          search_engine: "google",
+          device: "desktop",
+          location_code: targetMarket,
+          collected_at: nowIso(),
+        }));
       const metricWrite = await db
         .from("keyword_metric_snapshots")
         .insert(metricRows);
@@ -2334,7 +2803,7 @@ export async function discoverKeywordOpportunities(
         candidate.rankingUrl,
         candidate.actionType,
       );
-      const reason = `HD SEO found this from ${project.domain} in the configured ${targetMarket} service market: ${candidate.searchVolume.toLocaleString()} monthly searches, $${candidate.cpc.toFixed(2)} CPC, ${candidate.currentRank == null ? "an untapped keyword" : `current rank #${candidate.currentRank}`}, and an estimated ${candidate.valuePerDollar.toFixed(2)} value-to-effort ratio within the $${input.monthlyBudget.toLocaleString()} monthly SEO budget.`;
+      const reason = `HD SEO found this from ${project.domain} in the configured ${marketScope === "nationwide" ? "nationwide" : targetMarket} market: ${candidate.searchVolume.toLocaleString()} monthly searches, $${candidate.cpc.toFixed(2)} CPC, ${candidate.currentRank == null ? "an untapped keyword" : `current rank #${candidate.currentRank}`}, and an estimated ${candidate.valuePerDollar.toFixed(2)} value-to-effort ratio within the $${input.monthlyBudget.toLocaleString()} monthly SEO budget.`;
       const values = {
         agency_id: agencyId,
         client_organization_id: project.client_organization_id,
@@ -2360,7 +2829,10 @@ export async function discoverKeywordOpportunities(
           value_per_dollar: candidate.valuePerDollar,
           monthly_budget: input.monthlyBudget,
           target_market: targetMarket,
-          service_areas: serviceAreaPolicy.serviceAreas.map((area) => area.name),
+          market_scope: marketScope,
+          service_areas: serviceAreaPolicy.serviceAreas.map(
+            (area) => area.name,
+          ),
           location_relevance: candidate.locationRelevance,
           service_relevance: candidate.serviceRelevance,
           source: "dataforseo_domain_discovery",
@@ -2376,8 +2848,13 @@ export async function discoverKeywordOpportunities(
       };
       const opportunityId = opportunityIds.get(key);
       const write = opportunityId
-        ? await db.from("seo_opportunities").update(values).eq("id", opportunityId)
-        : await db.from("seo_opportunities").insert({ ...values, status: "open" });
+        ? await db
+            .from("seo_opportunities")
+            .update(values)
+            .eq("id", opportunityId)
+        : await db
+            .from("seo_opportunities")
+            .insert({ ...values, status: "open" });
       if (write.error) throw write.error;
     }
 
@@ -2397,6 +2874,7 @@ export async function discoverKeywordOpportunities(
       status: "active",
       constraints: {
         target_market: targetMarket,
+        market_scope: marketScope,
         service_areas: serviceAreaPolicy.serviceAreas.map((area) => area.name),
         discovery_limit: limit,
         human_approval_required: true,
@@ -2533,7 +3011,8 @@ export async function discoverKeywordOpportunities(
         cost: 0,
         units: 0,
         status: "failed",
-        error: error instanceof Error ? error.message : "Keyword discovery failed",
+        error:
+          error instanceof Error ? error.message : "Keyword discovery failed",
       }).catch(() => undefined);
     }
     if (error instanceof ApiError) throw error;
@@ -2700,7 +3179,11 @@ export async function controlCampaignJob(
 
   if (input.command === "cancel") {
     if (["completed", "failed", "cancelled", "stale"].includes(job.status)) {
-      throw new ApiError("This automation run is already finished.", 409, "CONFLICT");
+      throw new ApiError(
+        "This automation run is already finished.",
+        409,
+        "CONFLICT",
+      );
     }
     await db
       .from("seo_campaign_jobs")
@@ -2804,7 +3287,11 @@ export async function reviewCampaignJob(
       .eq("project_id", job.project_id)
       .maybeSingle();
     if (!draft) {
-      throw new ApiError("The implementation draft is unavailable.", 409, "CONFLICT");
+      throw new ApiError(
+        "The implementation draft is unavailable.",
+        409,
+        "CONFLICT",
+      );
     }
     if (draft.execution_path === "repository") {
       requireLivePermission(role, "execution.approve");
@@ -2935,10 +3422,10 @@ export async function advancePackage(
     action === "approve_package"
       ? "Agency approval completed"
       : action === "publish_package"
-      ? "Client approval requested"
-      : action === "mark_implemented"
-        ? "Implementation reported"
-        : "Implementation verified";
+        ? "Client approval requested"
+        : action === "mark_implemented"
+          ? "Implementation reported"
+          : "Implementation verified";
 
   if (action === "mark_implemented") {
     if (!details.liveUrl) {
@@ -2983,9 +3470,19 @@ export async function advancePackage(
         "CONFLICT",
       );
     }
-    const automated = await verifyLiveImplementation({liveUrl:pending.data.live_url,packageData:pkg.package_data});
+    const automated = await verifyLiveImplementation({
+      liveUrl: pending.data.live_url,
+      packageData: pkg.package_data,
+    });
     if (!automated.passed) {
-      await db.from("implementation_verifications").update({checks:automated.checks,error_details:{failed:automated.failed,page:automated.page},updated_at:nowIso()}).eq("id",pending.data.id);
+      await db
+        .from("implementation_verifications")
+        .update({
+          checks: automated.checks,
+          error_details: { failed: automated.failed, page: automated.page },
+          updated_at: nowIso(),
+        })
+        .eq("id", pending.data.id);
       throw new ApiError(
         `Automated live verification failed: ${automated.failed.join(", ")}.`,
         409,
@@ -2997,7 +3494,13 @@ export async function advancePackage(
       .update({
         status: "passed",
         checks: automated.checks,
-        proof: {...((pending.data.proof&&typeof pending.data.proof==="object")?pending.data.proof:{}),...(details.proof??{}),automatedPage:automated.page},
+        proof: {
+          ...(pending.data.proof && typeof pending.data.proof === "object"
+            ? pending.data.proof
+            : {}),
+          ...(details.proof ?? {}),
+          automatedPage: automated.page,
+        },
         error_details: {},
         verified_by: userId,
         verified_at: nowIso(),
@@ -3147,18 +3650,47 @@ export async function advancePackage(
   });
 }
 
-export async function publishPackageToCms(email:string,packageId:string){
-  const{db,agencyId,userId,role}=await agencyContext(email);requireLivePermission(role,"execution.approve");
-  const pkg=await db.from("implementation_packages").select("project_id,version").eq("id",packageId).eq("agency_id",agencyId).maybeSingle();
-  if(!pkg.data)throw new ApiError("Implementation package not found.",404,"NOT_FOUND");
-  return publishCmsPackage(db,{packageId,agencyId,projectId:pkg.data.project_id,actorId:userId,idempotencyKey:`cms:${packageId}:v${pkg.data.version??1}`});
+export async function publishPackageToCms(email: string, packageId: string) {
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "execution.approve");
+  const pkg = await db
+    .from("implementation_packages")
+    .select("project_id,version")
+    .eq("id", packageId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!pkg.data)
+    throw new ApiError("Implementation package not found.", 404, "NOT_FOUND");
+  return publishCmsPackage(db, {
+    packageId,
+    agencyId,
+    projectId: pkg.data.project_id,
+    actorId: userId,
+    idempotencyKey: `cms:${packageId}:v${pkg.data.version ?? 1}`,
+  });
 }
 
-export async function rollbackPackageCmsPublication(email:string,packageId:string,publicationId:string){
-  const{db,agencyId,userId,role}=await agencyContext(email);requireLivePermission(role,"deploy.rollback");
-  const pkg=await db.from("implementation_packages").select("project_id").eq("id",packageId).eq("agency_id",agencyId).maybeSingle();
-  if(!pkg.data)throw new ApiError("Implementation package not found.",404,"NOT_FOUND");
-  return rollbackCmsPublication(db,{publicationId,agencyId,projectId:pkg.data.project_id,actorId:userId});
+export async function rollbackPackageCmsPublication(
+  email: string,
+  packageId: string,
+  publicationId: string,
+) {
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "deploy.rollback");
+  const pkg = await db
+    .from("implementation_packages")
+    .select("project_id")
+    .eq("id", packageId)
+    .eq("agency_id", agencyId)
+    .maybeSingle();
+  if (!pkg.data)
+    throw new ApiError("Implementation package not found.", 404, "NOT_FOUND");
+  return rollbackCmsPublication(db, {
+    publicationId,
+    agencyId,
+    projectId: pkg.data.project_id,
+    actorId: userId,
+  });
 }
 
 export async function recordClientPackageDecision(
