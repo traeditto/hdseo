@@ -11,6 +11,10 @@ import {
   assessKeywordServiceArea,
   buildServiceAreaPolicy,
 } from "@/lib/seo/service-area";
+import {
+  buildImplementationOptions,
+  type ImplementationReadiness,
+} from "@/lib/seo/implementation-options";
 
 type Agency = { id: string; name: string; slug: string };
 type Client = {
@@ -57,6 +61,12 @@ type PackageData = {
   metadata?: { title?: string; metaDescription?: string };
   acceptanceCriteria?: string[];
   verificationChecklist?: string[];
+  delivery?: {
+    mode?: string;
+    provider?: string | null;
+    label?: string;
+    approvalRequired?: boolean;
+  };
 };
 type Package = {
   id: string;
@@ -138,6 +148,7 @@ type Data = {
   events: Event[];
   jobs: Job[];
   onboardings: Onboarding[];
+  implementationReadiness: ImplementationReadiness[];
   permissions: string[];
 };
 const tabs = [
@@ -155,6 +166,7 @@ const tabs = [
   "Activity",
   "Onboarding",
 ];
+
 export function LiveAgencyDashboard({
   initialData,
   user,
@@ -757,6 +769,7 @@ export function LiveAgencyDashboard({
                           item.status,
                         ) && <em>Waiting for client</em>}
                         {item.status === "client_approved" &&
+                          item.packageData.delivery?.mode === "direct_cms" &&
                           can("execution.approve") && (
                             <button
                               disabled={busy}
@@ -767,7 +780,8 @@ export function LiveAgencyDashboard({
                                 })
                               }
                             >
-                              Publish through CMS
+                              Publish to{" "}
+                              {item.packageData.delivery?.provider ?? "website"}
                             </button>
                           )}
                         {item.status === "client_approved" &&
@@ -1063,7 +1077,8 @@ export function LiveAgencyDashboard({
                   <article className="live-package" key={item.id}>
                     <div>
                       <small>
-                        {item.implementationPath.replaceAll("_", " ")} ·{" "}
+                        {item.packageData.delivery?.label ??
+                          item.implementationPath.replaceAll("_", " ")} ·{" "}
                         {item.status.replaceAll("_", " ")}
                         {item.publicationProvider
                           ? ` · ${item.publicationProvider} ${item.publicationStatus?.replaceAll("_", " ")}`
@@ -1115,6 +1130,7 @@ export function LiveAgencyDashboard({
                           </button>
                         )}
                       {item.status === "client_approved" &&
+                        item.packageData.delivery?.mode === "direct_cms" &&
                         can("execution.approve") && (
                           <button
                             disabled={busy}
@@ -1125,7 +1141,8 @@ export function LiveAgencyDashboard({
                               })
                             }
                           >
-                            Publish through CMS
+                            Publish to{" "}
+                            {item.packageData.delivery?.provider ?? "website"}
                           </button>
                         )}
                       {item.status === "client_approved" &&
@@ -1214,10 +1231,17 @@ export function LiveAgencyDashboard({
           kind={dialog}
           projects={scopedProjects.length ? scopedProjects : data.projects}
           packages={scopedPackages.length ? scopedPackages : data.packages}
+          opportunities={data.opportunities}
+          websites={data.websites}
+          implementationReadiness={data.implementationReadiness}
           selectedProjectId={
             scopedProjects.length === 1 ? scopedProjects[0].id : null
           }
           close={() => setDialog(null)}
+          openConnections={() => {
+            setDialog(null);
+            setTab("Websites");
+          }}
           submit={form}
           busy={busy}
           message={message}
@@ -1247,8 +1271,12 @@ function LiveDialog({
   kind,
   projects,
   packages,
+  opportunities,
+  websites,
+  implementationReadiness,
   selectedProjectId,
   close,
+  openConnections,
   submit,
   busy,
   message,
@@ -1256,8 +1284,12 @@ function LiveDialog({
   kind: string;
   projects: Project[];
   packages: Package[];
+  opportunities: Opportunity[];
+  websites: Website[];
+  implementationReadiness: ImplementationReadiness[];
   selectedProjectId: string | null;
   close: () => void;
+  openConnections: () => void;
   submit: (
     event: FormEvent<HTMLFormElement>,
     action: string,
@@ -1267,12 +1299,33 @@ function LiveDialog({
   message: string;
 }) {
   const packageId = kind.includes(":") ? kind.split(":")[1] : null,
-    pkg = packages.find((item) => item.id === packageId);
+    pkg = packages.find((item) => item.id === packageId),
+    packageOpportunity = kind.startsWith("package:")
+      ? opportunities.find((item) => item.id === packageId)
+      : null,
+    packageProject = packageOpportunity
+      ? projects.find((item) => item.id === packageOpportunity.projectId)
+      : null,
+    packageWebsite = packageProject
+      ? websites.find((item) => item.projectId === packageProject.id)
+      : null,
+    packageReadiness = packageProject
+      ? implementationReadiness.find(
+          (item) => item.projectId === packageProject.id,
+        )
+      : null;
   const [discoveryProjectId, setDiscoveryProjectId] = useState(
     selectedProjectId ?? projects[0]?.id ?? "",
   );
   const discoveryProject =
     projects.find((item) => item.id === discoveryProjectId) ?? projects[0];
+  const implementationOptions = buildImplementationOptions(
+    packageReadiness ?? null,
+    packageWebsite ?? null,
+  );
+  const recommendedChoice =
+    implementationOptions.find((item) => item.recommended && item.available) ??
+    implementationOptions.find((item) => item.available);
   return (
     <div className="modal-backdrop" onMouseDown={close}>
       <div
@@ -1486,13 +1539,15 @@ function LiveDialog({
         {kind.startsWith("package:") && (
           <>
             <small>IMPLEMENTATION PATH</small>
-            <h2>Create implementation package</h2>
+            <h2>How should HD SEO complete this work?</h2>
             <p>
-              Repository execution stays locked. Select a professional manual
-              handoff.
+              HD SEO recommends the safest available option for{" "}
+              <strong>{packageProject?.name ?? "this client"}</strong>. Automatic
+              paths remain approval-gated and include validation and rollback
+              protection.
             </p>
             <form
-              className="workflow-form"
+              className="workflow-form implementation-choice-form"
               onSubmit={(event) =>
                 submit(event, "create_package", (data) => ({
                   opportunityId: kind.split(":")[1],
@@ -1500,15 +1555,62 @@ function LiveDialog({
                 }))
               }
             >
-              <label>
-                Path
-                <select name="implementationPath">
-                  <option value="wordpress_package">WordPress package</option>
-                  <option value="generic_cms">Generic CMS package</option>
-                  <option value="developer_ticket">Developer ticket</option>
-                </select>
-              </label>
-              <button disabled={busy}>Create package</button>
+              {(["automatic", "guided"] as const).map((group) => (
+                <fieldset className="implementation-choice-group" key={group}>
+                  <legend>
+                    {group === "automatic"
+                      ? "Automatic and connected"
+                      : "Guided and manual"}
+                  </legend>
+                  <div className="implementation-choice-grid">
+                    {implementationOptions
+                      .filter((item) => item.group === group)
+                      .map((item) => (
+                        <div
+                          className={`implementation-choice ${item.available ? "available" : "blocked"} ${item.recommended ? "recommended" : ""}`}
+                          key={item.value}
+                        >
+                          <label>
+                            <input
+                              type="radio"
+                              name="implementationPath"
+                              value={item.value}
+                              disabled={!item.available}
+                              defaultChecked={
+                                recommendedChoice?.value === item.value
+                              }
+                              required={item.available}
+                            />
+                            <span>
+                              <strong>{item.title}</strong>
+                              {item.recommended && item.available && (
+                                <em>RECOMMENDED</em>
+                              )}
+                              <small>{item.description}</small>
+                              {item.reason && <b>{item.reason}</b>}
+                            </span>
+                          </label>
+                          {item.setup && (
+                            <button type="button" onClick={openConnections}>
+                              Finish setup
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                </fieldset>
+              ))}
+              <div className="implementation-safety-note">
+                <strong>Nothing publishes immediately</strong>
+                <span>
+                  HD SEO prepares the work first. Client approval, validation,
+                  spending limits, audit logging, and rollback rules still
+                  apply.
+                </span>
+              </div>
+              <button disabled={busy || !recommendedChoice}>
+                {busy ? "Preparing workflow…" : "Use selected option"}
+              </button>
             </form>
           </>
         )}
@@ -1584,7 +1686,10 @@ function LiveDialog({
         )}
         {kind.startsWith("details:") && pkg && (
           <>
-            <small>{pkg.implementationPath.replaceAll("_", " ")}</small>
+            <small>
+              {pkg.packageData.delivery?.label ??
+                pkg.implementationPath.replaceAll("_", " ")}
+            </small>
             <h2>{pkg.title}</h2>
             <div className="package-details">
               <strong>Metadata</strong>

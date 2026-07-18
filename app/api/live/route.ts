@@ -105,9 +105,16 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("create_package"),
     opportunityId: z.string().uuid(),
     implementationPath: z.enum([
+      "wordpress_direct",
+      "shopify_direct",
+      "webflow_direct",
+      "repository_pr",
+      "repository_vercel",
+      "squarespace_guided",
       "wordpress_package",
       "generic_cms",
       "developer_ticket",
+      "monitoring_only",
     ]),
   }),
   z.object({
@@ -419,12 +426,17 @@ export async function POST(request: Request) {
           summary,
         });
       }
-      case "create_package":
-        await createPackage(user.email, {
+      case "create_package": {
+        const created = await createPackage(user.email, {
           opportunityId: input.opportunityId,
           implementationPath: input.implementationPath,
         });
-        break;
+        return Response.json({
+          ok: true,
+          data: await liveAgencySnapshot(user.email),
+          message: created.message,
+        });
+      }
       case "update_task":
         await updateTaskStatus(user.email, {
           taskId: input.taskId,

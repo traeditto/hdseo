@@ -35,6 +35,7 @@ import {
 } from "@/lib/seo/service-area-server";
 import { assessKeywordServiceArea } from "@/lib/seo/service-area";
 import { buildManualPackage } from "@/lib/seo/manual-package";
+import type { ImplementationChoice } from "@/lib/seo/implementation-options";
 import { createManualPackage } from "@/lib/manual/package-service";
 import { verifyLiveImplementation } from "@/lib/manual/live-verification";
 import { enqueueEvidenceJob } from "@/lib/evidence/queue";
@@ -74,7 +75,18 @@ export type LiveAgency = {
   name: string;
   slug: string;
   ownerEmail: string;
+  repositoryExecutionEnabled: boolean;
   createdAt: string;
+};
+
+export type LiveImplementationReadiness = {
+  projectId: string;
+  cmsProvider: "wordpress" | "shopify" | "webflow" | null;
+  cmsReady: boolean;
+  repositoryConnected: boolean;
+  repositoryReady: boolean;
+  repositoryBlockers: string[];
+  vercelConnected: boolean;
 };
 
 export type LiveClient = {
@@ -374,6 +386,7 @@ function mapAgency(row: DatabaseRow): LiveAgency {
     name: rowText(row, "name"),
     slug: rowText(row, "slug"),
     ownerEmail: rowText(row, "billing_email"),
+    repositoryExecutionEnabled: row.repository_execution_enabled === true,
     createdAt: toIso(row.created_at),
   };
 }
@@ -649,7 +662,7 @@ export async function agencyMembership(
 
   const { data } = await db
     .from("agency_members")
-    .select("role,agencies(id,name,slug,billing_email,created_at)")
+    .select("role,agencies(id,name,slug,billing_email,repository_execution_enabled,created_at)")
     .eq("user_id", userId)
     .eq("status", "active")
     .limit(1)
@@ -691,6 +704,7 @@ export async function liveAgencySnapshot(email: string) {
       events: [] as LiveEvent[],
       jobs: [] as LiveCampaignJob[],
       onboardings: [] as LiveClientOnboarding[],
+      implementationReadiness: [] as LiveImplementationReadiness[],
       permissions: [] as string[],
     };
   }
@@ -711,6 +725,8 @@ export async function liveAgencySnapshot(email: string) {
     connectionsRes,
     googleRes,
     publicationsRes,
+    repositoryConnectionsRes,
+    vercelProjectsRes,
   ] = await Promise.all([
     db
       .from("client_organizations")
@@ -765,7 +781,7 @@ export async function liveAgencySnapshot(email: string) {
     db
       .from("cms_connections")
       .select(
-        "id,website_id,editor_mode,connection_mode,status,last_verified_at,updated_at",
+        "id,project_id,website_id,cms_type,editor_mode,connection_mode,status,last_verified_at,updated_at",
       )
       .eq("agency_id", agencyId)
       .order("updated_at", { ascending: false }),
@@ -782,6 +798,14 @@ export async function liveAgencySnapshot(email: string) {
       .select("id,package_id,provider,status,created_at")
       .eq("agency_id", agencyId)
       .order("created_at", { ascending: false }),
+    db
+      .from("repository_connections")
+      .select("project_id,status,installation_id")
+      .eq("agency_id", agencyId),
+    db
+      .from("vercel_projects")
+      .select("project_id,status")
+      .eq("agency_id", agencyId),
   ]);
 
   const clients = clientsRes.data ?? [];
@@ -794,11 +818,25 @@ export async function liveAgencySnapshot(email: string) {
     (eventsRes.data ?? []).map((row) => row.actor_user_id),
   );
   const connectionByWebsite = new Map<string, DatabaseRow>();
+  const connectionByProject = new Map<string, DatabaseRow>();
   for (const row of connectionsRes.data ?? []) {
     if (!connectionByWebsite.has(rowText(row, "website_id"))) {
       connectionByWebsite.set(rowText(row, "website_id"), row);
     }
+    if (!connectionByProject.has(rowText(row, "project_id"))) {
+      connectionByProject.set(rowText(row, "project_id"), row);
+    }
   }
+  const repositoryProjects = new Set(
+    (repositoryConnectionsRes.data ?? [])
+      .filter((row) => row.status === "connected" && row.installation_id != null)
+      .map((row) => String(row.project_id)),
+  );
+  const vercelProjects = new Set(
+    (vercelProjectsRes.data ?? [])
+      .filter((row) => row.status === "active")
+      .map((row) => String(row.project_id)),
+  );
   const googleByProject = new Map<string, DatabaseRow>();
   for (const row of googleRes.data ?? [])
     if (!googleByProject.has(rowText(row, "project_id")))
@@ -875,6 +913,40 @@ export async function liveAgencySnapshot(email: string) {
     ];
   });
 
+  const implementationReadiness = (projectsRes.data ?? []).map((project) => {
+    const projectId = rowText(project, "id");
+    const connection = connectionByProject.get(projectId);
+    const cmsType = connection ? rowText(connection, "cms_type") : "";
+    const cmsProvider = ["wordpress", "shopify", "webflow"].includes(cmsType)
+      ? (cmsType as LiveImplementationReadiness["cmsProvider"])
+      : null;
+    const repositoryConnected = repositoryProjects.has(projectId);
+    const repositoryBlockers = [
+      !membership.agency.repositoryExecutionEnabled
+        ? "AGENCY_FEATURE_DISABLED"
+        : null,
+      project.repository_execution_enabled !== true
+        ? "PROJECT_FEATURE_DISABLED"
+        : null,
+      project.manual_workflow_verified_at == null
+        ? "MANUAL_WORKFLOW_NOT_VERIFIED"
+        : null,
+      !repositoryConnected ? "REPOSITORY_NOT_VERIFIED" : null,
+    ].filter((item): item is string => Boolean(item));
+    return {
+      projectId,
+      cmsProvider,
+      cmsReady:
+        cmsProvider !== null &&
+        connection?.status === "active" &&
+        connection.last_verified_at != null,
+      repositoryConnected,
+      repositoryReady: repositoryBlockers.length === 0,
+      repositoryBlockers,
+      vercelConnected: vercelProjects.has(projectId),
+    } satisfies LiveImplementationReadiness;
+  });
+
   return {
     agency: membership.agency,
     role: membership.role,
@@ -939,6 +1011,7 @@ export async function liveAgencySnapshot(email: string) {
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
     jobs: (jobsRes.data ?? []).map(mapCampaignJob),
     onboardings,
+    implementationReadiness,
     permissions: [...permissionMatrix[membership.role]],
   };
 }
@@ -3026,8 +3099,8 @@ export async function discoverKeywordOpportunities(
 
 export async function createPackage(
   email: string,
-  input: { opportunityId: string; implementationPath: string },
-): Promise<void> {
+  input: { opportunityId: string; implementationPath: ImplementationChoice },
+): Promise<{ message: string }> {
   const { db, agencyId, userId, role } = await agencyContext(email);
   requireLivePermission(role, "seo.write");
   const { data: opp } = await db
@@ -3045,13 +3118,223 @@ export async function createPackage(
     .maybeSingle();
   if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
 
+  if (input.implementationPath === "monitoring_only") {
+    await Promise.all([
+      db
+        .from("seo_opportunities")
+        .update({ status: "monitoring", updated_at: nowIso() })
+        .eq("id", input.opportunityId)
+        .eq("agency_id", agencyId),
+      db.from("seo_tasks").insert({
+        agency_id: agencyId,
+        client_organization_id: project.client_organization_id,
+        project_id: project.id,
+        title: `Monitor ${String(asRecord(opp.evidence).keyword ?? opp.opportunity_key ?? "SEO opportunity")}`,
+        status: "ready",
+        priority: "medium",
+        created_by: userId,
+        completion_proof: {
+          opportunity_id: input.opportunityId,
+          assigned_email: email,
+          implementation_path: "monitoring_only",
+        },
+      }),
+    ]);
+    await recordEvent(db, {
+      agencyId,
+      clientOrganizationId: project.client_organization_id,
+      projectId: project.id,
+      eventType: "monitoring_only_selected",
+      title: "Monitoring-only workflow started",
+      description:
+        "HD SEO will keep measuring this opportunity without changing the website.",
+      actorUserId: userId,
+      actorEmail: email,
+      clientVisible: true,
+    });
+    await recordAudit(db, {
+      agencyId,
+      actorUserId: userId,
+      action: "implementation.monitoring_only_selected",
+      resourceType: "seo_opportunity",
+      resourceId: input.opportunityId,
+      afterState: { projectId: project.id },
+    });
+    return { message: "Monitoring started. No website changes will be made." };
+  }
+
+  if (
+    input.implementationPath === "repository_pr" ||
+    input.implementationPath === "repository_vercel"
+  ) {
+    requireLivePermission(role, "execution.approve");
+    const readiness = await db.rpc("github_execution_readiness", {
+      target_agency: agencyId,
+      target_project: project.id,
+    });
+    if (!readiness.data?.ready) {
+      throw new ApiError(
+        `GitHub execution needs setup: ${(readiness.data?.blockers ?? []).join(", ")}.`,
+        409,
+        "CONFLICT",
+      );
+    }
+    if (input.implementationPath === "repository_vercel") {
+      const vercel = await db
+        .from("vercel_projects")
+        .select("id")
+        .eq("agency_id", agencyId)
+        .eq("project_id", project.id)
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle();
+      if (!vercel.data) {
+        throw new ApiError(
+          "Connect this project to Vercel before selecting GitHub + Vercel deployment.",
+          409,
+          "NOT_CONFIGURED",
+        );
+      }
+    }
+    const activeJob = await db
+      .from("seo_campaign_jobs")
+      .select("id")
+      .eq("project_id", project.id)
+      .not("status", "in", "(completed,failed,cancelled,stale)")
+      .limit(1)
+      .maybeSingle();
+    if (activeJob.data) {
+      throw new ApiError(
+        "This client already has an active automation run. Finish or cancel it before starting another repository change.",
+        409,
+        "CONFLICT",
+      );
+    }
+    const referenceId = crypto.randomUUID();
+    const queued = await db
+      .from("seo_campaign_jobs")
+      .insert({
+        agency_id: agencyId,
+        client_organization_id: project.client_organization_id,
+        project_id: project.id,
+        requested_by: userId,
+        status: "queued",
+        current_stage: "inspect_repository",
+        input: {
+          automationMode: "EXECUTE_WITH_APPROVAL",
+          deliveryMode: input.implementationPath,
+        },
+        result: { opportunityId: input.opportunityId },
+        idempotency_key: `repository:${project.id}:${input.opportunityId}:${referenceId}`,
+        reference_id: referenceId,
+      })
+      .select("id")
+      .single();
+    if (!queued.data) {
+      throw new ApiError(
+        "The repository execution could not be queued.",
+        500,
+        "OPERATION_FAILED",
+      );
+    }
+    await db
+      .from("seo_opportunities")
+      .update({ status: "approved", updated_at: nowIso() })
+      .eq("id", input.opportunityId)
+      .eq("agency_id", agencyId);
+    await recordEvent(db, {
+      agencyId,
+      clientOrganizationId: project.client_organization_id,
+      projectId: project.id,
+      eventType: "repository_execution_queued",
+      title:
+        input.implementationPath === "repository_vercel"
+          ? "GitHub + Vercel workflow queued"
+          : "GitHub pull request workflow queued",
+      description:
+        "HD SEO will inspect the repository, prepare a bounded change, and pause for human approval before writing code.",
+      actorUserId: userId,
+      actorEmail: email,
+      clientVisible: true,
+    });
+    await recordAudit(db, {
+      agencyId,
+      actorUserId: userId,
+      action: "repository_execution.queued",
+      resourceType: "seo_campaign_job",
+      resourceId: queued.data.id,
+      afterState: {
+        opportunityId: input.opportunityId,
+        deliveryMode: input.implementationPath,
+      },
+    });
+    return {
+      message:
+        input.implementationPath === "repository_vercel"
+          ? "GitHub change queued. HD SEO will prepare the pull request and track its Vercel deployment."
+          : "GitHub change queued. HD SEO will pause for approval before creating the pull request.",
+    };
+  }
+
   const evidence = asRecord(opp.evidence);
   const keyword =
     (evidence.keyword as string) ?? (opp.opportunity_key as string) ?? "";
-  const path = input.implementationPath as
-    | "wordpress_package"
-    | "generic_cms"
-    | "developer_ticket";
+  const directProvider = input.implementationPath.endsWith("_direct")
+    ? input.implementationPath.replace("_direct", "")
+    : null;
+  if (directProvider) {
+    const connection = await db
+      .from("cms_connections")
+      .select("id")
+      .eq("agency_id", agencyId)
+      .eq("project_id", project.id)
+      .eq("cms_type", directProvider)
+      .eq("status", "active")
+      .not("last_verified_at", "is", null)
+      .limit(1)
+      .maybeSingle();
+    if (!connection.data) {
+      throw new ApiError(
+        `Connect and verify ${directProvider} before selecting automatic publishing.`,
+        409,
+        "WEBSITE_CONNECTION_FAILED",
+      );
+    }
+  }
+  const path = (
+    input.implementationPath === "wordpress_direct"
+      ? "wordpress_package"
+      : ["shopify_direct", "webflow_direct", "squarespace_guided"].includes(
+            input.implementationPath,
+          )
+        ? "generic_cms"
+        : input.implementationPath
+  ) as "wordpress_package" | "generic_cms" | "developer_ticket";
+  const delivery = directProvider
+    ? {
+        mode: "direct_cms",
+        provider: directProvider,
+        label: `Publish automatically to ${directProvider}`,
+        approvalRequired: true,
+      }
+    : input.implementationPath === "squarespace_guided"
+      ? {
+          mode: "guided",
+          provider: "squarespace",
+          label: "Squarespace guided implementation",
+          approvalRequired: true,
+        }
+      : {
+          mode: "manual_handoff",
+          provider: path === "wordpress_package" ? "wordpress" : null,
+          label:
+            path === "developer_ticket"
+              ? "Developer handoff"
+              : path === "wordpress_package"
+                ? "WordPress implementation package"
+                : "CMS implementation package",
+          approvalRequired: true,
+        };
   const packageData = buildManualPackage({
     path,
     keyword,
@@ -3080,7 +3363,11 @@ export async function createPackage(
       implementation_path: path,
       version,
       status: "awaiting_agency_review",
-      package_data: { ...packageData, title: `${keyword} implementation` },
+      package_data: {
+        ...packageData,
+        title: `${keyword} implementation`,
+        delivery,
+      },
       created_by: userId,
     })
     .select("id")
@@ -3127,8 +3414,19 @@ export async function createPackage(
     action: "implementation_package.created",
     resourceType: "implementation_package",
     resourceId: pkg.id,
-    afterState: { opportunityId: input.opportunityId, path },
+    afterState: {
+      opportunityId: input.opportunityId,
+      path,
+      deliveryMode: delivery.mode,
+      provider: delivery.provider,
+    },
   });
+  return {
+    message:
+      delivery.mode === "direct_cms"
+        ? `${directProvider} publishing package created. It will require approval before HD SEO writes to the website.`
+        : `${delivery.label} created for review.`,
+  };
 }
 
 export async function updateTaskStatus(
