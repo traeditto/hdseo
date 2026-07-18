@@ -34,6 +34,7 @@ export interface DomainDiscoveryInput extends DiscoveryTenant {
   confirmationId: string;
   domain: string;
   targetMarket: string;
+  locationCode: number;
   languageCode: string;
   monthlyBudget: number;
   limit: number;
@@ -42,6 +43,7 @@ export interface DomainDiscoveryInput extends DiscoveryTenant {
 export function domainDiscoveryScope(input: {
   domain: string;
   targetMarket: string;
+  locationCode: number;
   languageCode: string;
   limit: number;
 }) {
@@ -55,7 +57,8 @@ export function domainDiscoveryScope(input: {
       .replace(/\/.*$/, "")
       .toLowerCase(),
     limit: input.limit,
-    locationName: input.targetMarket,
+    targetMarket: input.targetMarket,
+    locationCode: input.locationCode,
     languageCode: input.languageCode,
   };
 }
@@ -320,7 +323,7 @@ export async function runAuthorizedDomainDiscovery(
     const providerInput = {
       target: scope.target,
       limit: input.limit,
-      locationName: policy.targetMarket,
+      locationCode: input.locationCode,
       languageCode: input.languageCode,
     };
     const [site, ranked] = await Promise.all([

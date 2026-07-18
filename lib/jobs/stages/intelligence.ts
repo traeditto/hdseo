@@ -16,6 +16,7 @@ import { classifySite } from "@/lib/seo/site-classifier";
 import { buildWorkflowPlan } from "@/lib/seo/workflow-registry";
 import { env, hasDataForSeoConfig } from "@/lib/config/env";
 import { evidenceFreshness,queueStaleEvidence } from "@/lib/evidence/freshness";
+import { resolveLabsLocation } from "@/lib/providers/dataforseo/locations";
 
 const inputNumber=(value:unknown,fallback:number)=>Number.isFinite(Number(value))?Number(value):fallback;
 
@@ -36,9 +37,12 @@ export async function discoverStage(db:SupabaseClient,job:CampaignJob){
   if(firstParty.keywords>0)return continueWhenFresh(firstParty);
   const confirmationId=typeof job.input.discoveryConfirmationId==="string"?job.input.discoveryConfirmationId:null;
   if(confirmationId){
-    const project=await db.from("seo_projects").select("domain,language_code").eq("id",job.project_id).single();
+    const project=await db.from("seo_projects").select("domain,country_code,language_code").eq("id",job.project_id).single();
     if(!project.data)throw new ApiError("Project discovery settings are unavailable.",409,"CONFLICT",job.reference_id);
-    const provider=await runAuthorizedDomainDiscovery(db,{...tenant,confirmationId,domain:project.data.domain,targetMarket:typeof job.input.targetMarket==="string"?job.input.targetMarket:"United States",languageCode:project.data.language_code||"en",monthlyBudget:inputNumber(job.input.monthlyBudget,1500),limit:Math.min(env.MAX_KEYWORDS_PER_RUN,Math.max(1,inputNumber(job.input.discoveryLimit,50)))});
+    const providerLocationCode=inputNumber(job.input.dataForSeoLocationCode,0)||(
+      await resolveLabsLocation(project.data.country_code||"US",project.data.language_code||"en")
+    ).locationCode;
+    const provider=await runAuthorizedDomainDiscovery(db,{...tenant,confirmationId,domain:project.data.domain,targetMarket:typeof job.input.targetMarket==="string"?job.input.targetMarket:"United States",locationCode:providerLocationCode,languageCode:project.data.language_code||"en",monthlyBudget:inputNumber(job.input.monthlyBudget,1500),limit:Math.min(env.MAX_KEYWORDS_PER_RUN,Math.max(1,inputNumber(job.input.discoveryLimit,50)))});
     if(provider.keywords>0)return continueWhenFresh(provider);
   }
   return pause(db,job,"awaiting_data_connection",{reason:"NO_DISCOVERY_EVIDENCE",message:"Connect Google Search Console or authorize bounded domain discovery. A manual keyword list is not required."});

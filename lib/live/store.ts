@@ -18,6 +18,7 @@ import {
 } from "@/lib/auth/permissions";
 import { dataForSeoRequest } from "@/lib/providers/dataforseo/client";
 import { providerOperations } from "@/lib/providers/dataforseo/operations";
+import { resolveLabsLocation } from "@/lib/providers/dataforseo/locations";
 import {
   beginPaidOperation,
   finishPaidOperation,
@@ -2112,6 +2113,10 @@ export async function discoverKeywordOpportunities(
     serviceAreaPolicy,
   );
   const targetMarket = serviceAreaPolicy.targetMarket;
+  const providerLocation = await resolveLabsLocation(
+    project.country_code || "US",
+    project.language_code || "en",
+  );
 
   const clientRow = Array.isArray(project.client_organizations)
     ? project.client_organizations[0]
@@ -2129,7 +2134,8 @@ export async function discoverKeywordOpportunities(
     keywords: null,
     target: discoveryDomain,
     limit,
-    locationName: targetMarket,
+    targetMarket,
+    locationCode: providerLocation.locationCode,
     languageCode: project.language_code || "en",
   };
   const estimatedCost = Number(
@@ -2192,7 +2198,7 @@ export async function discoverKeywordOpportunities(
     const providerInput = {
       target: discoveryDomain,
       limit,
-      locationName: targetMarket,
+      locationCode: providerLocation.locationCode,
       languageCode: project.language_code || "en",
     };
     const [siteResult, rankedResult] = await Promise.all([
