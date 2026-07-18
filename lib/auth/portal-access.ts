@@ -21,5 +21,9 @@ export async function resolvePortalAccess(portal:PortalRole):Promise<PortalIdent
     return {userId:user.id,email:user.email,displayName,organization:"New agency workspace",role:"onboarding",destination:"/portal/agency"};
   }
   const result=await db.from("client_members").select("role,client_organizations(name)").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle(),client=Array.isArray(result.data?.client_organizations)?result.data?.client_organizations[0]:result.data?.client_organizations;
-  return result.data&&client?{userId:user.id,email:user.email,displayName,organization:client.name,role:result.data.role,destination:"/portal/client"}:null;
+  if(result.data&&client)return {userId:user.id,email:user.email,displayName,organization:client.name,role:result.data.role,destination:"/portal/client"};
+  // A verified owner can enter the retail onboarding shell before a tenant is
+  // created. The only available mutation is the atomic, service-role retail
+  // workspace creator; no existing client data is exposed.
+  return {userId:user.id,email:user.email,displayName,organization:"New business workspace",role:"onboarding",destination:"/portal/client"};
 }

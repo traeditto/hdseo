@@ -28,6 +28,11 @@ import {
   discoverKeywordCandidates,
 } from "@/lib/seo/keyword-discovery";
 import { opportunityKey } from "@/lib/seo/eligibility";
+import {
+  loadProjectServiceAreaPolicy,
+  quarantineOutOfAreaKeywords,
+} from "@/lib/seo/service-area-server";
+import { assessKeywordServiceArea } from "@/lib/seo/service-area";
 import { buildManualPackage } from "@/lib/seo/manual-package";
 import { createManualPackage } from "@/lib/manual/package-service";
 import { verifyLiveImplementation } from "@/lib/manual/live-verification";
@@ -204,6 +209,79 @@ export type LiveClientOnboarding = {
   launchedAt: string | null;
 };
 
+export type LiveClientGrowthProfile = {
+  clientId: string;
+  projectId: string;
+  onboardingStatus: string;
+  onboardingStep: number;
+  businessGoal: string;
+  services: string[];
+  serviceAreas: string[];
+  priorityServices: string[];
+  idealCustomer: string | null;
+  averageCustomerValue: number | null;
+  monthlyBudget: number;
+  automationLevel: "recommend" | "safe" | "concierge";
+  notificationPreferences: Record<string, boolean>;
+};
+
+export type LiveClientSubscription = {
+  projectId: string;
+  planKey: "free_audit" | "starter" | "growth" | "pro";
+  status: string;
+  billingInterval: string;
+  priceCents: number;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+};
+
+export type LiveClientWebsite = {
+  id: string;
+  projectId: string;
+  siteUrl: string;
+  cmsType: string;
+  status: string;
+  lastVerifiedAt: string | null;
+};
+
+export type LiveClientIntegration = {
+  projectId: string;
+  provider: string;
+  status: string;
+  lastSyncedAt: string | null;
+};
+
+export type LiveClientAgentWork = {
+  id: string;
+  projectId: string;
+  agentKey: string;
+  goal: string;
+  status: string;
+  spentAmount: number;
+  updatedAt: string;
+};
+
+export type LiveClientOutcome = {
+  projectId: string;
+  clicks: number;
+  impressions: number;
+  leads: number;
+  qualifiedLeads: number;
+  recordedRevenue: number;
+  recordedGrossProfit: number;
+};
+
+export type LiveClientSupportRequest = {
+  id: string;
+  projectId: string;
+  category: string;
+  subject: string;
+  message: string;
+  status: string;
+  createdAt: string;
+};
+
 export type AgencyMembership = { agency: LiveAgency; role: AgencyRole };
 export type LiveClientAccess = { client: LiveClient; role: string };
 
@@ -281,6 +359,10 @@ const rowText = (row: DatabaseRow, key: string, fallback = "") =>
   typeof row[key] === "string" ? (row[key] as string) : fallback;
 const rowNullableText = (row: DatabaseRow, key: string) =>
   typeof row[key] === "string" ? (row[key] as string) : null;
+const rowNumber = (row: DatabaseRow, key: string, fallback = 0) => {
+  const value = Number(row[key]);
+  return Number.isFinite(value) ? value : fallback;
+};
 
 function mapAgency(row: DatabaseRow): LiveAgency {
   return {
@@ -784,14 +866,22 @@ export async function liveAgencySnapshot(email: string) {
 export async function liveClientSnapshot(email: string) {
   const db = admin();
   const userId = await resolveUserId(db, email);
+  const empty = {
+    clients: [] as LiveClientAccess[],
+    projects: [] as LiveProject[],
+    opportunities: [] as LiveOpportunity[],
+    packages: [] as LivePackage[],
+    events: [] as LiveEvent[],
+    growthProfiles: [] as LiveClientGrowthProfile[],
+    subscriptions: [] as LiveClientSubscription[],
+    websites: [] as LiveClientWebsite[],
+    integrations: [] as LiveClientIntegration[],
+    agentWork: [] as LiveClientAgentWork[],
+    outcomes: [] as LiveClientOutcome[],
+    supportRequests: [] as LiveClientSupportRequest[],
+  };
   if (!userId) {
-    return {
-      clients: [] as LiveClientAccess[],
-      projects: [] as LiveProject[],
-      opportunities: [] as LiveOpportunity[],
-      packages: [] as LivePackage[],
-      events: [] as LiveEvent[],
-    };
+    return empty;
   }
 
   const { data: memberships } = await db
@@ -810,13 +900,7 @@ export async function liveClientSnapshot(email: string) {
     .filter(Boolean) as Array<{ org: DatabaseRow; role: string }>;
 
   if (!matches.length) {
-    return {
-      clients: [],
-      projects: [] as LiveProject[],
-      opportunities: [] as LiveOpportunity[],
-      packages: [] as LivePackage[],
-      events: [] as LiveEvent[],
-    };
+    return empty;
   }
 
   const orgIds = matches.map((match) => rowText(match.org, "id"));
@@ -836,15 +920,27 @@ export async function liveClientSnapshot(email: string) {
 
   if (!projectIds.length) {
     return {
+      ...empty,
       clients,
       projects: projects.map(mapProject),
-      opportunities: [] as LiveOpportunity[],
-      packages: [] as LivePackage[],
-      events: [] as LiveEvent[],
     };
   }
 
-  const [publicationsRes, eventsRes] = await Promise.all([
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const [
+    publicationsRes,
+    eventsRes,
+    profilesRes,
+    subscriptionsRes,
+    websitesRes,
+    integrationsRes,
+    agentWorkRes,
+    searchRowsRes,
+    leadsRes,
+    supportRes,
+  ] = await Promise.all([
     db
       .from("client_portal_publications")
       .select("source_id")
@@ -857,6 +953,56 @@ export async function liveClientSnapshot(email: string) {
       .in("project_id", projectIds)
       .eq("client_visible", true)
       .order("occurred_at", { ascending: false })
+      .limit(100),
+    db
+      .from("client_growth_profiles")
+      .select("*")
+      .in("project_id", projectIds),
+    db
+      .from("client_subscriptions")
+      .select("*")
+      .in("project_id", projectIds),
+    db
+      .from("websites")
+      .select("id,project_id,site_url,cms_type,status,last_verified_at")
+      .in("project_id", projectIds)
+      .eq("is_primary", true),
+    db
+      .from("integration_connections")
+      .select("project_id,provider,status,last_synced_at")
+      .in("project_id", projectIds),
+    db
+      .from("agent_work_items")
+      .select("id,project_id,assigned_agent_key,goal,status,spent_amount,updated_at")
+      .in("project_id", projectIds)
+      .in("status", [
+        "queued",
+        "planning",
+        "awaiting_approval",
+        "waiting_for_tools",
+        "running",
+        "validating",
+        "blocked",
+      ])
+      .order("updated_at", { ascending: false })
+      .limit(100),
+    db
+      .from("search_console_rows")
+      .select("project_id,clicks,impressions")
+      .in("project_id", projectIds)
+      .gte("date", ninetyDaysAgo)
+      .limit(5000),
+    db
+      .from("seo_leads")
+      .select("project_id,qualified,revenue,gross_profit")
+      .in("project_id", projectIds)
+      .gte("occurred_at", `${ninetyDaysAgo}T00:00:00Z`)
+      .limit(2000),
+    db
+      .from("client_support_requests")
+      .select("id,project_id,category,subject,message,status,created_at")
+      .in("project_id", projectIds)
+      .order("created_at", { ascending: false })
       .limit(100),
   ]);
   const publishedPackageIds = (publicationsRes.data ?? [])
@@ -873,25 +1019,148 @@ export async function liveClientSnapshot(email: string) {
   const opportunityIds = (packagesRes.data ?? [])
     .map((row) => row.opportunity_id as string | null)
     .filter(Boolean) as string[];
-  const opportunitiesRes = opportunityIds.length
+  const publishedOpportunitiesRes = opportunityIds.length
     ? await db
         .from("seo_opportunities")
         .select("*")
         .in("id", opportunityIds)
         .order("opportunity_score", { ascending: false })
     : { data: [] };
+  const retailProjectIds = (profilesRes.data ?? []).map((row) => row.project_id as string).filter(Boolean);
+  const retailOpportunitiesRes = retailProjectIds.length
+    ? await db
+        .from("seo_opportunities")
+        .select("*")
+        .in("project_id", retailProjectIds)
+        .in("status", ["open", "selected", "approved", "monitoring"])
+        .order("opportunity_score", { ascending: false })
+        .limit(100)
+    : { data: [] };
+  const opportunityRows = [...new Map(
+    [...(publishedOpportunitiesRes.data ?? []), ...(retailOpportunitiesRes.data ?? [])]
+      .map((row) => [row.id as string, row]),
+  ).values()];
 
   const emails = await emailMap(
     db,
     (eventsRes.data ?? []).map((row) => row.actor_user_id),
   );
 
+  const outcomeMap = new Map<string, LiveClientOutcome>();
+  for (const projectId of projectIds) {
+    outcomeMap.set(projectId, {
+      projectId,
+      clicks: 0,
+      impressions: 0,
+      leads: 0,
+      qualifiedLeads: 0,
+      recordedRevenue: 0,
+      recordedGrossProfit: 0,
+    });
+  }
+  for (const raw of searchRowsRes.data ?? []) {
+    const row = raw as DatabaseRow;
+    const outcome = outcomeMap.get(rowText(row, "project_id"));
+    if (!outcome) continue;
+    outcome.clicks += rowNumber(row, "clicks");
+    outcome.impressions += rowNumber(row, "impressions");
+  }
+  for (const raw of leadsRes.data ?? []) {
+    const row = raw as DatabaseRow;
+    const outcome = outcomeMap.get(rowText(row, "project_id"));
+    if (!outcome) continue;
+    outcome.leads += 1;
+    if (row.qualified === true) outcome.qualifiedLeads += 1;
+    outcome.recordedRevenue += rowNumber(row, "revenue");
+    outcome.recordedGrossProfit += rowNumber(row, "gross_profit");
+  }
+
   return {
     clients,
     projects: projects.map(mapProject),
-    opportunities: (opportunitiesRes.data ?? []).map(mapOpportunity),
+    opportunities: opportunityRows.map(mapOpportunity),
     packages: (packagesRes.data ?? []).map(row=>mapPackage(row)),
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
+    growthProfiles: (profilesRes.data ?? []).map((raw) => {
+      const row = raw as DatabaseRow;
+      return {
+        clientId: rowText(row, "client_organization_id"),
+        projectId: rowText(row, "project_id"),
+        onboardingStatus: rowText(row, "onboarding_status", "business_profile"),
+        onboardingStep: rowNumber(row, "onboarding_step", 1),
+        businessGoal: rowText(row, "business_goal", "more_qualified_leads"),
+        services: Array.isArray(row.services) ? (row.services as string[]) : [],
+        serviceAreas: Array.isArray(row.service_areas) ? (row.service_areas as string[]) : [],
+        priorityServices: Array.isArray(row.priority_services) ? (row.priority_services as string[]) : [],
+        idealCustomer: rowNullableText(row, "ideal_customer"),
+        averageCustomerValue: row.average_customer_value == null ? null : rowNumber(row, "average_customer_value"),
+        monthlyBudget: rowNumber(row, "monthly_budget", 99),
+        automationLevel: ["recommend", "safe", "concierge"].includes(rowText(row, "automation_level"))
+          ? (rowText(row, "automation_level") as "recommend" | "safe" | "concierge")
+          : "safe",
+        notificationPreferences: Object.fromEntries(
+          Object.entries(asRecord(row.notification_preferences)).map(([key, value]) => [key, value === true]),
+        ),
+      };
+    }),
+    subscriptions: (subscriptionsRes.data ?? []).map((raw) => {
+      const row = raw as DatabaseRow;
+      return {
+        projectId: rowText(row, "project_id"),
+        planKey: rowText(row, "plan_key", "free_audit") as LiveClientSubscription["planKey"],
+        status: rowText(row, "status", "trialing"),
+        billingInterval: rowText(row, "billing_interval", "month"),
+        priceCents: rowNumber(row, "price_cents"),
+        trialEndsAt: rowNullableText(row, "trial_ends_at"),
+        currentPeriodEnd: rowNullableText(row, "current_period_end"),
+        cancelAtPeriodEnd: row.cancel_at_period_end === true,
+      };
+    }),
+    websites: (websitesRes.data ?? []).map((raw) => {
+      const row = raw as DatabaseRow;
+      return {
+        id: rowText(row, "id"),
+        projectId: rowText(row, "project_id"),
+        siteUrl: rowText(row, "site_url"),
+        cmsType: rowText(row, "cms_type", "unknown"),
+        status: rowText(row, "status"),
+        lastVerifiedAt: rowNullableText(row, "last_verified_at"),
+      };
+    }),
+    integrations: (integrationsRes.data ?? []).map((raw) => {
+      const row = raw as DatabaseRow;
+      return {
+        projectId: rowText(row, "project_id"),
+        provider: rowText(row, "provider"),
+        status: rowText(row, "status"),
+        lastSyncedAt: rowNullableText(row, "last_synced_at"),
+      };
+    }),
+    agentWork: (agentWorkRes.data ?? []).map((raw) => {
+      const row = raw as DatabaseRow;
+      return {
+        id: rowText(row, "id"),
+        projectId: rowText(row, "project_id"),
+        agentKey: rowText(row, "assigned_agent_key"),
+        goal: rowText(row, "goal"),
+        status: rowText(row, "status"),
+        spentAmount: rowNumber(row, "spent_amount"),
+        updatedAt: toIso(row.updated_at),
+      };
+    }),
+    outcomes: [...outcomeMap.values()],
+    supportRequests: (supportRes.data ?? []).map((raw) => {
+      const row = raw as DatabaseRow;
+      return {
+        id: rowText(row, "id"),
+        projectId: rowText(row, "project_id"),
+        category: rowText(row, "category"),
+        subject: rowText(row, "subject"),
+        message: rowText(row, "message"),
+        status: rowText(row, "status"),
+        createdAt: toIso(row.created_at),
+      };
+    }),
   };
 }
 
@@ -1176,6 +1445,288 @@ export type ClientOnboardingInput = {
   targetMarket: string;
 };
 
+export type RetailBusinessInput = {
+  businessName: string;
+  domain: string;
+  phone?: string;
+  services: string[];
+  serviceAreas: string[];
+  priorityServices: string[];
+  idealCustomer?: string;
+  averageCustomerValue?: number;
+  monthlyBudget: number;
+  automationLevel: "recommend" | "safe" | "concierge";
+};
+
+async function clientProjectContext(email: string, projectId: string) {
+  const db = admin();
+  const userId = await resolveUserId(db, email);
+  if (!userId) throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
+  const project = await db
+    .from("seo_projects")
+    .select("id,agency_id,client_organization_id,primary_market")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!project.data) throw new ApiError("Business project not found.", 404, "NOT_FOUND");
+  const member = await db
+    .from("client_members")
+    .select("role")
+    .eq("user_id", userId)
+    .eq("client_organization_id", project.data.client_organization_id)
+    .eq("status", "active")
+    .maybeSingle();
+  if (!member.data) throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
+  return {
+    db,
+    userId,
+    role: member.data.role as string,
+    agencyId: project.data.agency_id as string,
+    clientId: project.data.client_organization_id as string,
+    projectId: project.data.id as string,
+    primaryMarket: (project.data.primary_market as string | null) ?? null,
+  };
+}
+
+export async function createRetailBusiness(
+  email: string,
+  input: RetailBusinessInput,
+) {
+  const db = admin();
+  const userId = await resolveUserId(db, email);
+  if (!userId) throw new ApiError("Sign in before adding your business.", 403, "TENANT_DENIED");
+  const membership = await db
+    .from("client_members")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+  if (membership.data) throw new ApiError("This account already has a business workspace.", 409, "CONFLICT");
+
+  const analysis = await detectWebsitePlatform(input.domain);
+  const services = [...new Set(input.services.map((value) => value.trim()).filter(Boolean))].slice(0, 20);
+  const serviceAreas = [...new Set(input.serviceAreas.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
+  const priorityServices = [...new Set(input.priorityServices.map((value) => value.trim()).filter(Boolean))]
+    .filter((value) => services.includes(value))
+    .slice(0, 5);
+  const result = await db.rpc("create_retail_workspace", {
+    p_user_id: userId,
+    p_email: email.toLowerCase(),
+    p_business_name: input.businessName.trim(),
+    p_domain: analysis.canonicalDomain,
+    p_site_url: analysis.siteUrl,
+    p_phone: input.phone?.trim() || null,
+    p_services: services,
+    p_service_areas: serviceAreas,
+    p_priority_services: priorityServices,
+    p_ideal_customer: input.idealCustomer?.trim() || null,
+    p_customer_value: input.averageCustomerValue ?? null,
+    p_monthly_budget: input.monthlyBudget,
+    p_automation_level: input.automationLevel,
+    p_platform: analysis.platform,
+    p_website_reachable: analysis.reachable,
+  });
+  const created = Array.isArray(result.data) ? result.data[0] : result.data;
+  if (result.error || !created) {
+    throw new ApiError(
+      result.error?.message?.includes("create_retail_workspace")
+        ? "Retail onboarding is not ready. Apply migration 0022 and try again."
+        : "Your business workspace could not be created.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
+  }
+  if (analysis.reachable) {
+    await db.from("cms_connections").upsert({
+      agency_id: created.agency_id,
+      client_organization_id: created.client_id,
+      project_id: created.project_id,
+      website_id: created.website_id,
+      cms_type: analysis.platform,
+      editor_mode: "read_only",
+      site_url: analysis.siteUrl,
+      connection_mode: "monitor_only",
+      status: "active",
+      last_verified_at: nowIso(),
+      updated_at: nowIso(),
+    }, { onConflict: "project_id,site_url" });
+  }
+  await recordAudit(db, {
+    agencyId: created.agency_id,
+    actorUserId: userId,
+    action: "retail.business.created",
+    resourceType: "seo_project",
+    resourceId: created.project_id,
+    afterState: {
+      platform: analysis.platform,
+      websiteReachable: analysis.reachable,
+      serviceCount: services.length,
+      serviceAreaCount: serviceAreas.length,
+      automationLevel: input.automationLevel,
+    },
+  });
+  return { ...created, analysis };
+}
+
+export async function updateRetailGrowthProfile(
+  email: string,
+  input: {
+    projectId: string;
+    businessGoal: string;
+    services: string[];
+    serviceAreas: string[];
+    priorityServices: string[];
+    idealCustomer?: string;
+    averageCustomerValue?: number;
+    monthlyBudget: number;
+    automationLevel: "recommend" | "safe" | "concierge";
+    notificationPreferences: Record<string, boolean>;
+  },
+) {
+  const context = await clientProjectContext(email, input.projectId);
+  if (context.role !== "client_admin") throw new ApiError("Only the business owner can change growth controls.", 403, "ROLE_FORBIDDEN");
+  const services = [...new Set(input.services.map((value) => value.trim()).filter(Boolean))].slice(0, 20);
+  const areas = [...new Set(input.serviceAreas.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
+  const update = await context.db
+    .from("client_growth_profiles")
+    .upsert({
+      agency_id: context.agencyId,
+      client_organization_id: context.clientId,
+      project_id: input.projectId,
+      owner_user_id: context.userId,
+      onboarding_status: "ready",
+      onboarding_step: 6,
+      business_goal: input.businessGoal,
+      services,
+      service_areas: areas,
+      priority_services: input.priorityServices.filter((value) => services.includes(value)).slice(0, 5),
+      ideal_customer: input.idealCustomer?.trim() || null,
+      average_customer_value: input.averageCustomerValue ?? null,
+      monthly_budget: input.monthlyBudget,
+      automation_level: input.automationLevel,
+      notification_preferences: input.notificationPreferences,
+      updated_at: nowIso(),
+    }, { onConflict: "project_id" });
+  if (update.error) throw new ApiError("Your growth settings could not be saved. Apply migration 0022 and retry.", 500, "DATABASE_BINDING_FAILED");
+  await Promise.all([
+    context.db.from("clients").update({
+      automation_config: {
+        automationLevel: input.automationLevel,
+        monthlyBudget: input.monthlyBudget,
+        approvalRequired: input.automationLevel !== "safe",
+        safeChangesAutomatic: input.automationLevel === "safe",
+        highRiskApprovalRequired: true,
+        autoRollback: true,
+      },
+      updated_at: nowIso(),
+    }).eq("organization_id", context.clientId),
+    context.db.from("seo_projects").update({
+      primary_market: areas[0] ?? context.primaryMarket,
+      industry: services[0] ?? null,
+      updated_at: nowIso(),
+    }).eq("id", input.projectId),
+  ]);
+  await context.db.from("seo_services").delete().eq("project_id", input.projectId);
+  if (services.length) await context.db.from("seo_services").insert(services.map((name, index) => ({
+    agency_id: context.agencyId,
+    client_organization_id: context.clientId,
+    project_id: input.projectId,
+    name,
+    slug: `${onboardingSlug(name)}-${index + 1}`,
+    category: "core_service",
+    priority: Math.max(50, 100 - index * 5),
+    status: "active",
+  })));
+  await context.db.from("seo_locations").delete().eq("project_id", input.projectId);
+  if (areas.length) await context.db.from("seo_locations").insert(areas.map((name, index) => ({
+    agency_id: context.agencyId,
+    client_organization_id: context.clientId,
+    project_id: input.projectId,
+    name,
+    city: name,
+    country_code: "US",
+    priority: Math.max(50, 100 - index * 3),
+    status: "active",
+  })));
+  await recordAudit(context.db, {
+    agencyId: context.agencyId,
+    actorUserId: context.userId,
+    action: "retail.growth_profile.updated",
+    resourceType: "seo_project",
+    resourceId: input.projectId,
+    afterState: { businessGoal: input.businessGoal, automationLevel: input.automationLevel, services, serviceAreas: areas },
+  });
+}
+
+export async function activateRetailGrowth(email: string, projectId: string) {
+  const context = await clientProjectContext(email, projectId);
+  if (context.role !== "client_admin") throw new ApiError("Only the business owner can start automation.", 403, "ROLE_FORBIDDEN");
+  const [profile, website] = await Promise.all([
+    context.db.from("client_growth_profiles").select("monthly_budget,service_areas,onboarding_status").eq("project_id", projectId).maybeSingle(),
+    context.db.from("websites").select("id").eq("project_id", projectId).eq("is_primary", true).maybeSingle(),
+  ]);
+  if (!profile.data || !website.data) throw new ApiError("Finish the business profile before starting HD SEO.", 409, "ONBOARDING_INCOMPLETE");
+  const bucket = new Date().toISOString().slice(0, 10);
+  const evidenceJobId = await enqueueEvidenceJob(context.db, {
+    agencyId: context.agencyId,
+    clientId: context.clientId,
+    projectId,
+    websiteId: website.data.id,
+    jobType: "crawler.crawl",
+    idempotencyKey: `retail-crawl:${projectId}:${bucket}`,
+    priority: 95,
+  });
+  const serviceAreas = Array.isArray(profile.data.service_areas) ? profile.data.service_areas : [];
+  const agentWork = await seedOnboardingAgentTeam(context.db, {
+    agencyId: context.agencyId,
+    clientId: context.clientId,
+    projectId,
+    userId: context.userId,
+  }, {
+    evidenceJobIds: [evidenceJobId],
+    discoveryJobId: null,
+    monthlyBudget: Number(profile.data.monthly_budget) || 99,
+    targetMarket: serviceAreas[0] ?? context.primaryMarket ?? "United States",
+    launchKey: `retail:${projectId}`,
+  });
+  const now = nowIso();
+  await Promise.all([
+    context.db.from("client_growth_profiles").update({ onboarding_status: "active", onboarding_step: 7, last_owner_reviewed_at: now, updated_at: now }).eq("project_id", projectId),
+    context.db.from("client_organizations").update({ status: "active", updated_at: now }).eq("id", context.clientId),
+    context.db.from("clients").update({ status: "active", updated_at: now }).eq("organization_id", context.clientId),
+  ]);
+  await recordEvent(context.db, {
+    agencyId: context.agencyId,
+    clientOrganizationId: context.clientId,
+    projectId,
+    eventType: "retail_growth_started",
+    title: "Your HD SEO agent team started working",
+    description: "Website analysis and service-area research are queued. Sensitive changes will still pause for your approval.",
+    actorUserId: context.userId,
+    actorEmail: email,
+    clientVisible: true,
+  });
+  return { evidenceJobId, agentWork };
+}
+
+export async function createClientSupportRequest(
+  email: string,
+  input: { projectId: string; category: string; subject: string; message: string },
+) {
+  const context = await clientProjectContext(email, input.projectId);
+  const created = await context.db.from("client_support_requests").insert({
+    agency_id: context.agencyId,
+    client_organization_id: context.clientId,
+    project_id: input.projectId,
+    requested_by: context.userId,
+    category: input.category,
+    subject: input.subject.trim(),
+    message: input.message.trim(),
+  }).select("id").single();
+  if (created.error || !created.data) throw new ApiError("Your question could not be sent. Apply migration 0022 and retry.", 500, "DATABASE_BINDING_FAILED");
+  return created.data.id as string;
+}
+
 function onboardingSlug(value: string) {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || crypto.randomUUID().slice(0, 8);
 }
@@ -1450,6 +2001,15 @@ export async function createOpportunity(
     .eq("agency_id", agencyId)
     .maybeSingle();
   if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
+  const serviceAreaPolicy = await loadProjectServiceAreaPolicy(db, project.id);
+  const geographic = assessKeywordServiceArea(input.keyword, serviceAreaPolicy);
+  if (!geographic.allowed) {
+    throw new ApiError(
+      `That keyword names a location outside this client's configured service area (${serviceAreaPolicy.serviceAreas.map((area) => area.name).join(", ")}).`,
+      422,
+      "LOCATION_EXCLUDED",
+    );
+  }
 
   const proximity = input.currentRank
     ? Math.max(0, 45 - Math.abs(input.currentRank - input.targetRank) * 3)
@@ -1472,12 +2032,14 @@ export async function createOpportunity(
     target_milestone: `top_${input.targetRank}`,
     scoring_version: "manual-v1",
     opportunity_key: `${input.actionType}:${input.keyword.toLowerCase()}`,
-    reason_codes: [input.actionType],
+    reason_codes: [input.actionType, ...geographic.reasonCodes],
     evidence: {
       keyword: input.keyword,
       current_rank: input.currentRank ?? null,
       target_rank: input.targetRank,
       reason: input.reason,
+      target_market: serviceAreaPolicy.targetMarket,
+      service_areas: serviceAreaPolicy.serviceAreas.map((area) => area.name),
     },
     status: "open",
   });
@@ -1505,6 +2067,8 @@ export type KeywordDiscoverySummary = {
   monthlyBudget: number;
   jobId: string | null;
   jobStatus: string | null;
+  targetMarket: string;
+  excludedOutsideServiceArea: number;
 };
 
 export async function discoverKeywordOpportunities(
@@ -1512,7 +2076,7 @@ export async function discoverKeywordOpportunities(
   input: {
     projectId: string;
     monthlyBudget: number;
-    targetMarket: string;
+    targetMarket?: string;
     limit: number;
   },
 ): Promise<KeywordDiscoverySummary> {
@@ -1530,12 +2094,24 @@ export async function discoverKeywordOpportunities(
   const { data: project } = await db
     .from("seo_projects")
     .select(
-      "id,name,domain,client_organization_id,country_code,language_code,client_organizations(name)",
+      "id,name,domain,primary_market,client_organization_id,country_code,language_code,client_organizations(name)",
     )
     .eq("id", input.projectId)
     .eq("agency_id", agencyId)
     .maybeSingle();
   if (!project) throw new ApiError("Project not found.", 404, "NOT_FOUND");
+
+  const serviceAreaPolicy = await loadProjectServiceAreaPolicy(
+    db,
+    project.id,
+    input.targetMarket,
+  );
+  const excludedOutsideServiceArea = await quarantineOutOfAreaKeywords(
+    db,
+    project.id,
+    serviceAreaPolicy,
+  );
+  const targetMarket = serviceAreaPolicy.targetMarket;
 
   const clientRow = Array.isArray(project.client_organizations)
     ? project.client_organizations[0]
@@ -1553,7 +2129,7 @@ export async function discoverKeywordOpportunities(
     keywords: null,
     target: discoveryDomain,
     limit,
-    locationName: input.targetMarket,
+    locationName: targetMarket,
     languageCode: project.language_code || "en",
   };
   const estimatedCost = Number(
@@ -1616,7 +2192,7 @@ export async function discoverKeywordOpportunities(
     const providerInput = {
       target: discoveryDomain,
       limit,
-      locationName: input.targetMarket,
+      locationName: targetMarket,
       languageCode: project.language_code || "en",
     };
     const [siteResult, rankedResult] = await Promise.all([
@@ -1637,6 +2213,7 @@ export async function discoverKeywordOpportunities(
       providerResults,
       input.monthlyBudget,
       Math.min(25, limit),
+      serviceAreaPolicy,
     );
     const analyzed = countDiscoveredKeywordRecords(providerResults);
 
@@ -1653,6 +2230,8 @@ export async function discoverKeywordOpportunities(
         agency_id: agencyId,
         client_organization_id: project.client_organization_id,
         project_id: project.id,
+        service_id: candidate.serviceId,
+        location_id: candidate.locationId,
         keyword: candidate.keyword,
         normalized_keyword: candidate.normalizedKeyword,
         intent: candidate.intent,
@@ -1679,6 +2258,8 @@ export async function discoverKeywordOpportunities(
           db
             .from("seo_keywords")
             .update({
+              service_id: candidate.serviceId,
+              location_id: candidate.locationId,
               intent: candidate.intent,
               commercial_intent_score: candidate.commercialIntentScore,
               target_url: candidate.rankingUrl,
@@ -1717,7 +2298,7 @@ export async function discoverKeywordOpportunities(
         ranking_url: candidate.rankingUrl,
         search_engine: "google",
         device: "desktop",
-        location_code: input.targetMarket,
+        location_code: targetMarket,
         collected_at: nowIso(),
       }));
       const metricWrite = await db
@@ -1747,7 +2328,7 @@ export async function discoverKeywordOpportunities(
         candidate.rankingUrl,
         candidate.actionType,
       );
-      const reason = `HD SEO found this from ${project.domain}: ${candidate.searchVolume.toLocaleString()} monthly searches, $${candidate.cpc.toFixed(2)} CPC, ${candidate.currentRank == null ? "an untapped keyword" : `current rank #${candidate.currentRank}`}, and an estimated ${candidate.valuePerDollar.toFixed(2)} value-to-effort ratio within the $${input.monthlyBudget.toLocaleString()} monthly SEO budget.`;
+      const reason = `HD SEO found this from ${project.domain} in the configured ${targetMarket} service market: ${candidate.searchVolume.toLocaleString()} monthly searches, $${candidate.cpc.toFixed(2)} CPC, ${candidate.currentRank == null ? "an untapped keyword" : `current rank #${candidate.currentRank}`}, and an estimated ${candidate.valuePerDollar.toFixed(2)} value-to-effort ratio within the $${input.monthlyBudget.toLocaleString()} monthly SEO budget.`;
       const values = {
         agency_id: agencyId,
         client_organization_id: project.client_organization_id,
@@ -1772,7 +2353,10 @@ export async function discoverKeywordOpportunities(
           estimated_effort: candidate.estimatedEffort,
           value_per_dollar: candidate.valuePerDollar,
           monthly_budget: input.monthlyBudget,
-          target_market: input.targetMarket,
+          target_market: targetMarket,
+          service_areas: serviceAreaPolicy.serviceAreas.map((area) => area.name),
+          location_relevance: candidate.locationRelevance,
+          service_relevance: candidate.serviceRelevance,
           source: "dataforseo_domain_discovery",
           reason,
           disclaimer:
@@ -1806,7 +2390,8 @@ export async function discoverKeywordOpportunities(
       automation_mode: "PREPARE",
       status: "active",
       constraints: {
-        target_market: input.targetMarket,
+        target_market: targetMarket,
+        service_areas: serviceAreaPolicy.serviceAreas.map((area) => area.name),
         discovery_limit: limit,
         human_approval_required: true,
       },
@@ -1860,7 +2445,7 @@ export async function discoverKeywordOpportunities(
             automationMode: "PREPARE",
             minimumConfidence: 55,
             monthlyBudget: input.monthlyBudget,
-            targetMarket: input.targetMarket,
+            targetMarket,
             discoveryLimit: limit,
             automaticDiscoveryCompleted: true,
           },
@@ -1898,7 +2483,7 @@ export async function discoverKeywordOpportunities(
       projectId: project.id,
       eventType: "keyword_discovery_completed",
       title: `${candidates.length} high-value keywords discovered`,
-      description: `HD SEO analyzed ${analyzed} site-relevant keyword records and prioritized the strongest opportunities for a $${input.monthlyBudget.toLocaleString()} monthly budget.`,
+      description: `HD SEO analyzed ${analyzed} site-relevant keyword records for ${targetMarket} and prioritized the strongest opportunities for a $${input.monthlyBudget.toLocaleString()} monthly budget.`,
       actorUserId: userId,
       actorEmail: email,
       clientVisible: false,
@@ -1922,6 +2507,8 @@ export async function discoverKeywordOpportunities(
         providerCost,
         monthlyBudget: input.monthlyBudget,
         jobId: activeJob?.id ?? null,
+        targetMarket,
+        excludedOutsideServiceArea,
       },
     });
     return {
@@ -1931,6 +2518,8 @@ export async function discoverKeywordOpportunities(
       monthlyBudget: input.monthlyBudget,
       jobId: activeJob?.id ?? null,
       jobStatus: activeJob?.status ?? null,
+      targetMarket,
+      excludedOutsideServiceArea,
     };
   } catch (error) {
     if (paid) {

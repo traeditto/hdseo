@@ -16,17 +16,21 @@ import {
   createOpportunity,
   createPackage,
   controlCampaignJob,
+  createClientSupportRequest,
+  createRetailBusiness,
   discoverKeywordOpportunities,
   liveAdminSnapshot,
   liveAgencySnapshot,
   liveClientSnapshot,
   launchClientOnboarding,
   recordClientPackageDecision,
+  activateRetailGrowth,
   publishPackageToCms,
   rollbackPackageCmsPublication,
   reviewCampaignJob,
   setClientOnboardingAutomation,
   updateTaskStatus,
+  updateRetailGrowthProfile,
   upsertLiveUser,
 } from "@/lib/live/store";
 import {
@@ -92,7 +96,7 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("discover_keywords"),
     projectId: z.string().uuid(),
     monthlyBudget: z.number().int().min(100).max(1_000_000),
-    targetMarket: z.string().trim().min(2).max(120).default("United States"),
+    targetMarket: z.string().trim().min(2).max(120).optional(),
     limit: z.number().int().min(10).max(100).default(50),
   }),
   z.object({
@@ -126,6 +130,47 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("package_decision"),
     packageId: z.string().uuid(),
     decision: z.enum(["client_approved", "revision_requested", "rejected"]),
+  }),
+  z.object({
+    action: z.literal("retail_create_business"),
+    businessName: z.string().trim().min(2).max(120),
+    domain: z.string().trim().min(3).max(300),
+    phone: z.string().trim().max(40).optional().or(z.literal("")),
+    services: z.array(z.string().trim().min(2).max(120)).min(1).max(20),
+    serviceAreas: z.array(z.string().trim().min(2).max(120)).min(1).max(30),
+    priorityServices: z.array(z.string().trim().min(2).max(120)).max(5),
+    idealCustomer: z.string().trim().max(1000).optional().or(z.literal("")),
+    averageCustomerValue: z.number().min(0).max(100_000_000).optional(),
+    monthlyBudget: z.number().min(0).max(1_000_000),
+    automationLevel: z.enum(["recommend", "safe", "concierge"]),
+  }),
+  z.object({
+    action: z.literal("retail_update_profile"),
+    projectId: z.string().uuid(),
+    businessGoal: z.enum(["more_qualified_leads","more_calls","more_bookings","more_store_visits","more_sales","build_visibility"]),
+    services: z.array(z.string().trim().min(2).max(120)).min(1).max(20),
+    serviceAreas: z.array(z.string().trim().min(2).max(120)).min(1).max(30),
+    priorityServices: z.array(z.string().trim().min(2).max(120)).max(5),
+    idealCustomer: z.string().trim().max(1000).optional().or(z.literal("")),
+    averageCustomerValue: z.number().min(0).max(100_000_000).optional(),
+    monthlyBudget: z.number().min(0).max(1_000_000),
+    automationLevel: z.enum(["recommend", "safe", "concierge"]),
+    notificationPreferences: z.object({
+      weeklySummary: z.boolean(),
+      approvalNeeded: z.boolean(),
+      results: z.boolean(),
+    }),
+  }),
+  z.object({
+    action: z.literal("retail_activate"),
+    projectId: z.string().uuid(),
+  }),
+  z.object({
+    action: z.literal("client_support"),
+    projectId: z.string().uuid(),
+    category: z.enum(["question","approval_help","connection_help","billing","result_question"]),
+    subject: z.string().trim().min(3).max(160),
+    message: z.string().trim().min(10).max(4000),
   }),
   z.object({
     action: z.literal("update_task"),
@@ -253,6 +298,10 @@ export async function POST(request: Request) {
       await enforceRateLimit(actorScope, "client_onboarding_launch", 6, 3600);
     } else if (input.action === "package_decision") {
       await enforceRateLimit(actorScope, "client_decision", 30, 3600);
+    } else if (input.action === "retail_create_business") {
+      await enforceRateLimit(actorScope, "retail_business_creation", 3, 86400);
+    } else if (["retail_update_profile", "retail_activate", "client_support"].includes(input.action)) {
+      await enforceRateLimit(actorScope, "retail_client_action", 30, 3600);
     } else if (["connect_website", "test_website", "disconnect_website"].includes(input.action)) {
       await enforceRateLimit(actorScope, "website_connection", 20, 3600);
     } else if (["publish_cms", "rollback_cms"].includes(input.action)) {
@@ -278,6 +327,30 @@ export async function POST(request: Request) {
         decision: input.decision,
       });
       return Response.json({ ok: true, data: await liveClientSnapshot(user.email) });
+    }
+
+    if (input.action === "retail_create_business") {
+      const created = await createRetailBusiness(user.email, {
+        ...input,
+        phone: input.phone || undefined,
+        idealCustomer: input.idealCustomer || undefined,
+      });
+      return Response.json({ ok: true, created, data: await liveClientSnapshot(user.email) });
+    }
+    if (input.action === "retail_update_profile") {
+      await updateRetailGrowthProfile(user.email, {
+        ...input,
+        idealCustomer: input.idealCustomer || undefined,
+      });
+      return Response.json({ ok: true, data: await liveClientSnapshot(user.email), message: "Your business and safety settings were saved." });
+    }
+    if (input.action === "retail_activate") {
+      const launch = await activateRetailGrowth(user.email, input.projectId);
+      return Response.json({ ok: true, launch, data: await liveClientSnapshot(user.email), message: "Your HD SEO agent team is now working." });
+    }
+    if (input.action === "client_support") {
+      const requestId = await createClientSupportRequest(user.email, input);
+      return Response.json({ ok: true, requestId, data: await liveClientSnapshot(user.email), message: "Your question was sent with the correct business context." });
     }
 
     switch (input.action) {
@@ -337,7 +410,7 @@ export async function POST(request: Request) {
         return Response.json({
           ok: true,
           data: await liveAgencySnapshot(user.email),
-          message: `${summary.selected} best-value keyword opportunities found from ${summary.analyzed} site-relevant records. Provider cost: $${summary.providerCost.toFixed(2)}.${summary.jobId ? " The autonomous planning run is now queued." : ""}`,
+          message: `${summary.selected} best-value keyword opportunities found for ${summary.targetMarket} from ${summary.analyzed} site-relevant records.${summary.excludedOutsideServiceArea ? ` ${summary.excludedOutsideServiceArea} existing out-of-area keyword${summary.excludedOutsideServiceArea === 1 ? " was" : "s were"} removed from active recommendations.` : ""} Provider cost: $${summary.providerCost.toFixed(2)}.${summary.jobId ? " The autonomous planning run is now queued." : ""}`,
           summary,
         });
       }

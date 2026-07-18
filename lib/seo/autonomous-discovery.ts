@@ -17,6 +17,11 @@ import {
   discoverSearchConsoleCandidates,
   type SearchConsoleEvidenceRow,
 } from "./search-console-discovery";
+import { assessKeywordServiceArea } from "./service-area";
+import {
+  loadProjectServiceAreaPolicy,
+  quarantineOutOfAreaKeywords,
+} from "./service-area-server";
 
 export interface DiscoveryTenant {
   agencyId: string;
@@ -89,6 +94,8 @@ async function persistProviderCandidates(
       agency_id: tenant.agencyId,
       client_organization_id: tenant.clientId,
       project_id: tenant.projectId,
+      service_id: candidate.serviceId,
+      location_id: candidate.locationId,
       keyword: candidate.keyword,
       normalized_keyword: candidate.normalizedKeyword,
       intent: candidate.intent,
@@ -170,6 +177,8 @@ export async function importSearchConsoleDiscovery(
   tenant: DiscoveryTenant,
   limit = 100,
 ) {
+  const policy = await loadProjectServiceAreaPolicy(db, tenant.projectId);
+  await quarantineOutOfAreaKeywords(db, tenant.projectId, policy);
   const result = await db
     .from("search_console_rows")
     .select("query,page_url,clicks,impressions,ctr,average_position")
@@ -181,7 +190,10 @@ export async function importSearchConsoleDiscovery(
   const candidates = discoverSearchConsoleCandidates(
     (result.data ?? []) as SearchConsoleEvidenceRow[],
     limit,
-  );
+  ).flatMap((candidate) => {
+    const assessment = assessKeywordServiceArea(candidate.keyword, policy);
+    return assessment.allowed ? [{ ...candidate, assessment }] : [];
+  });
   if (!candidates.length) return { source: "google_search_console", keywords: 0, metrics: 0, rankings: 0 };
 
   const ids = await existingKeywordIds(db, tenant.projectId);
@@ -191,6 +203,8 @@ export async function importSearchConsoleDiscovery(
       agency_id: tenant.agencyId,
       client_organization_id: tenant.clientId,
       project_id: tenant.projectId,
+      service_id: candidate.assessment.serviceId,
+      location_id: candidate.assessment.locationId,
       keyword: candidate.keyword,
       normalized_keyword: candidate.normalizedKeyword,
       intent: candidate.intent,
@@ -229,6 +243,8 @@ export async function importSearchConsoleDiscovery(
             ctr: candidate.ctr,
             averagePosition: candidate.averagePosition,
             note: "Search Console impressions are first-party visibility, not search volume.",
+            targetMarket: policy.targetMarket,
+            serviceAreaReasonCodes: candidate.assessment.reasonCodes,
           },
           captured_at: capturedAt,
         }]
@@ -275,7 +291,14 @@ export async function runAuthorizedDomainDiscovery(
   db: SupabaseClient,
   input: DomainDiscoveryInput,
 ) {
-  const scope = domainDiscoveryScope(input);
+  const policy = await loadProjectServiceAreaPolicy(
+    db,
+    input.projectId,
+    input.targetMarket,
+  );
+  await quarantineOutOfAreaKeywords(db, input.projectId, policy);
+  const effectiveInput = { ...input, targetMarket: policy.targetMarket };
+  const scope = domainDiscoveryScope(effectiveInput);
   const estimatedCost = estimatedDomainDiscoveryCost(input.limit);
   let paid: Awaited<ReturnType<typeof beginPaidOperation>> | null = null;
   try {
@@ -297,7 +320,7 @@ export async function runAuthorizedDomainDiscovery(
     const providerInput = {
       target: scope.target,
       limit: input.limit,
-      locationName: input.targetMarket,
+      locationName: policy.targetMarket,
       languageCode: input.languageCode,
     };
     const [site, ranked] = await Promise.all([
@@ -317,12 +340,13 @@ export async function runAuthorizedDomainDiscovery(
       results,
       input.monthlyBudget,
       Math.min(100, input.limit),
+      policy,
     );
     const persisted = await persistProviderCandidates(
       db,
       input,
       candidates,
-      input.targetMarket,
+      policy.targetMarket,
     );
     const cost = site.totalCost + ranked.totalCost;
     const analyzed = countDiscoveredKeywordRecords(results);

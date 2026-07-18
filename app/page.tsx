@@ -16,6 +16,6 @@ export default function Home() {
         <div className="portal-card-top"><span>{portal.number}</span><i>↗</i></div><small>{portal.eyebrow}</small><h2>{portal.title}<br />Portal</h2><p>{portal.description}</p><ul>{portal.features.map((feature) => <li key={feature}><span>✓</span>{feature}</li>)}</ul><strong>Continue to {portal.title} login <b>→</b></strong>
       </Link>)}
     </section>
-    <footer className="login-footer"><span>© 2026 HD SEO</span><span>Role-based access · Encrypted sessions · Audit protected</span><Link href="mailto:support@hdseo.local">Need access?</Link></footer>
+    <footer className="login-footer"><span>© 2026 HD SEO</span><Link href="/audit">Run a free local SEO audit</Link><span>Role-based access · Encrypted sessions · Audit protected</span><Link href="mailto:support@hdseo.local">Need access?</Link></footer>
   </main>;
 }

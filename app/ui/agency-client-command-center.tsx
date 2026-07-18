@@ -34,10 +34,12 @@ type Props = {
   jobs: Job[];
   websites: Website[];
   canManageClients: boolean;
+  selectedClientId?: string | null;
   onAddClient: () => void;
-  onOpenClients: () => void;
-  onOpenApprovals: () => void;
-  onOpenOpportunities: () => void;
+  onSelectClient: (clientId: string) => void;
+  onOpenClients: (clientId?: string) => void;
+  onOpenApprovals: (clientId?: string) => void;
+  onOpenOpportunities: (clientId?: string) => void;
 };
 
 const agencyApprovalStatuses = new Set([
@@ -61,7 +63,9 @@ export function AgencyClientCommandCenter({
   jobs,
   websites,
   canManageClients,
+  selectedClientId,
   onAddClient,
+  onSelectClient,
   onOpenClients,
   onOpenApprovals,
   onOpenOpportunities,
@@ -110,6 +114,7 @@ export function AgencyClientCommandCenter({
       clientApprovals.length +
       campaignReady +
       blockedTasks +
+      (topOpportunity && topOpportunity.score >= 50 ? 1 : 0) +
       (!connected ? 1 : 0);
     return {
       client,
@@ -124,7 +129,11 @@ export function AgencyClientCommandCenter({
       connected,
       attention,
     };
-  });
+  }).sort(
+    (a, b) =>
+      b.attention - a.attention ||
+      a.client.name.localeCompare(b.client.name),
+  );
 
   const totalApprovals = summaries.reduce(
     (sum, item) =>
@@ -158,7 +167,7 @@ export function AgencyClientCommandCenter({
           level: "APPROVAL",
           title: `${summary.client.name} is waiting on your approval`,
           detail: `${summary.agencyApprovals.length} campaign package${summary.agencyApprovals.length === 1 ? "" : "s"} ready for agency review.`,
-          action: onOpenApprovals,
+          action: () => onOpenApprovals(summary.client.id),
           weight: 100,
         });
       }
@@ -168,7 +177,7 @@ export function AgencyClientCommandCenter({
           level: "CLIENT",
           title: `${summary.client.name} has a decision pending`,
           detail: `${summary.clientApprovals.length} recommendation${summary.clientApprovals.length === 1 ? " is" : "s are"} with the client.`,
-          action: onOpenApprovals,
+          action: () => onOpenApprovals(summary.client.id),
           weight: 90,
         });
       }
@@ -179,7 +188,7 @@ export function AgencyClientCommandCenter({
           title: `${summary.client.name} has a campaign ready`,
           detail:
             "Research is complete and the next action is ready to review.",
-          action: onOpenOpportunities,
+          action: () => onOpenOpportunities(summary.client.id),
           weight: 80,
         });
       }
@@ -189,7 +198,7 @@ export function AgencyClientCommandCenter({
           level: "HIGH-VALUE OPPORTUNITY",
           title: summary.topOpportunity.keyword,
           detail: `${summary.client.name} · score ${summary.topOpportunity.score}${summary.topOpportunity.estimatedMonthlyValue ? ` · $${summary.topOpportunity.estimatedMonthlyValue.toLocaleString()}/mo directional value` : ""}`,
-          action: onOpenOpportunities,
+          action: () => onOpenOpportunities(summary.client.id),
           weight: 70 + summary.topOpportunity.score / 100,
         });
       }
@@ -199,7 +208,7 @@ export function AgencyClientCommandCenter({
           level: "SETUP",
           title: `${summary.client.name} still needs website access`,
           detail: "Connect publishing access or choose monitoring-only mode.",
-          action: onOpenClients,
+          action: () => onOpenClients(summary.client.id),
           weight: 60,
         });
       }
@@ -238,12 +247,12 @@ export function AgencyClientCommandCenter({
               belongs.
             </p>
           </div>
-          <button onClick={onOpenClients}>View all clients →</button>
+          <button onClick={() => onOpenClients()}>View all clients →</button>
         </header>
         <div className="agency-client-grid">
           {summaries.map((summary) => (
             <article
-              className={summary.attention ? "needs-attention" : "on-track"}
+              className={`${summary.attention ? "needs-attention" : "on-track"}${selectedClientId === summary.client.id ? " selected-client" : ""}`}
               key={summary.client.id}
             >
               <div className="agency-client-card-head">
@@ -315,7 +324,7 @@ export function AgencyClientCommandCenter({
                   </>
                 )}
               </div>
-              <button onClick={onOpenClients}>Open client →</button>
+              <button onClick={() => onSelectClient(summary.client.id)}>Work on this client →</button>
             </article>
           ))}
         </div>
@@ -330,11 +339,11 @@ export function AgencyClientCommandCenter({
           </strong>
         </header>
         <div className="agency-action-summary">
-          <button onClick={onOpenApprovals}>
+          <button onClick={() => onOpenApprovals()}>
             <b>{totalApprovals}</b>
             <span>Approvals</span>
           </button>
-          <button onClick={onOpenOpportunities}>
+          <button onClick={() => onOpenOpportunities()}>
             <b>{readyCampaigns + highValueOpportunities}</b>
             <span>Ready to act</span>
           </button>

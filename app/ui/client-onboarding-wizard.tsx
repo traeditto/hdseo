@@ -34,7 +34,7 @@ export function ClientOnboardingWizard({data,initialProjectId,initialStep,onData
     siteUrl:"",canonicalDomain:"",platform:existing.detectedPlatform,platformLabel:existing.platformLabel,
     confidence:existing.platformConfidence,reachable:existing.websiteReachable,pageTitle:null,
   }:null);
-  const [draft,setDraft]=useState({name:"",domain:"",contactEmail:"",phone:"",services:"",serviceAreas:"",monthlyBudget:"1500",targetMarket:"United States"});
+  const [draft,setDraft]=useState({name:"",domain:"",contactEmail:"",phone:"",services:"",serviceAreas:"",monthlyBudget:"1500",targetMarket:""});
   const [automationLevel,setAutomationLevel]=useState<Onboarding["automationLevel"]>(existing?.automationLevel??"safe");
   const [busy,setBusy]=useState(false),[message,setMessage]=useState("");
   const onboarding=data.onboardings.find(item=>item.projectId===projectId)??existing;
@@ -66,7 +66,7 @@ export function ClientOnboardingWizard({data,initialProjectId,initialStep,onData
     if(!services.length||!serviceAreas.length){setMessage("Add at least one service and one service area.");return;}
     const result=await request({
       action:"create_client_onboarding",name:draft.name,domain:draft.domain,contactEmail:draft.contactEmail,
-      phone:draft.phone,services,serviceAreas,monthlyBudget:Number(draft.monthlyBudget),targetMarket:draft.targetMarket,
+      phone:draft.phone,services,serviceAreas,monthlyBudget:Number(draft.monthlyBudget),targetMarket:draft.targetMarket.trim()||serviceAreas[0],
     });
     if(result?.onboarding?.projectId){setProjectId(result.onboarding.projectId);setAnalysis(result.onboarding.analysis);setStep("connections");}
   }
@@ -98,7 +98,7 @@ export function ClientOnboardingWizard({data,initialProjectId,initialStep,onData
       <div className="onboarding-grid"><label>Website address<input value={draft.domain} onChange={event=>update("domain",event.target.value)} placeholder="yourbusiness.com" inputMode="url" required/></label><label>Business name<input value={draft.name} onChange={event=>update("name",event.target.value)} placeholder="Kingdom Roofing" required/></label></div>
       <label>What services do you sell?<textarea value={draft.services} onChange={event=>update("services",event.target.value)} placeholder="Roof replacement, roof repair, storm damage" required/><small>Separate services with commas. HD SEO turns these into search opportunities—you do not need to enter keywords.</small></label>
       <label>Where do you work?<textarea value={draft.serviceAreas} onChange={event=>update("serviceAreas",event.target.value)} placeholder="Jacksonville, St. Augustine, Orange Park" required/></label>
-      <div className="onboarding-grid"><label>Monthly SEO budget<input type="number" min="100" step="100" value={draft.monthlyBudget} onChange={event=>update("monthlyBudget",event.target.value)} required/></label><label>Main market<input value={draft.targetMarket} onChange={event=>update("targetMarket",event.target.value)} placeholder="Jacksonville, Florida" required/></label></div>
+      <label>Monthly SEO budget<input type="number" min="100" step="100" value={draft.monthlyBudget} onChange={event=>update("monthlyBudget",event.target.value)} required/><small>Keyword demand and rankings will be measured inside the service areas above—not nationwide.</small></label>
       <div className="onboarding-grid"><label>Best phone number <em>optional</em><input value={draft.phone} onChange={event=>update("phone",event.target.value)} inputMode="tel"/></label><label>Client email <em>optional</em><input value={draft.contactEmail} onChange={event=>update("contactEmail",event.target.value)} type="email"/></label></div>
       {message&&<div className="onboarding-message">{message}</div>}<button className="onboarding-primary" disabled={busy}>{busy?"Checking the website…":"Continue — check my website →"}</button>
     </form>}
@@ -121,7 +121,7 @@ export function ClientOnboardingWizard({data,initialProjectId,initialStep,onData
     </div>}
     {step==="launch"&&<div className="onboarding-form">
       <div className="onboarding-copy"><small>READY TO START</small><h2>HD SEO will take it from here</h2><p>Review the simple plan, then start the first crawl, keyword discovery, and 30-day strategy.</p></div>
-      <div className="launch-summary"><span><small>BUSINESS</small><strong>{draft.name||analysis?.canonicalDomain||"New client"}</strong></span><span><small>SERVICES</small><strong>{onboarding?.services.length??list(draft.services).length} added</strong></span><span><small>MARKET</small><strong>{onboarding?.targetMarket||draft.targetMarket}</strong></span><span><small>MONTHLY BUDGET</small><strong>${(onboarding?.monthlyBudget??Number(draft.monthlyBudget)).toLocaleString()}</strong></span><span><small>AUTOMATION</small><strong>{automationOptions.find(item=>item.id===automationLevel)?.title}</strong></span><span><small>GOOGLE</small><strong>{googleConnected?"Connected":"Can connect later"}</strong></span></div>
+      <div className="launch-summary"><span><small>BUSINESS</small><strong>{draft.name||analysis?.canonicalDomain||"New client"}</strong></span><span><small>SERVICES</small><strong>{onboarding?.services.length??list(draft.services).length} added</strong></span><span><small>PRIMARY SERVICE AREA</small><strong>{onboarding?.targetMarket||draft.targetMarket||list(draft.serviceAreas)[0]||"Not set"}</strong></span><span><small>MONTHLY BUDGET</small><strong>${(onboarding?.monthlyBudget??Number(draft.monthlyBudget)).toLocaleString()}</strong></span><span><small>AUTOMATION</small><strong>{automationOptions.find(item=>item.id===automationLevel)?.title}</strong></span><span><small>GOOGLE</small><strong>{googleConnected?"Connected":"Can connect later"}</strong></span></div>
       <div className="plain-language-note"><strong>No keywords required.</strong><p>Starting authorizes a capped domain-data discovery run. HD SEO will find and prioritize the keywords based on customer value, difficulty, rankings, and your selected budget.</p></div>
       {message&&<div className="onboarding-message">{message}</div>}<div className="onboarding-actions"><button onClick={()=>setStep("automation")}>← Back</button><button className="onboarding-primary launch" disabled={busy} onClick={()=>void launch()}>{busy?"Starting website crawl and keyword discovery…":"Start My SEO →"}</button></div>
     </div>}

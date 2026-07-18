@@ -1,4 +1,8 @@
 import { scoreOpportunity, type ActionType } from "./opportunity-engine";
+import {
+  assessKeywordServiceArea,
+  type ServiceAreaPolicy,
+} from "./service-area";
 
 type ProviderRecord = Record<string, unknown>;
 
@@ -23,6 +27,10 @@ export interface DiscoveredKeyword {
   valuePerDollar: number;
   reasonCodes: string[];
   recommendedActions: string[];
+  locationId: string | null;
+  serviceId: string | null;
+  locationRelevance: number;
+  serviceRelevance: number;
 }
 
 const record = (value: unknown): ProviderRecord =>
@@ -93,6 +101,7 @@ export function discoverKeywordCandidates(
   results: unknown[],
   monthlyBudget: number,
   maxCandidates = 25,
+  serviceAreaPolicy?: ServiceAreaPolicy,
 ): DiscoveredKeyword[] {
   const candidates = new Map<string, DiscoveredKeyword>();
 
@@ -128,14 +137,26 @@ export function discoverKeywordCandidates(
       continue;
     }
 
+    const geographic = serviceAreaPolicy
+      ? assessKeywordServiceArea(keyword, serviceAreaPolicy)
+      : {
+          allowed: true,
+          locationRelevance: 70,
+          serviceRelevance: 70,
+          locationId: null,
+          serviceId: null,
+          reasonCodes: ["MARKET_SCOPED"],
+        };
+    if (!geographic.allowed) continue;
+
     const commercialIntentScore = commercialIntent(intent, cpc);
     const base = scoreOpportunity({
       currentRank,
       searchVolume,
       cpc,
       commercialIntentScore,
-      serviceRelevance: 70,
-      locationRelevance: 70,
+      serviceRelevance: geographic.serviceRelevance,
+      locationRelevance: geographic.locationRelevance,
       competitorGap: null,
       technicalReadiness: 60,
       hasOwnerPage: currentRank != null,
@@ -193,8 +214,17 @@ export function discoverKeywordCandidates(
       estimatedMonthlyValue,
       estimatedEffort,
       valuePerDollar,
-      reasonCodes: [...base.reasonCodes, "BUDGET_VALUE", "DOMAIN_DISCOVERY"],
+      reasonCodes: [
+        ...base.reasonCodes,
+        ...geographic.reasonCodes,
+        "BUDGET_VALUE",
+        "DOMAIN_DISCOVERY",
+      ],
       recommendedActions: base.recommendedActions,
+      locationId: geographic.locationId,
+      serviceId: geographic.serviceId,
+      locationRelevance: geographic.locationRelevance,
+      serviceRelevance: geographic.serviceRelevance,
     };
 
     const previous = candidates.get(normalizedKeyword);
