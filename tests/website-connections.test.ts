@@ -44,6 +44,8 @@ describe("website connections",()=>{
   it("preserves the agency workspace return path through GitHub installation",()=>{
     const install=read("app/api/github/install/route.ts"),callback=read("app/api/github/callback/route.ts"),binding=read("lib/github/installation-binding.ts");
     expect(install).toContain('"/portal/agency"');
+    expect(install).toContain("existingInstallationId");
+    expect(install).toContain("verify_and_bind");
     expect(callback).toContain('"/portal/agency"');
     expect(binding).toContain("upsertGitHubWebsite");
   });
