@@ -8,7 +8,7 @@ const MAX_RESPONSE_BYTES=2_000_000;
 const MAX_REDIRECTS=5;
 const USER_AGENT="HDSEOEvidenceBot/1.0 (+https://hdseo.vercel.app)";
 
-export type CrawledPage={url:string;finalUrl:string;httpStatus:number;title:string|null;metaDescription:string|null;h1:string|null;headings:string[];canonical:string|null;robotsDirectives:string[];schemaTypes:string[];schemaJsonLdValid:boolean;internalLinks:string[];sitemapMember:boolean;indexable:boolean;contentHash:string;responseBytes:number;depth:number};
+export type CrawledPage={url:string;finalUrl:string;httpStatus:number;title:string|null;metaDescription:string|null;h1:string|null;headings:string[];canonical:string|null;robotsDirectives:string[];schemaTypes:string[];schemaBlockCount:number;schemaJsonLdValid:boolean;internalLinks:string[];sitemapMember:boolean;indexable:boolean;contentHash:string;responseBytes:number;depth:number};
 
 function decode(value:string){return value.replace(/&amp;/gi,"&").replace(/&quot;/gi,'"').replace(/&#39;|&apos;/gi,"'").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/\s+/g," ").trim();}
 function stripTags(value:string){return decode(value.replace(/<script\b[\s\S]*?<\/script>/gi," ").replace(/<style\b[\s\S]*?<\/style>/gi," ").replace(/<[^>]+>/g," "));}
@@ -63,7 +63,18 @@ function parsePage(html:string,input:{requestedUrl:string;finalUrl:string;status
   const schemaTypes=new Set<string>();let schemaJsonLdValid=true;for(const match of html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)){try{const parsed=JSON.parse(match[1]);const nodes=Array.isArray(parsed)?parsed:Array.isArray(parsed?.["@graph"])?parsed["@graph"]:[parsed];for(const node of nodes){const value=node?.["@type"];for(const type of Array.isArray(value)?value:[value])if(typeof type==="string")schemaTypes.add(type);}}catch{schemaJsonLdValid=false;}}
   const internalLinks=new Set<string>();for(const tag of html.match(/<a\b[^>]*>/gi)??[]){const href=attribute(tag,"href");if(!href||/^(mailto:|tel:|javascript:|data:)/i.test(href))continue;try{const absolute=normalizedPageUrl(new URL(href,input.finalUrl).toString());if(absolute&&sameSite(absolute,input.canonicalDomain))internalLinks.add(absolute);}catch{}}
   const blocked=directives.some(item=>/^(noindex|none)$/.test(item));
-  return{url:input.requestedUrl,finalUrl:input.finalUrl,httpStatus:input.status,title,metaDescription,h1,headings,canonical,robotsDirectives:directives,schemaTypes:[...schemaTypes],schemaJsonLdValid,internalLinks:[...internalLinks],sitemapMember:input.sitemapMember,indexable:input.status>=200&&input.status<300&&!blocked&&input.robotsAllowed,contentHash:createHash("sha256").update(html).digest("hex"),responseBytes:input.bytes,depth:input.depth} satisfies CrawledPage;
+  return{url:input.requestedUrl,finalUrl:input.finalUrl,httpStatus:input.status,title,metaDescription,h1,headings,canonical,robotsDirectives:directives,schemaTypes:[...schemaTypes],schemaBlockCount:(html.match(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["']/gi)??[]).length,schemaJsonLdValid,internalLinks:[...internalLinks],sitemapMember:input.sitemapMember,indexable:input.status>=200&&input.status<300&&!blocked&&input.robotsAllowed,contentHash:createHash("sha256").update(html).digest("hex"),responseBytes:input.bytes,depth:input.depth} satisfies CrawledPage;
+}
+
+export async function inspectPublicPage(value:string):Promise<CrawledPage>{
+  const normalized=await assertPublicSiteUrl(value),requested=normalizedPageUrl(normalized.siteUrl);
+  if(!requested)throw new ApiError("The implementation URL is invalid.",400,"VALIDATION_ERROR");
+  const root=new URL(requested);root.pathname="";root.search="";root.hash="";
+  let robotsAllowed=true;
+  try{const robots=await safeFetch(new URL("/robots.txt",root).toString(),"text/plain,*/*;q=0.1");if(robots.response.ok)robotsAllowed=robotsPolicy(robots.body)(new URL(requested).pathname);}catch{/* a missing robots file does not block direct verification */}
+  const fetched=await safeFetch(requested,"text/html,application/xhtml+xml;q=0.9,*/*;q=0.1");
+  if(!fetched.contentType.includes("text/html")&&!fetched.contentType.includes("application/xhtml+xml"))throw new ApiError("The implementation URL did not return an HTML page.",409,"WEBSITE_VERIFICATION_FAILED");
+  return parsePage(fetched.body,{requestedUrl:requested,finalUrl:fetched.finalUrl,status:fetched.response.status,headers:fetched.response.headers,bytes:fetched.bytes,depth:0,sitemapMember:false,robotsAllowed,canonicalDomain:normalized.canonicalDomain});
 }
 
 export async function crawlSite(input:{siteUrl:string;maxPages:number}){

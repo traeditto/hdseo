@@ -22,6 +22,8 @@ import {
   liveClientSnapshot,
   launchClientOnboarding,
   recordClientPackageDecision,
+  publishPackageToCms,
+  rollbackPackageCmsPublication,
   reviewCampaignJob,
   setClientOnboardingAutomation,
   updateTaskStatus,
@@ -111,6 +113,16 @@ const schema = z.discriminatedUnion("action", [
     packageId: z.string().uuid(),
   }),
   z.object({
+    action: z.literal("publish_cms"),
+    packageId: z.string().uuid(),
+  }),
+  z.object({
+    action: z.literal("rollback_cms"),
+    packageId: z.string().uuid(),
+    publicationId: z.string().uuid(),
+    confirm: z.literal(true),
+  }),
+  z.object({
     action: z.literal("package_decision"),
     packageId: z.string().uuid(),
     decision: z.enum(["client_approved", "revision_requested", "rejected"]),
@@ -142,7 +154,7 @@ const schema = z.discriminatedUnion("action", [
       schemaValid: z.literal(true),
       internalLinksPresent: z.literal(true),
       noIndexingRegression: z.literal(true),
-    }),
+    }).optional(),
     proof: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
@@ -243,6 +255,8 @@ export async function POST(request: Request) {
       await enforceRateLimit(actorScope, "client_decision", 30, 3600);
     } else if (["connect_website", "test_website", "disconnect_website"].includes(input.action)) {
       await enforceRateLimit(actorScope, "website_connection", 20, 3600);
+    } else if (["publish_cms", "rollback_cms"].includes(input.action)) {
+      await enforceRateLimit(actorScope, "cms_write", 10, 3600);
     }
 
     if (input.action === "create_agency") {
@@ -366,6 +380,14 @@ export async function POST(request: Request) {
       case "disconnect_website":
         await disconnectWebsite(user.email, input.websiteId);
         return Response.json({ ok: true, data: await liveAgencySnapshot(user.email), message: "Website connection disconnected and credentials removed." });
+      case "publish_cms": {
+        const publication=await publishPackageToCms(user.email,input.packageId);
+        return Response.json({ok:true,data:await liveAgencySnapshot(user.email),publication,message:"The approved CMS change was published and queued for independent live verification."});
+      }
+      case "rollback_cms": {
+        const publication=await rollbackPackageCmsPublication(user.email,input.packageId,input.publicationId);
+        return Response.json({ok:true,data:await liveAgencySnapshot(user.email),publication,message:"The provider page was restored to its pre-publication snapshot."});
+      }
       case "approve_package":
       case "publish_package":
       case "mark_implemented":
