@@ -41,6 +41,9 @@ const schema = z.object({
   AUTOMATION_JOB_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(10),
   AUTOMATION_MAX_CONCURRENT_PER_AGENCY: z.coerce.number().int().positive().max(50).default(5),
   PAGESPEED_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_PROJECT_ID: z.string().optional(),
+  OPENAI_CREATIVE_MODEL: z.string().default("gpt-5.6-sol"),
 });
 
 export const env = schema.parse(process.env);
@@ -50,6 +53,7 @@ export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSE
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
 export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
 export const hasGoogleSearchConsoleConfig = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
+export const hasCreativeModelConfig = Boolean(env.OPENAI_API_KEY);
 export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
 
 // Stable, configured production base URL for all external callbacks.

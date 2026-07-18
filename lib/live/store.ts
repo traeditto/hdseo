@@ -35,6 +35,7 @@ import {
   detectWebsitePlatform,
   type WebsitePlatformAnalysis,
 } from "@/lib/websites/platform-detection";
+import { seedOnboardingAgentTeam } from "@/lib/agents/control-plane";
 
 /**
  * The portal store used to be backed by a Cloudflare D1 database. It now reads
@@ -1368,11 +1369,24 @@ export async function launchClientOnboarding(email: string, projectId: string) {
     limit: 50,
   });
   const launchedAt = nowIso();
+  const agentWorkItems = await seedOnboardingAgentTeam(db, {
+    agencyId,
+    clientId: project.data.client_organization_id,
+    projectId,
+    userId,
+  }, {
+    evidenceJobIds: evidenceJobs,
+    discoveryJobId: discovery.jobId,
+    monthlyBudget,
+    targetMarket,
+    launchKey: projectId,
+  });
   await updateOnboardingConfig(db, project.data.client_organization_id, {
     onboardingStatus: "launched",
     launchedAt,
     firstEvidenceJobIds: evidenceJobs,
     firstDiscoveryJobId: discovery.jobId,
+    firstAgentWorkItemIds: agentWorkItems.map(item => item.workItemId),
   });
   await Promise.all([
     db.from("clients").update({ status: "active", updated_at: launchedAt }).eq("organization_id", project.data.client_organization_id),
@@ -1397,7 +1411,7 @@ export async function launchClientOnboarding(email: string, projectId: string) {
     resourceId: projectId,
     afterState: { evidenceJobs, discoveryJobId: discovery.jobId, monthlyBudget, targetMarket },
   });
-  return { evidenceJobs, discovery };
+  return { evidenceJobs, discovery, agentWorkItems };
 }
 
 export async function createOpportunity(
