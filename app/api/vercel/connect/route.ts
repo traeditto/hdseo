@@ -10,6 +10,7 @@ import { addVercelProjectDomain, createVercelProject, exchangeVercelCode, getVer
 import { loadVercelCredentials } from "@/lib/vercel/credentials";
 
 const beginSchema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid().optional(),projectId:z.string().uuid().optional()});
+const platformConnectionSchema=z.object({agencyId:z.string().uuid(),usePlatformToken:z.literal(true)});
 const connectSchema=z.object({
   agencyId:z.string().uuid(),clientId:z.string().uuid(),projectId:z.string().uuid(),connectionId:z.string().uuid().optional(),
   accessToken:z.string().min(20).optional(),teamId:z.string().min(1).optional(),teamSlug:z.string().min(1).optional(),
@@ -44,7 +45,15 @@ export async function GET(request:Request){try{
 }catch(error){return jsonError(error)}}
 
 export async function POST(request:Request){try{
-  const input=await parseJson(request,connectSchema),context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});requirePermission(context,"integrations.manage");
+  const input=await parseJson(request,z.union([platformConnectionSchema,connectSchema]));
+  if("usePlatformToken" in input){
+    const context=await resolveTenantContext({agencyId:input.agencyId});requirePermission(context,"agency.manage");requirePermission(context,"integrations.manage");
+    if(!env.VERCEL_ACCESS_TOKEN)throw new ApiError("The platform Vercel token is not configured.",503,"NOT_CONFIGURED");
+    const saved=await storeConnection({agencyId:context.agency.id,userId:context.user.id,token:env.VERCEL_ACCESS_TOKEN,teamId:env.VERCEL_TEAM_ID??null});
+    await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"vercel.connection.platform_bound",resourceType:"vercel_connection",resourceId:saved.id,request,afterState:{teamId:env.VERCEL_TEAM_ID??null}});
+    return Response.json({ok:true,connectionId:saved.id,status:"active"});
+  }
+  const context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});requirePermission(context,"integrations.manage");
   const db=requireAdminDb(),repositoryResult=await db.from("repositories").select("id,full_name,default_branch").eq("id",input.repositoryId).eq("agency_id",context.agency.id).eq("project_id",input.projectId).single();
   if(!repositoryResult.data)throw new ApiError("Connected GitHub repository not found.",404,"NOT_FOUND");
   let connectionId=input.connectionId,credentials:VercelCredentials;

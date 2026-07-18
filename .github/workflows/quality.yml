@@ -1,0 +1,67 @@
+name: Production quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Reject duplicate migration numbers
+        run: |
+          duplicates="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | cut -d_ -f1 | sort | uniq -d)"
+          test -z "$duplicates" || { echo "Duplicate migration numbers: $duplicates"; exit 1; }
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build:vercel
+
+  tenant-isolation:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+      TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+      TEST_USER_A_EMAIL: ${{ secrets.TEST_USER_A_EMAIL }}
+      TEST_USER_A_PASSWORD: ${{ secrets.TEST_USER_A_PASSWORD }}
+      TEST_PROJECT_A_ID: ${{ secrets.TEST_PROJECT_A_ID }}
+      TEST_PROJECT_B_ID: ${{ secrets.TEST_PROJECT_B_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require disposable tenant-isolation fixture
+        run: |
+          test -n "$TEST_SUPABASE_URL"
+          test -n "$TEST_SUPABASE_ANON_KEY"
+          test -n "$TEST_USER_A_EMAIL"
+          test -n "$TEST_USER_A_PASSWORD"
+          test -n "$TEST_PROJECT_A_ID"
+          test -n "$TEST_PROJECT_B_ID"
+      - run: pnpm vitest run tests/supabase-isolation.integration.test.ts

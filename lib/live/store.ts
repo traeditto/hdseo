@@ -30,12 +30,14 @@ import {
 import { opportunityKey } from "@/lib/seo/eligibility";
 import { buildManualPackage } from "@/lib/seo/manual-package";
 import { createManualPackage } from "@/lib/manual/package-service";
+import { verifyLiveImplementation } from "@/lib/manual/live-verification";
 import { enqueueEvidenceJob } from "@/lib/evidence/queue";
 import {
   detectWebsitePlatform,
   type WebsitePlatformAnalysis,
 } from "@/lib/websites/platform-detection";
 import { seedOnboardingAgentTeam } from "@/lib/agents/control-plane";
+import { publishCmsPackage,rollbackCmsPublication } from "@/lib/websites/publishing";
 
 /**
  * The portal store used to be backed by a Cloudflare D1 database. It now reads
@@ -154,6 +156,9 @@ export type LivePackage = {
   implementationPath: string;
   status: string;
   packageData: Record<string, unknown>;
+  publicationId: string | null;
+  publicationStatus: string | null;
+  publicationProvider: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -379,7 +384,7 @@ function mapTask(row: DatabaseRow): LiveTask {
   };
 }
 
-function mapPackage(row: DatabaseRow): LivePackage {
+function mapPackage(row: DatabaseRow,publication?:DatabaseRow): LivePackage {
   const data = asRecord(row.package_data);
   return {
     id: rowText(row, "id"),
@@ -390,6 +395,9 @@ function mapPackage(row: DatabaseRow): LivePackage {
     implementationPath: rowText(row, "implementation_path"),
     status: rowText(row, "status"),
     packageData: data,
+    publicationId: publication ? rowText(publication,"id") : null,
+    publicationStatus: publication ? rowText(publication,"status") : null,
+    publicationProvider: publication ? rowText(publication,"provider") : null,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
@@ -612,6 +620,7 @@ export async function liveAgencySnapshot(email: string) {
     websitesRes,
     connectionsRes,
     googleRes,
+    publicationsRes,
   ] = await Promise.all([
     db
       .from("client_organizations")
@@ -672,6 +681,11 @@ export async function liveAgencySnapshot(email: string) {
       .eq("agency_id", agencyId)
       .eq("provider", "google_search_console")
       .order("updated_at", { ascending: false }),
+    db
+      .from("cms_publications")
+      .select("id,package_id,provider,status,created_at")
+      .eq("agency_id", agencyId)
+      .order("created_at", { ascending: false }),
   ]);
 
   const clients = clientsRes.data ?? [];
@@ -691,6 +705,8 @@ export async function liveAgencySnapshot(email: string) {
   }
   const googleByProject = new Map<string, DatabaseRow>();
   for (const row of googleRes.data ?? []) if (!googleByProject.has(rowText(row, "project_id"))) googleByProject.set(rowText(row, "project_id"), row);
+  const publicationByPackage = new Map<string, DatabaseRow>();
+  for (const row of publicationsRes.data ?? []) if (!publicationByPackage.has(rowText(row,"package_id"))) publicationByPackage.set(rowText(row,"package_id"),row);
   const projectByClient = new Map<string, DatabaseRow>();
   for (const row of projectsRes.data ?? []) if (!projectByClient.has(rowText(row, "client_organization_id"))) projectByClient.set(rowText(row, "client_organization_id"), row);
   const onboardings = (enterpriseClientsRes.data ?? []).flatMap((row) => {
@@ -757,7 +773,7 @@ export async function liveAgencySnapshot(email: string) {
     }),
     opportunities: (opportunitiesRes.data ?? []).map(mapOpportunity),
     tasks: (tasksRes.data ?? []).map(mapTask),
-    packages: (packagesRes.data ?? []).map(mapPackage),
+    packages: (packagesRes.data ?? []).map(row=>mapPackage(row,publicationByPackage.get(rowText(row,"id")))),
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
     jobs: (jobsRes.data ?? []).map(mapCampaignJob),
     onboardings,
@@ -874,7 +890,7 @@ export async function liveClientSnapshot(email: string) {
     clients,
     projects: projects.map(mapProject),
     opportunities: (opportunitiesRes.data ?? []).map(mapOpportunity),
-    packages: (packagesRes.data ?? []).map(mapPackage),
+    packages: (packagesRes.data ?? []).map(row=>mapPackage(row)),
     events: (eventsRes.data ?? []).map((row) => mapEvent(row, emails)),
   };
 }
@@ -2359,34 +2375,46 @@ export async function advancePackage(
   }
 
   if (action === "verify_package") {
-    if (
-      !details.checks ||
-      !Object.values(details.checks).length ||
-      Object.values(details.checks).some((value) => !value)
-    ) {
+    const pending = await db
+      .from("implementation_verifications")
+      .select("id,live_url,proof")
+      .eq("package_id", packageId)
+      .eq("status", "pending")
+      .maybeSingle();
+    if (!pending.data) {
       throw new ApiError(
-        "Every required live verification check must pass.",
+        "Record implementation proof before verification.",
         409,
         "CONFLICT",
+      );
+    }
+    const automated = await verifyLiveImplementation({liveUrl:pending.data.live_url,packageData:pkg.package_data});
+    if (!automated.passed) {
+      await db.from("implementation_verifications").update({checks:automated.checks,error_details:{failed:automated.failed,page:automated.page},updated_at:nowIso()}).eq("id",pending.data.id);
+      throw new ApiError(
+        `Automated live verification failed: ${automated.failed.join(", ")}.`,
+        409,
+        "WEBSITE_VERIFICATION_FAILED",
       );
     }
     const verification = await db
       .from("implementation_verifications")
       .update({
         status: "passed",
-        checks: details.checks,
-        proof: details.proof ?? {},
+        checks: automated.checks,
+        proof: {...((pending.data.proof&&typeof pending.data.proof==="object")?pending.data.proof:{}),...(details.proof??{}),automatedPage:automated.page},
+        error_details: {},
         verified_by: userId,
         verified_at: nowIso(),
         updated_at: nowIso(),
       })
-      .eq("package_id", packageId)
+      .eq("id", pending.data.id)
       .eq("status", "pending")
       .select("id")
       .maybeSingle();
     if (!verification.data) {
       throw new ApiError(
-        "Record implementation proof before verification.",
+        "The implementation verification changed while checks were running.",
         409,
         "CONFLICT",
       );
@@ -2522,6 +2550,20 @@ export async function advancePackage(
     resourceId: packageId,
     afterState: { status },
   });
+}
+
+export async function publishPackageToCms(email:string,packageId:string){
+  const{db,agencyId,userId,role}=await agencyContext(email);requireLivePermission(role,"execution.approve");
+  const pkg=await db.from("implementation_packages").select("project_id,version").eq("id",packageId).eq("agency_id",agencyId).maybeSingle();
+  if(!pkg.data)throw new ApiError("Implementation package not found.",404,"NOT_FOUND");
+  return publishCmsPackage(db,{packageId,agencyId,projectId:pkg.data.project_id,actorId:userId,idempotencyKey:`cms:${packageId}:v${pkg.data.version??1}`});
+}
+
+export async function rollbackPackageCmsPublication(email:string,packageId:string,publicationId:string){
+  const{db,agencyId,userId,role}=await agencyContext(email);requireLivePermission(role,"deploy.rollback");
+  const pkg=await db.from("implementation_packages").select("project_id").eq("id",packageId).eq("agency_id",agencyId).maybeSingle();
+  if(!pkg.data)throw new ApiError("Implementation package not found.",404,"NOT_FOUND");
+  return rollbackCmsPublication(db,{publicationId,agencyId,projectId:pkg.data.project_id,actorId:userId});
 }
 
 export async function recordClientPackageDecision(
