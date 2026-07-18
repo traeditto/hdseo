@@ -9,7 +9,9 @@ import { enforceRateLimit } from "@/lib/automation/control-plane";
 import {
   advancePackage,
   agencyMembership,
+  analyzeOnboardingWebsite,
   createAgencyForUser,
+  createClientOnboarding,
   createClientWithProject,
   createOpportunity,
   createPackage,
@@ -18,8 +20,10 @@ import {
   liveAdminSnapshot,
   liveAgencySnapshot,
   liveClientSnapshot,
+  launchClientOnboarding,
   recordClientPackageDecision,
   reviewCampaignJob,
+  setClientOnboardingAutomation,
   updateTaskStatus,
   upsertLiveUser,
 } from "@/lib/live/store";
@@ -39,6 +43,30 @@ const schema = z.discriminatedUnion("action", [
     name: z.string().trim().min(2).max(120),
     domain: z.string().trim().min(3).max(200),
     contactEmail: z.string().email().optional().or(z.literal("")),
+  }),
+  z.object({
+    action: z.literal("analyze_website"),
+    domain: z.string().trim().min(3).max(200),
+  }),
+  z.object({
+    action: z.literal("create_client_onboarding"),
+    name: z.string().trim().min(2).max(120),
+    domain: z.string().trim().min(3).max(200),
+    contactEmail: z.string().email().optional().or(z.literal("")),
+    phone: z.string().trim().max(40).optional().or(z.literal("")),
+    services: z.array(z.string().trim().min(2).max(120)).min(1).max(30),
+    serviceAreas: z.array(z.string().trim().min(2).max(120)).min(1).max(50),
+    monthlyBudget: z.number().int().min(100).max(1_000_000),
+    targetMarket: z.string().trim().min(2).max(120),
+  }),
+  z.object({
+    action: z.literal("set_onboarding_automation"),
+    projectId: z.string().uuid(),
+    automationLevel: z.enum(["recommend", "safe", "autopilot"]),
+  }),
+  z.object({
+    action: z.literal("launch_client_onboarding"),
+    projectId: z.string().uuid(),
   }),
   z.object({
     action: z.literal("create_opportunity"),
@@ -205,6 +233,12 @@ export async function POST(request: Request) {
       await enforceRateLimit(actorScope, "paid_keyword_discovery", 6, 3600);
     } else if (input.action === "create_agency") {
       await enforceRateLimit(actorScope, "agency_creation", 3, 86400);
+    } else if (input.action === "analyze_website") {
+      await enforceRateLimit(actorScope, "website_analysis", 30, 3600);
+    } else if (input.action === "create_client_onboarding") {
+      await enforceRateLimit(actorScope, "client_onboarding", 10, 3600);
+    } else if (input.action === "launch_client_onboarding") {
+      await enforceRateLimit(actorScope, "client_onboarding_launch", 6, 3600);
     } else if (input.action === "package_decision") {
       await enforceRateLimit(actorScope, "client_decision", 30, 3600);
     } else if (["connect_website", "test_website", "disconnect_website"].includes(input.action)) {
@@ -233,6 +267,35 @@ export async function POST(request: Request) {
     }
 
     switch (input.action) {
+      case "analyze_website": {
+        const analysis = await analyzeOnboardingWebsite(user.email, input.domain);
+        return Response.json({ ok: true, analysis });
+      }
+      case "create_client_onboarding": {
+        const onboarding = await createClientOnboarding(user.email, {
+          ...input,
+          contactEmail: input.contactEmail || undefined,
+          phone: input.phone || undefined,
+        });
+        return Response.json({
+          ok: true,
+          data: await liveAgencySnapshot(user.email),
+          onboarding,
+          message: `${onboarding.analysis.platformLabel} detected. No-login website monitoring is ready.`,
+        });
+      }
+      case "set_onboarding_automation":
+        await setClientOnboardingAutomation(user.email, input);
+        return Response.json({ ok: true, data: await liveAgencySnapshot(user.email), message: "Automation preferences saved." });
+      case "launch_client_onboarding": {
+        const launch = await launchClientOnboarding(user.email, input.projectId);
+        return Response.json({
+          ok: true,
+          data: await liveAgencySnapshot(user.email),
+          launch,
+          message: `${launch.discovery.selected} high-value keyword opportunities found. The first crawl and autonomous plan are queued.`,
+        });
+      }
       case "create_client":
         await createClientWithProject(user.email, {
           name: input.name,
