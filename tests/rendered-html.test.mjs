@@ -13,10 +13,29 @@ test("the production home presents the HD SEO marketing experience",()=>{
   assert.match(source,/No credit card required/);
   assert.match(source,/UNVERIFIED/);
   assert.match(shared,/href="\/login\/client"/);
-  assert.match(source,/href="\/agencies"/);
+  assert.match(source+shared,/href="\/agencies"/);
   assert.match(source,/href="\/audit"/);
-  assert.doesNotMatch(source+shared,/mailto:|Start My SEO Plan|>Pricing</);
+  assert.match(shared,/href="\/pricing"/);
+  assert.match(source,/business_plan_selection/);
+  assert.doesNotMatch(source+shared,/mailto:|Start My SEO Plan/);
   assert.doesNotMatch(source,/codex-preview|react-loading-skeleton/);
+});
+
+test("the pricing experience uses one structured catalog and approval-safe commercial language",()=>{
+  const page=read("app/pricing/page.tsx"),experience=read("app/pricing/pricing-experience.tsx"),catalog=read("app/pricing-catalog.ts");
+  assert.match(page,/canonical: "\/pricing"/);
+  assert.match(page,/"@type": "Product"/);
+  assert.match(catalog,/monthly: 199/);
+  assert.match(catalog,/annual: 1990/);
+  assert.match(catalog,/monthly: 1999/);
+  assert.match(experience,/Annual — 2 months free/);
+  assert.match(experience,/HD SEO never spends that budget automatically/);
+  assert.match(experience,/Market ranges are illustrative/);
+  assert.match(experience,/planning math is not a forecast/);
+  assert.match(experience,/pricing_audience_toggle/);
+  assert.match(experience,/pricing_billing_toggle/);
+  assert.match(experience,/pricing-mobile-cta/);
+  assert.doesNotMatch(experience,/guaranteed revenue|guaranteed rankings/i);
 });
 
 test("the conversion routes have specific metadata and honest placeholders",()=>{

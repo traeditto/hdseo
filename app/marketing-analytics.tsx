@@ -9,7 +9,11 @@ export type MarketingEventName =
   | "audit_form_submit"
   | "booking_cta_click"
   | "agency_cta_click"
-  | "enterprise_cta_click";
+  | "enterprise_cta_click"
+  | "pricing_audience_toggle"
+  | "pricing_billing_toggle"
+  | "business_plan_selection"
+  | "agency_plan_selection";
 
 export function trackMarketingEvent(event: MarketingEventName, context?: Record<string, string>) {
   if (typeof window === "undefined") return;
