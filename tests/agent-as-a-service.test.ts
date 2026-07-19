@@ -66,6 +66,7 @@ describe("Agent-as-a-Service",()=>{
   it("hard-stops model and provider costs before they can erase margin",()=>{
     const sql=read("supabase/migrations/0027_profit_guarded_agent_capacity.sql"),cost=read("lib/agent-service/cost-control.ts"),openai=read("lib/creatives/openai.ts"),webhook=read("app/api/billing/webhook/route.ts");
     for(const safeguard of ["reserve_model_usage","PROJECT_DAILY_MODEL_BUDGET_EXCEEDED","PLATFORM_DAILY_MODEL_BUDGET_EXCEEDED","reserve_agent_service_provider_cost","purchased_action_balance","purchased_provider_balance"])expect(sql).toContain(safeguard);
+    expect(read("supabase/migrations/0028_billing_idempotency.sql")).toContain("credit_agent_capacity_purchase");
     expect(cost).toContain("OPENAI_MAX_COST_PER_REQUEST_USD");
     expect(cost).toContain("OPENAI_MAX_DAILY_COST_PER_PROJECT_USD");
     expect(read("lib/providers/paid-operation.ts")).toContain("MAX_DAILY_DATAFORSEO_PLATFORM_COST_USD");

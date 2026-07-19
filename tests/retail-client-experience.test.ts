@@ -30,11 +30,16 @@ describe("retail business-owner experience", () => {
   it("uses real checkout, billing portal and signed Stripe webhooks", () => {
     const checkout = read("app/api/billing/checkout/route.ts");
     const webhook = read("app/api/billing/webhook/route.ts");
+    const catalog = read("lib/billing/catalog.ts");
+    const portal = read("app/ui/live-client-dashboard.tsx");
     expect(checkout).toContain("/v1/checkout/sessions");
     expect(checkout).toContain("resolveClientContext");
     expect(webhook).toContain("timingSafeEqual");
     expect(webhook).toContain("webhook_events");
     expect(webhook).toContain("WEBHOOK_REPLAY_REJECTED");
+    expect(webhook).toContain("PAYMENT_VERIFICATION_FAILED");
+    for (const amount of ["19_900", "49_900", "99_900"]) expect(catalog).toContain(amount);
+    for (const price of ["$199", "$499", "$999"]) expect(portal).toContain(price);
   });
 
   it("opens the client portal for verified first-run retail accounts without exposing tenant data", () => {

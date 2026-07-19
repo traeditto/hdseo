@@ -151,9 +151,9 @@ const goalLabels: Record<string, string> = {
 };
 const planLabels: Record<string, string> = {
   free_audit: "Free Audit",
-  starter: "Starter",
-  growth: "Growth Autopilot",
-  pro: "Pro + Human Review",
+  starter: "Essentials",
+  growth: "Growth",
+  pro: "Scale",
 };
 const splitList = (value: FormDataEntryValue | null) =>
   String(value ?? "")
@@ -1707,21 +1707,21 @@ function BusinessSettings({
           {[
             [
               "starter",
-              "Starter",
-              "$49",
-              "Weekly plan, monitoring and owner-guided actions",
+              "Essentials",
+              "$199",
+              "Foundational SEO implementation for one business website",
             ],
             [
               "growth",
-              "Growth Autopilot",
-              "$99",
-              "Safe implementation, local research and content refreshes",
+              "Growth",
+              "$499",
+              "Consistent implementation, publishing and outcome tracking",
             ],
             [
               "pro",
-              "Pro + Human Review",
-              "$149",
-              "Higher limits, publishing and specialist review",
+              "Scale",
+              "$999",
+              "Multi-site and multi-location execution with advanced controls",
             ],
           ].map(([key, name, price, detail]) => (
             <article className={key === "growth" ? "featured" : ""} key={key}>
