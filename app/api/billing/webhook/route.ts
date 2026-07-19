@@ -6,9 +6,28 @@ import { getLiveAdminClient } from "@/lib/live/identity";
 import { planEntitlements } from "@/lib/agent-service/catalog";
 import { agentCapacityAddOn } from "@/lib/agent-service/catalog";
 import { isRetailBillingPlanKey, retailBillingPlans } from "@/lib/billing/catalog";
+import {agencyBillingPlans,isAgencyBillingPlanKey} from "@/lib/billing/agency-catalog";
 
 type StripeObject = { id: string; status?: string; payment_status?: string; amount_total?: number; currency?: string; customer?: string; subscription?: string; cancel_at_period_end?: boolean; current_period_end?: number; metadata?: Record<string,string> };
 type StripeEvent = { id: string; type: string; created: number; data: { object: StripeObject } };
+
+async function applyAgencySubscriptionState(db:ReturnType<typeof getLiveAdminClient>,agencyId:string,status:string){
+  const subscription=await db.from("agency_subscriptions").select("included_client_limit,included_scale_client_limit").eq("agency_id",agencyId).maybeSingle();
+  if(!subscription.data)return;
+  if(!["active","trialing"].includes(status)){
+    await db.from("agent_service_enrollments").update({status:"paused",pause_reason:"Agency billing is not active",worker_id:null,locked_at:null,lock_expires_at:null,updated_at:new Date().toISOString()}).eq("agency_id",agencyId).eq("billing_owner","agency").in("status",["trialing","active"]);
+    return;
+  }
+  const enrollments=await db.from("agent_service_enrollments").select("id,plan_key,status,pause_reason,created_at").eq("agency_id",agencyId).eq("billing_owner","agency").order("created_at",{ascending:true});
+  let active=0,scale=0;
+  for(const enrollment of enrollments.data??[]){
+    const billingPaused=enrollment.status==="paused"&&["Agency subscription required","Agency billing is not active","Agency plan capacity exceeded"].includes(enrollment.pause_reason??"");
+    if(!["trialing","active"].includes(enrollment.status)&&!billingPaused)continue;
+    const isScale=enrollment.plan_key==="agency_scale",allowed=active<Number(subscription.data.included_client_limit)&&(!isScale||scale<Number(subscription.data.included_scale_client_limit));
+    await db.from("agent_service_enrollments").update(allowed?{status:"active",pause_reason:null,next_cycle_at:new Date().toISOString(),updated_at:new Date().toISOString()}:{status:"paused",pause_reason:"Agency plan capacity exceeded",worker_id:null,locked_at:null,lock_expires_at:null,updated_at:new Date().toISOString()}).eq("id",enrollment.id);
+    if(allowed){active+=1;if(isScale)scale+=1;}
+  }
+}
 
 function verify(payload: string, header: string | null) {
   if (!env.STRIPE_WEBHOOK_SECRET) throw new ApiError("Stripe webhook verification is not configured.", 503, "NOT_CONFIGURED");
@@ -30,11 +49,19 @@ export async function POST(request: Request) {
     const event = JSON.parse(raw) as StripeEvent, object = event.data.object, db = getLiveAdminClient();
     const stored = await db.from("webhook_events").upsert({ provider: "stripe", delivery_id: event.id, event_type: event.type, signature_valid: true, status: "processing", payload_hash: createHash("sha256").update(raw).digest("hex"), payload: { objectId: object.id }, received_at: new Date(event.created*1000).toISOString() }, { onConflict: "provider,delivery_id" }).select("id,status").single();
     if (stored.data?.status === "processed") return Response.json({ ok: true, duplicate: true });
-    const projectId = object.metadata?.project_id;
-    if (event.type === "checkout.session.completed" && !projectId) throw new ApiError("Stripe checkout metadata is incomplete.", 409, "PAYMENT_VERIFICATION_FAILED");
-    if (event.type === "checkout.session.completed" && projectId) {
-      if(object.metadata?.kind==="agent_capacity"){
-        const enrollmentId=object.metadata.enrollment_id,units=Math.max(1,Number(object.metadata.capacity_units)||1),expected=units*agentCapacityAddOn.priceCents;
+    const projectId = object.metadata?.project_id,kind=object.metadata?.kind;
+    if(event.type==="checkout.session.completed"&&kind==="agency_subscription"){
+      const agencyId=object.metadata?.agency_id,planKey=object.metadata?.plan_key;
+      if(!agencyId||!isAgencyBillingPlanKey(planKey)||!object.customer||!object.subscription)throw new ApiError("Agency checkout metadata is incomplete.",409,"PAYMENT_VERIFICATION_FAILED");
+      const plan=agencyBillingPlans[planKey];
+      if(object.payment_status!=="paid"||object.currency!=="usd"||Number(object.amount_total)!==plan.priceCents)throw new ApiError("The agency subscription payment could not be verified.",409,"PAYMENT_VERIFICATION_FAILED");
+      const updated=await db.from("agency_subscriptions").upsert({agency_id:agencyId,plan_key:planKey,status:"active",price_cents:plan.priceCents,included_client_limit:plan.includedClients,included_scale_client_limit:plan.includedScaleClients,stripe_customer_id:object.customer,stripe_subscription_id:object.subscription,updated_at:new Date().toISOString()},{onConflict:"agency_id"});
+      if(updated.error)throw new ApiError("The agency subscription could not be saved. Apply migration 0029.",503,"DATABASE_BINDING_FAILED");
+      await applyAgencySubscriptionState(db,agencyId,"active");
+    }else if (event.type === "checkout.session.completed") {
+      if(!projectId)throw new ApiError("Stripe checkout metadata is incomplete.",409,"PAYMENT_VERIFICATION_FAILED");
+      if(kind==="agent_capacity"){
+        const enrollmentId=object.metadata?.enrollment_id,units=Math.max(1,Number(object.metadata?.capacity_units)||1),expected=units*agentCapacityAddOn.priceCents;
         if(object.payment_status!=="paid"||object.currency!=="usd"||Number(object.amount_total)!==expected)throw new ApiError("The capacity payment could not be verified.",409,"PAYMENT_VERIFICATION_FAILED");
         if(!enrollmentId)throw new ApiError("The paid capacity purchase is missing its enrollment.",409,"PAYMENT_VERIFICATION_FAILED");
         const credited=await db.rpc("credit_agent_capacity_purchase",{p_enrollment_id:enrollmentId,p_project_id:projectId,p_units:units,p_provider_budget_per_unit:agentCapacityAddOn.providerBudgetPerAction,p_stripe_event_id:event.id,p_amount_paid_cents:Number(object.amount_total)});
@@ -49,8 +76,16 @@ export async function POST(request: Request) {
       }
     } else if ((event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") && object.id) {
       const status = event.type === "customer.subscription.deleted" ? "canceled" : object.status === "active" || object.status === "trialing" ? object.status : object.status === "past_due" ? "past_due" : "paused";
-      await db.from("client_subscriptions").update({ status, cancel_at_period_end: object.cancel_at_period_end ?? false, current_period_end: object.current_period_end ? new Date(object.current_period_end*1000).toISOString() : null, updated_at: new Date().toISOString() }).eq("stripe_subscription_id", object.id);
-      await db.from("agent_service_enrollments").update({status,next_cycle_at:status==="active"||status==="trialing"?new Date().toISOString():undefined,pause_reason:status==="active"||status==="trialing"?null:"Billing is not active",updated_at:new Date().toISOString()}).eq("stripe_subscription_id",object.id);
+      if(object.metadata?.kind==="agency_subscription"){
+        const metadata=object.metadata,agencyId=metadata.agency_id,planKey=metadata.plan_key;
+        if(!agencyId||!isAgencyBillingPlanKey(planKey))throw new ApiError("Agency subscription metadata is invalid.",409,"PAYMENT_VERIFICATION_FAILED");
+        const plan=agencyBillingPlans[planKey];
+        await db.from("agency_subscriptions").update({plan_key:planKey,status,price_cents:plan.priceCents,included_client_limit:plan.includedClients,included_scale_client_limit:plan.includedScaleClients,cancel_at_period_end:object.cancel_at_period_end??false,current_period_end:object.current_period_end?new Date(object.current_period_end*1000).toISOString():null,updated_at:new Date().toISOString()}).eq("stripe_subscription_id",object.id);
+        await applyAgencySubscriptionState(db,agencyId,status);
+      }else{
+        await db.from("client_subscriptions").update({ status, cancel_at_period_end: object.cancel_at_period_end ?? false, current_period_end: object.current_period_end ? new Date(object.current_period_end*1000).toISOString() : null, updated_at: new Date().toISOString() }).eq("stripe_subscription_id", object.id);
+        await db.from("agent_service_enrollments").update({status,next_cycle_at:status==="active"||status==="trialing"?new Date().toISOString():undefined,pause_reason:status==="active"||status==="trialing"?null:"Billing is not active",updated_at:new Date().toISOString()}).eq("stripe_subscription_id",object.id);
+      }
     }
     if (stored.data?.id) await db.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString() }).eq("id", stored.data.id);
     return Response.json({ ok: true });

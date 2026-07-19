@@ -3,6 +3,7 @@ import "server-only";
 import type {SupabaseClient} from "@supabase/supabase-js";
 import {ApiError} from "@/lib/api/errors";
 import {agentServicePlans,defaultManagedTools,isAgentServicePlanKey,planEntitlements,type AgentApprovalOwner,type AgentServiceMode} from "@/lib/agent-service/catalog";
+import {agencyBillingPlans,isAgencyBillingPlanKey} from "@/lib/billing/agency-catalog";
 
 export type AgentServiceTenant={agencyId:string;clientId:string;projectId:string;userId:string};
 type EnrollmentInput={serviceMode:AgentServiceMode;planKey:string;approvalOwner:AgentApprovalOwner;operatorBrand:"hdseo"|"agency";billingOwner:"agency"|"client";allowedTools?:string[];resalePriceCents?:number};
@@ -15,10 +16,31 @@ async function enterpriseClientId(db:SupabaseClient,tenant:Omit<AgentServiceTena
   return result.data.id as string;
 }
 
+async function enforcePaidEnrollment(db:SupabaseClient,tenant:AgentServiceTenant,input:EnrollmentInput,excludeProjectId?:string){
+  if(input.billingOwner==="client"){
+    const subscription=await db.from("client_subscriptions").select("plan_key,status").eq("project_id",tenant.projectId).maybeSingle();
+    if(!subscription.data||!["trialing","active"].includes(subscription.data.status))throw new ApiError("Choose an active HD SEO plan before turning on Autopilot.",402,"SUBSCRIPTION_REQUIRED");
+    if(subscription.data.plan_key!==input.planKey)throw new ApiError("This service level does not match the business subscription.",409,"PLAN_MISMATCH");
+    return;
+  }
+  if(!["agency_core","agency_scale"].includes(input.planKey))throw new ApiError("Agency subscriptions support Managed Core or Managed Scale client service.",400,"PLAN_MISMATCH");
+  const subscription=await db.from("agency_subscriptions").select("plan_key,status,included_client_limit,included_scale_client_limit").eq("agency_id",tenant.agencyId).maybeSingle();
+  if(!subscription.data||!["trialing","active"].includes(subscription.data.status)||!isAgencyBillingPlanKey(subscription.data.plan_key))throw new ApiError("Choose an active agency plan before enrolling managed clients.",402,"AGENCY_SUBSCRIPTION_REQUIRED");
+  const rows=await db.from("agent_service_enrollments").select("project_id,plan_key").eq("agency_id",tenant.agencyId).eq("billing_owner","agency").in("status",["trialing","active"]);
+  if(rows.error)throw new ApiError("Agency capacity could not be verified.",503,"DATABASE_BINDING_FAILED");
+  const active=(rows.data??[]).filter(row=>row.project_id!==excludeProjectId);
+  const entitlements=agencyBillingPlans[subscription.data.plan_key];
+  const clientLimit=Math.min(Number(subscription.data.included_client_limit),entitlements.includedClients);
+  const scaleLimit=Math.min(Number(subscription.data.included_scale_client_limit),entitlements.includedScaleClients);
+  if(active.length>=clientLimit)throw new ApiError(`${entitlements.label} includes ${clientLimit} active managed clients. Upgrade before adding another.`,409,"AGENCY_CLIENT_LIMIT_REACHED");
+  if(input.planKey==="agency_scale"&&active.filter(row=>row.plan_key==="agency_scale").length>=scaleLimit)throw new ApiError(`${entitlements.label} includes ${scaleLimit} Managed Scale client seat${scaleLimit===1?"":"s"}. Upgrade or move another client to Core.`,409,"AGENCY_SCALE_LIMIT_REACHED");
+}
+
 export async function enrollAgentService(db:SupabaseClient,tenant:AgentServiceTenant,input:EnrollmentInput){
   if(!isAgentServicePlanKey(input.planKey))throw new ApiError("This managed-service plan is not available.",400,"VALIDATION_ERROR");
-  const entitlements=agentServicePlans[input.planKey],clientId=await enterpriseClientId(db,tenant);
   const existing=await db.from("agent_service_enrollments").select("id,status").eq("project_id",tenant.projectId).maybeSingle();
+  await enforcePaidEnrollment(db,tenant,input,existing.data?tenant.projectId:undefined);
+  const entitlements=agentServicePlans[input.planKey],clientId=await enterpriseClientId(db,tenant);
   const payload={agency_id:tenant.agencyId,client_organization_id:tenant.clientId,client_id:clientId,project_id:tenant.projectId,created_by:tenant.userId,
     service_mode:input.serviceMode,operator_brand:input.operatorBrand,approval_owner:input.approvalOwner,billing_owner:input.billingOwner,plan_key:input.planKey,
     status:existing.data?.status==="past_due"?"past_due":"active",monthly_action_limit:entitlements.monthlyActionLimit,
@@ -32,6 +54,11 @@ export async function enrollAgentService(db:SupabaseClient,tenant:AgentServiceTe
 }
 
 export async function setAgentServiceStatus(db:SupabaseClient,tenant:AgentServiceTenant,status:"active"|"paused",reason?:string){
+  if(status==="active"){
+    const current=await db.from("agent_service_enrollments").select("plan_key,service_mode,operator_brand,approval_owner,billing_owner").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
+    if(!current.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
+    await enforcePaidEnrollment(db,tenant,{planKey:current.data.plan_key,serviceMode:current.data.service_mode,operatorBrand:current.data.operator_brand,approvalOwner:current.data.approval_owner,billingOwner:current.data.billing_owner},tenant.projectId);
+  }
   const result=await db.from("agent_service_enrollments").update({status,pause_reason:status==="paused"?(reason?.trim()||"Paused by an authorized user"):null,next_cycle_at:status==="active"?now():undefined,worker_id:null,locked_at:null,lock_expires_at:null,updated_at:now()}).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("*").maybeSingle();
   if(result.error||!result.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
   await db.from("audit_logs").insert({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,actor_user_id:tenant.userId,action:`agent_service.${status}`,object_type:"agent_service_enrollment",object_id:result.data.id,after_summary:{status,reason:reason??null}});
@@ -40,6 +67,9 @@ export async function setAgentServiceStatus(db:SupabaseClient,tenant:AgentServic
 
 export async function changeAgentServicePlan(db:SupabaseClient,tenant:AgentServiceTenant,planKey:string){
   if(!isAgentServicePlanKey(planKey))throw new ApiError("This managed-service plan is not available.",400,"VALIDATION_ERROR");
+  const current=await db.from("agent_service_enrollments").select("billing_owner,operator_brand,approval_owner,service_mode").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
+  if(!current.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
+  await enforcePaidEnrollment(db,tenant,{planKey,serviceMode:current.data.service_mode,operatorBrand:current.data.operator_brand,approvalOwner:current.data.approval_owner,billingOwner:current.data.billing_owner},tenant.projectId);
   const plan=planEntitlements(planKey),result=await db.from("agent_service_enrollments").update({plan_key:planKey,monthly_action_limit:plan.monthlyActionLimit,monthly_provider_budget:plan.monthlyProviderBudget,monthly_human_review_minutes:plan.humanReviewMinutes,cycle_cadence_hours:plan.cycleCadenceHours,updated_at:now()}).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("*").maybeSingle();
   if(result.error||!result.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
   return result.data;

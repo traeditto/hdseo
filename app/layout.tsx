@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import "./globals.css";
 import "./owner-portal.css";
 import "./deployment-setup.css";
+import "./agency-billing.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });

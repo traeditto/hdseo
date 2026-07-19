@@ -9,6 +9,7 @@ import { LocalGrowthEngine } from "@/app/ui/local-growth-engine";
 import { AgencyClientCommandCenter } from "@/app/ui/agency-client-command-center";
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import { AgentServicePanel } from "@/app/ui/agent-service-panel";
+import { AgencyBillingPanel } from "@/app/ui/agency-billing-panel";
 import {
   assessKeywordServiceArea,
   buildServiceAreaPolicy,
@@ -162,6 +163,7 @@ const tabs = [
   "Opportunities",
   "Agent Workspace",
   "Agent Service",
+  "Billing",
   "Creative Studio",
   "Websites",
   "Automation",
@@ -565,6 +567,9 @@ export function LiveAgencyDashboard({
               role="agency"
               canManage={can("clients.manage")}
             />
+          )}{" "}
+          {tab === "Billing" && (
+            <AgencyBillingPanel canManage={can("billing.manage")} />
           )}{" "}
           {tab === "Local Growth" && (
             <LocalGrowthEngine

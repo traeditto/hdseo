@@ -34,3 +34,18 @@ export async function requireLiveAgencyProject(input:{projectId:string;permissio
   if(input.permission&&!clientCanManage)throw new ApiError("Only the business owner can manage this connection.",403,"ROLE_FORBIDDEN");
   return{db,userId:identity.userId,email:identity.email,agencyId:clientMembership.data.agency_id as string,clientId:targetProject.data.client_organization_id as string,project:targetProject.data,role:clientRole,actorType:"client" as const};
 }
+
+export async function requireLiveAgency(input:{permission?:string}={}){
+  let user=await getChatGPTUser();
+  if(!user){
+    const session=await createSupabaseServerClient(),account=session?(await session.auth.getUser()).data.user:null;
+    if(account?.email){const displayName=String(account.user_metadata?.full_name||account.user_metadata?.name||account.email.split("@")[0]);user={displayName,email:account.email,fullName:displayName};}
+  }
+  if(!user)throw new ApiError("Sign in to HD SEO to continue.",401,"AUTH_REQUIRED");
+  const db=getLiveAdminClient(),identity=await resolveLiveIdentity(db,user);
+  const membership=await db.from("agency_members").select("agency_id,role").eq("user_id",identity.userId).eq("status","active").limit(1).maybeSingle();
+  if(!membership.data)throw new ApiError("Agency access denied.",403,"TENANT_DENIED");
+  const role=membership.data.role as AgencyRole;
+  if(input.permission&&!hasPermission(role,input.permission))throw new ApiError("Your agency role cannot manage billing.",403,"ROLE_FORBIDDEN");
+  return{db,userId:identity.userId,email:identity.email,agencyId:membership.data.agency_id as string,role,actorType:"agency" as const};
+}
