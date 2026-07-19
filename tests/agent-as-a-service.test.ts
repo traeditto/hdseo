@@ -32,6 +32,7 @@ describe("Agent-as-a-Service",()=>{
     expect(scheduler).toContain('status:"no_action"');
     expect(scheduler).toContain('recommendation:opportunity.data?null:"NO_ACTION"');
     expect(scheduler).toContain("consume_agent_service_capacity");
+    expect(scheduler).toContain("const providerCost=0");
     expect(scheduler).toContain("approvalOwner:enrollment.approval_owner");
     expect(scheduler).toContain("reconcileActiveCycle");
   });
