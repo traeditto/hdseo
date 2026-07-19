@@ -46,7 +46,8 @@ const schema = z.object({
   NEXT_PUBLIC_APP_URL: optionalUrl,
   APP_URL: optionalUrl,
   PLATFORM_ADMIN_EMAILS: z.string().optional(),
-  MAX_DAILY_DATAFORSEO_COST_USD: z.coerce.number().positive().default(25),
+  MAX_DAILY_DATAFORSEO_COST_USD: z.coerce.number().positive().default(2),
+  MAX_DAILY_DATAFORSEO_PLATFORM_COST_USD: z.coerce.number().positive().default(5),
   MAX_KEYWORDS_PER_RUN: z.coerce.number().int().positive().max(700).default(100),
   MAX_MAP_GRID_POINTS: z.coerce.number().int().positive().max(49).default(49),
   MAX_COMPETITORS_PER_RUN: z.coerce.number().int().positive().max(100).default(25),
@@ -59,9 +60,9 @@ const schema = z.object({
   OPENAI_PROJECT_ID: z.string().optional(),
   OPENAI_CREATIVE_MODEL: z.string().default("gpt-5.6-terra"),
   OPENAI_CREATIVE_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1000).max(12000).default(4500),
-  OPENAI_MAX_COST_PER_REQUEST_USD: z.coerce.number().positive().max(10).default(0.35),
-  OPENAI_MAX_DAILY_COST_PER_PROJECT_USD: z.coerce.number().positive().max(1000).default(1),
-  OPENAI_MAX_DAILY_PLATFORM_COST_USD: z.coerce.number().positive().max(10000).default(10),
+  OPENAI_MAX_COST_PER_REQUEST_USD: z.coerce.number().positive().max(10).default(0.2),
+  OPENAI_MAX_DAILY_COST_PER_PROJECT_USD: z.coerce.number().positive().max(1000).default(0.5),
+  OPENAI_MAX_DAILY_PLATFORM_COST_USD: z.coerce.number().positive().max(10000).default(5),
 });
 
 export const env = schema.parse(process.env);

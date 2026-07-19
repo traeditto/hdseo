@@ -28,9 +28,14 @@ export async function beginPaidOperation(context: PaidTenantContext, input: { co
   const consumed=await db.from("provider_operation_confirmations").update({consumed_at:new Date().toISOString()}).eq("id",input.confirmationId).is("consumed_at",null).select("id").maybeSingle();
   if(!consumed.data)throw new ApiError("The paid-operation confirmation was already consumed.",409,"CONFLICT");
   const since = new Date(); since.setUTCHours(0, 0, 0, 0);
-  const spendResult = await db.from("data_usage_events").select("actual_cost,estimated_cost,status").eq("agency_id", context.agency.id).gte("created_at", since.toISOString());
-  const spend = (spendResult.data ?? []).reduce((sum, row) => sum + Number(row.actual_cost ?? (row.status === "completed" ? row.estimated_cost : 0) ?? 0), 0);
+  const [spendResult,platformSpendResult] = await Promise.all([
+    db.from("data_usage_events").select("actual_cost,estimated_cost,status").eq("agency_id", context.agency.id).gte("created_at", since.toISOString()),
+    db.from("data_usage_events").select("actual_cost,estimated_cost,status").eq("provider","dataforseo").gte("created_at", since.toISOString()),
+  ]);
+  const total=(rows:Array<{actual_cost:unknown;estimated_cost:unknown;status:unknown}>)=>rows.reduce((sum,row)=>sum+Number(row.actual_cost??(row.status==="completed"?row.estimated_cost:0)??0),0);
+  const spend=total(spendResult.data??[]),platformSpend=total(platformSpendResult.data??[]);
   if (spend + input.estimatedCost > env.MAX_DAILY_DATAFORSEO_COST_USD) throw new ApiError("The daily DataForSEO budget would be exceeded.", 409, "CONFLICT");
+  if (platformSpend + input.estimatedCost > env.MAX_DAILY_DATAFORSEO_PLATFORM_COST_USD) throw new ApiError("The platform-wide DataForSEO safety ceiling has been reached. No provider request was sent.",409,"PROVIDER_BUDGET_EXCEEDED");
   await db.from("provider_job_locks").delete().eq("agency_id", context.agency.id).eq("project_id", context.project.id).eq("operation_type", input.operation).lt("expires_at", new Date().toISOString());
   const lockKey = `${context.agency.id}:${context.project.id}:${input.operation}`;
   const lock = await db.from("provider_job_locks").insert({ agency_id: context.agency.id, project_id: context.project.id, operation_type: input.operation, lock_key: lockKey, expires_at: new Date(Date.now() + 15 * 60_000).toISOString() }).select("id").single();
