@@ -1,0 +1,12 @@
+import{readFileSync}from"node:fs";
+import{join}from"node:path";
+import{describe,expect,it}from"vitest";
+const read=(path:string)=>readFileSync(join(process.cwd(),path),"utf8");
+
+describe("outcomes, attribution, and working budgets",()=>{
+  it("stores real cost, outcome, local, citation, and outreach evidence per tenant",()=>{const sql=read("supabase/migrations/0024_outcomes_attribution_and_local_operations.sql");for(const table of["project_budget_accounts","project_budget_allocations","project_budget_transactions","analytics_daily_metrics","attribution_touchpoints","local_business_profiles","local_reviews","local_profile_change_requests","citation_listings","authority_outreach_actions","provider_sync_runs"])expect(sql).toContain(`public.${table}`);expect(sql).toContain("has_client_access");expect(sql).toContain("idempotency_key");});
+  it("keeps Google local writes approval gated",()=>{const route=read("app/api/local/actions/route.ts"),sql=read("supabase/migrations/0024_outcomes_attribution_and_local_operations.sql");expect(route).toContain('eq("status","approved")');expect(route).toContain("confirm:z.literal(true)");expect(route).toContain('permission:publishing?"execution.approve"');expect(sql).toContain("awaiting_approval");});
+  it("encrypts provider tokens and never returns them in workspace snapshots",()=>{const provider=read("lib/providers/attribution.ts"),service=read("lib/outcomes/service.ts");expect(provider).toContain("encryptSecret");expect(provider).toContain("encrypted_secret_reference");expect(service).not.toContain('select("encrypted_secret_reference');});
+  it("protects attribution webhooks from replay and duplicate ingestion",()=>{const webhook=read("app/api/webhooks/attribution/[provider]/route.ts");expect(webhook).toContain("timingSafeEqual");expect(webhook).toContain("WEBHOOK_REPLAY_REJECTED");expect(webhook).toContain('eq("delivery_id",eventId)');expect(webhook).toContain("ATTRIBUTION_WEBHOOK_SECRET");});
+  it("exposes one honest results and budget workspace to agencies and owners",()=>{const workspace=read("app/ui/outcomes-control-center.tsx"),agency=read("app/ui/live-agency-dashboard.tsx"),client=read("app/ui/live-client-dashboard.tsx");expect(workspace).toContain("Directional search value is kept separate from revenue");expect(workspace).toContain("Nothing is charged by this form");expect(agency).toContain('"Results & budget"');expect(client).toContain("OutcomesControlCenter");});
+});

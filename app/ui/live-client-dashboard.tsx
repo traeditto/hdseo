@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
+import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 
 type User = { displayName: string; email: string };
 type Client = { id: string; name: string; domain: string; status: string };
@@ -1262,6 +1263,13 @@ export function LiveClientBusinessDashboard({
                   </div>
                 </section>
               </div>
+              {project && (
+                <OutcomesControlCenter
+                  projects={[project]}
+                  canManage
+                  compact
+                />
+              )}
             </>
           )}
 

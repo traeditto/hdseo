@@ -16,13 +16,13 @@ export type SearchAnalyticsRow={keys?:string[];clicks?:number;impressions?:numbe
 
 function requireConfig(){if(!hasGoogleSearchConsoleConfig)throw new ApiError("Google Search Console OAuth is not configured.",503,"NOT_CONFIGURED");}
 
-export function googleAuthorizationUrl(state:string){
+export function googleAuthorizationUrl(state:string,options?:{scopes?:string[];redirectUri?:string}){
   requireConfig();
   const url=new URL(GOOGLE_OAUTH);
   url.searchParams.set("client_id",env.GOOGLE_CLIENT_ID!);
-  url.searchParams.set("redirect_uri",googleCallbackUrl());
+  url.searchParams.set("redirect_uri",options?.redirectUri??googleCallbackUrl());
   url.searchParams.set("response_type","code");
-  url.searchParams.set("scope",GOOGLE_SCOPES.join(" "));
+  url.searchParams.set("scope",(options?.scopes??GOOGLE_SCOPES).join(" "));
   url.searchParams.set("access_type","offline");
   url.searchParams.set("prompt","consent");
   url.searchParams.set("include_granted_scopes","true");
@@ -48,8 +48,8 @@ async function tokenRequest(parameters:URLSearchParams){
   return parsedResponse<{access_token:string;expires_in:number;refresh_token?:string;scope?:string;token_type?:string}>(response,"GOOGLE_OAUTH_FAILED");
 }
 
-export async function exchangeGoogleCode(code:string):Promise<GoogleCredentials>{
-  const token=await tokenRequest(new URLSearchParams({code,redirect_uri:googleCallbackUrl(),grant_type:"authorization_code"}));
+export async function exchangeGoogleCode(code:string,redirectUri=googleCallbackUrl()):Promise<GoogleCredentials>{
+  const token=await tokenRequest(new URLSearchParams({code,redirect_uri:redirectUri,grant_type:"authorization_code"}));
   if(!token.access_token)throw new ApiError("Google did not return an access token.",502,"GOOGLE_OAUTH_FAILED");
   return{accessToken:token.access_token,refreshToken:token.refresh_token??"",expiresAt:Date.now()+Math.max(60,token.expires_in??3600)*1000,scope:token.scope??GOOGLE_SCOPES.join(" "),tokenType:token.token_type??"Bearer"};
 }
@@ -61,7 +61,7 @@ export async function refreshGoogleCredentials(credentials:GoogleCredentials):Pr
   return{...credentials,accessToken:token.access_token,expiresAt:Date.now()+Math.max(60,token.expires_in??3600)*1000,scope:token.scope??credentials.scope,tokenType:token.token_type??credentials.tokenType};
 }
 
-async function googleFetch<T>(url:string,accessToken:string,init:RequestInit={}){
+export async function googleFetch<T>(url:string,accessToken:string,init:RequestInit={}){
   for(let attempt=0;attempt<3;attempt++){
     let response:Response;
     try{response=await fetch(url,{...init,headers:{accept:"application/json",authorization:`Bearer ${accessToken}`,...init.headers},cache:"no-store"});}

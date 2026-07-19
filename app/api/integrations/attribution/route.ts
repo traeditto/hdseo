@@ -1,0 +1,8 @@
+import { z } from "zod";
+import { ApiError,jsonError } from "@/lib/api/errors";
+import { auditEvent,enforceRateLimit } from "@/lib/automation/control-plane";
+import { requireLiveAgencyProject } from "@/lib/auth/live-tenant";
+import { saveAttributionConnection,syncAttributionConnection } from "@/lib/providers/attribution";
+
+const schema=z.discriminatedUnion("action",[z.object({action:z.literal("connect"),projectId:z.string().uuid(),provider:z.enum(["callrail","hubspot"]),token:z.string().min(20).max(4000),accountId:z.string().max(200).optional()}),z.object({action:z.literal("sync"),projectId:z.string().uuid(),provider:z.enum(["callrail","hubspot"])})]);
+export async function POST(request:Request){try{const input=schema.parse(await request.json()),context=await requireLiveAgencyProject({projectId:input.projectId,permission:"integrations.manage"});await enforceRateLimit(`attribution:${context.agencyId}:${context.userId}`,input.action,10,300);const tenant={agencyId:context.agencyId,clientId:context.clientId,projectId:context.project.id,userId:context.userId},result=input.action==="connect"?await saveAttributionConnection(context.db,tenant,input):await syncAttributionConnection(context.db,tenant,input.provider);await auditEvent({agencyId:context.agencyId,actorUserId:context.userId,action:`attribution.${input.provider}.${input.action}`,resourceType:"seo_project",resourceId:context.project.id,afterState:result,request});return Response.json({ok:true,result});}catch(error){if(error instanceof z.ZodError)return jsonError(new ApiError(error.issues[0]?.message??"Invalid attribution request.",400,"VALIDATION_ERROR"));return jsonError(error)}}

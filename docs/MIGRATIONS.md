@@ -23,3 +23,6 @@ Apply `0020_cms_publication_control_plane.sql` after `0019_production_readiness_
 Apply `0021_local_growth_engine.sql` after `0020_cms_publication_control_plane.sql`. It adds tenant-scoped Brand DNA, value-gated 30/60/90-day plans, internal-link and content-refresh intelligence, observational AI visibility, safe earned-authority opportunities, interactive tool specifications, and evidence-backed case-study snapshots. Browser writes are revoked; all mutations pass through authorized, rate-limited, audited server routes.
 
 Apply `0022_retail_client_experience.sql` after `0021_local_growth_engine.sql`. It adds direct business-owner onboarding, owner-scoped growth preferences, automation controls, subscription lifecycle, support requests, Stripe webhook replay storage, and the atomic service-role retail tenant creator. Configure the three Stripe price IDs before enabling paid checkout.
+# Migration 0024
+
+`0024_outcomes_attribution_and_local_operations.sql` adds tenant-scoped project budgets, actual-cost transactions, GA4 metrics, lead attribution touchpoints, Business Profile locations and reviews, guarded local profile changes, citation evidence, authority outreach, and provider sync runs. Apply it before enabling the **Results & budget** workspace.

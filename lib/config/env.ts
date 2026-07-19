@@ -16,6 +16,16 @@ const schema = z.object({
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_ANALYTICS_PROPERTY_ID: z.string().optional(),
+  GOOGLE_BUSINESS_ACCOUNT_ID: z.string().optional(),
+  GOOGLE_BUSINESS_LOCATION_ID: z.string().optional(),
+  CALLRAIL_API_TOKEN: z.string().optional(),
+  CALLRAIL_ACCOUNT_ID: z.string().optional(),
+  HUBSPOT_PRIVATE_APP_TOKEN: z.string().optional(),
+  HUBSPOT_CLIENT_SECRET: z.string().optional(),
+  ATTRIBUTION_WEBHOOK_SECRET: z.string().min(24).optional().or(z.literal("")),
+  CITATION_PROVIDER_API_KEY: z.string().optional(),
+  CITATION_PROVIDER_BASE_URL: optionalUrl,
   VERCEL_ACCESS_TOKEN: z.string().optional(),
   VERCEL_CLIENT_ID: z.string().optional(),
   VERCEL_CLIENT_SECRET: z.string().optional(),
@@ -56,6 +66,9 @@ export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSE
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
 export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
 export const hasGoogleSearchConsoleConfig = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
+export const hasGoogleAnalyticsConfig = Boolean(hasGoogleSearchConsoleConfig);
+export const hasGoogleBusinessProfileConfig = Boolean(hasGoogleSearchConsoleConfig);
+export const hasAttributionWebhookConfig = Boolean(env.ATTRIBUTION_WEBHOOK_SECRET);
 export const hasCreativeModelConfig = Boolean(env.OPENAI_API_KEY);
 export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
 
@@ -79,4 +92,8 @@ export function githubSetupUrl(): string {
 export const GOOGLE_CALLBACK_PATH = "/api/google/callback";
 export function googleCallbackUrl(): string {
   return new URL(GOOGLE_CALLBACK_PATH, `${appBaseUrl()}/`).toString();
+}
+export const GOOGLE_SUITE_CALLBACK_PATH = "/api/google-suite/callback";
+export function googleSuiteCallbackUrl(): string {
+  return new URL(GOOGLE_SUITE_CALLBACK_PATH, `${appBaseUrl()}/`).toString();
 }

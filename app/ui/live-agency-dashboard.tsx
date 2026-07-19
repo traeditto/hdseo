@@ -7,6 +7,7 @@ import { AgentWorkspace } from "@/app/ui/agent-workspace";
 import { CreativeStudio } from "@/app/ui/creative-studio";
 import { LocalGrowthEngine } from "@/app/ui/local-growth-engine";
 import { AgencyClientCommandCenter } from "@/app/ui/agency-client-command-center";
+import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import {
   assessKeywordServiceArea,
   buildServiceAreaPolicy,
@@ -156,6 +157,7 @@ const tabs = [
   "Overview",
   "Approvals",
   "Local Growth",
+  "Results & budget",
   "Opportunities",
   "Agent Workspace",
   "Creative Studio",
@@ -560,6 +562,12 @@ export function LiveAgencyDashboard({
               projects={scopedProjects}
               canWrite={can("seo.write")}
               canApprove={can("draft.approve")}
+            />
+          )}{" "}
+          {tab === "Results & budget" && (
+            <OutcomesControlCenter
+              projects={scopedProjects}
+              canManage={can("provider.authorize")}
             />
           )}{" "}
           {tab === "Creative Studio" && (
