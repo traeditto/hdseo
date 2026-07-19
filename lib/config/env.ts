@@ -38,6 +38,7 @@ const schema = z.object({
   STRIPE_PRICE_STARTER_MONTHLY: z.string().optional(),
   STRIPE_PRICE_GROWTH_MONTHLY: z.string().optional(),
   STRIPE_PRICE_PRO_MONTHLY: z.string().optional(),
+  STRIPE_PRICE_AGENT_CAPACITY: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().email().optional().or(z.literal("")),
   CRON_SECRET: z.string().min(16).optional().or(z.literal("")),

@@ -10,6 +10,10 @@
     {
       "path": "/api/cron/automation",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/agent-service",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

@@ -5,27 +5,30 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api/errors";
 import { agentRegistry,workTemplates,type AgentWorkType } from "@/lib/agents/registry";
 
-type AgentTenant={agencyId:string;clientId:string;projectId:string;userId:string};
+type AgentTenant={agencyId:string;clientId:string;projectId:string;userId:string|null};
 const protectedApprovalType=new Map([
   ["cms.publish","publishing"],["github.write","publishing"],["vercel.deploy","deployment"],["vercel.rollback","destructive"],
   ["dns.write","dns"],["pricing.change","pricing"],["legal.publish","legal"],
 ]);
 
-function requiredApprovals(workType:AgentWorkType,tools:readonly string[],riskLevel:string){
+function requiredApprovals(workType:AgentWorkType,tools:readonly string[],riskLevel:string,approvalOwner:"agency"|"client"|"both"="agency"){
   const approvals:Array<{type:string;reason:string}>=[];
-  if(riskLevel==="high"||riskLevel==="critical")approvals.push({type:"agency",reason:"High-risk work requires accountable agency approval."});
+  if(riskLevel==="high"||riskLevel==="critical"){
+    if(approvalOwner==="both")approvals.push({type:"agency",reason:"High-risk managed work requires accountable agency approval."},{type:"client",reason:"The business owner must approve high-risk managed work."});
+    else approvals.push({type:approvalOwner,reason:`High-risk work requires accountable ${approvalOwner} approval.`});
+  }
   for(const type of new Set(tools.map(tool=>protectedApprovalType.get(tool)).filter((value):value is string=>Boolean(value))))approvals.push({type:workType.startsWith("qa.")&&type==="destructive"?"risk":type,reason:"Publishing, deployment, DNS, legal, pricing, and destructive tools require explicit approval."});
   return approvals;
 }
 
 export async function enqueueAgentWorkItem(db:SupabaseClient,tenant:AgentTenant,input:{
   workType:AgentWorkType;goal?:string;evidence?:Record<string,unknown>;proposedPlan?:Record<string,unknown>;
-  spendingLimit?:number;priority?:number;idempotencyKey:string;sourceType?:string;sourceId?:string;
+  spendingLimit?:number;priority?:number;idempotencyKey:string;sourceType?:string;sourceId?:string;approvalOwner?:"agency"|"client"|"both";
 }){
   const template=workTemplates[input.workType];
   const client=await db.from("clients").select("id,automation_config").eq("agency_id",tenant.agencyId).eq("organization_id",tenant.clientId).maybeSingle();
   if(!client.data)throw new ApiError("The enterprise client record is unavailable.",409,"DATABASE_BINDING_FAILED");
-  const approvals=requiredApprovals(input.workType,template.tools,template.riskLevel);
+  const approvals=requiredApprovals(input.workType,template.tools,template.riskLevel,input.approvalOwner);
   const result=await db.rpc("enqueue_agent_work_item",{
     p_agency_id:tenant.agencyId,p_client_id:client.data.id,p_project_id:tenant.projectId,p_work_type:input.workType,
     p_goal:input.goal?.trim()||template.goal,p_agent_key:template.agentKey,p_evidence:input.evidence??{},p_proposed_plan:input.proposedPlan??{},

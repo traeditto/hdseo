@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
+import { AgentServicePanel } from "@/app/ui/agent-service-panel";
 
 type User = { displayName: string; email: string };
 type Client = { id: string; name: string; domain: string; status: string };
@@ -120,7 +121,7 @@ type ClientData = {
   outcomes: Outcome[];
   supportRequests: SupportRequest[];
 };
-type Tab = "home" | "plan" | "approvals" | "results" | "business";
+type Tab = "home" | "autopilot" | "plan" | "approvals" | "results" | "business";
 
 const awaitingStatuses = new Set(["client_review", "awaiting_client"]);
 const completedStatuses = new Set([
@@ -680,6 +681,7 @@ export function LiveClientBusinessDashboard({
 
   const nav: Array<[Tab, string, string]> = [
     ["home", "Home", "⌂"],
+    ["autopilot", "Autopilot", "✦"],
     ["plan", "My Plan", "◫"],
     ["approvals", "Approvals", String(approvals.length)],
     ["results", "Results", "↗"],
@@ -949,6 +951,15 @@ export function LiveClientBusinessDashboard({
                 )}
               </section>
             </>
+          )}
+
+          {tab === "autopilot" && project && (
+            <AgentServicePanel
+              projects={[project]}
+              role="client"
+              canManage={selectedAccess?.role === "client_admin"}
+              canApprove={canApprove}
+            />
           )}
 
           {tab === "plan" && (
