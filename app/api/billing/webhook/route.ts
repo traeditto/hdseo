@@ -11,7 +11,8 @@ type StripeObject = { id: string; status?: string; payment_status?: string; amou
 type StripeEvent = { id: string; type: string; created: number; data: { object: StripeObject } };
 
 function verify(payload: string, header: string | null) {
-  if (!env.STRIPE_WEBHOOK_SECRET || !header) throw new ApiError("Stripe webhook verification is not configured.", 503, "NOT_CONFIGURED");
+  if (!env.STRIPE_WEBHOOK_SECRET) throw new ApiError("Stripe webhook verification is not configured.", 503, "NOT_CONFIGURED");
+  if (!header) throw new ApiError("Stripe webhook signature is missing.", 401, "INVALID_WEBHOOK_SIGNATURE");
   const parts = header.split(",").map((part) => part.split("=", 2) as [string,string]);
   const timestamp = Number(parts.find(([key]) => key === "t")?.[1]);
   const signatures = parts.filter(([key]) => key === "v1").map(([,value]) => value);
