@@ -53,6 +53,18 @@ export function credentialsFromEncrypted(value:string){return JSON.parse(decrypt
 export function encryptedCredentials(value:GoogleCredentials){return encryptSecret(JSON.stringify(value))}
 export function stableFingerprint(value:unknown){return createHash("sha256").update(JSON.stringify(value)).digest("hex")}
 
+export async function discoverSuiteResources(db:SupabaseClient,tenant:{agencyId:string;clientId:string;projectId:string},provider:"google_analytics"|"google_business_profile"){
+  const connection=await loadSuiteConnection(db,{...tenant,provider}),accessToken=await suiteAccess(db,connection),currentMetadata=(connection.metadata as Record<string,unknown>)??{};
+  if(provider==="google_analytics"){
+    const properties=await listAnalyticsProperties(accessToken),selected=connection.selected_resource??(properties.length===1?properties[0].property:null),metadata={...currentMetadata,properties,health:selected?"ready":properties.length?"property_selection_required":"property_access_required",lastDiscoveryAt:new Date().toISOString()};
+    const saved=await db.from("integration_connections").update({selected_resource:selected,metadata,last_verified_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",connection.id);if(saved.error)throw new ApiError("GA4 discovery results could not be saved.",500,"DATABASE_BINDING_FAILED");
+    return{selected,resources:properties.length};
+  }
+  const accounts=await listBusinessAccounts(accessToken),locations=(await Promise.all(accounts.slice(0,20).map(async account=>(await listBusinessLocations(accessToken,account.name!)).map(item=>({raw:item,account:account.name,accountName:account.accountName}))))).flat(),selected=connection.selected_resource??(locations.length===1?String(locations[0].raw.name??""):null),selectedAccount=locations.length===1?String(locations[0].account):accounts.length===1?accounts[0].name:null,metadata={...currentMetadata,accounts,selectedAccount,locations:locations.map(item=>({name:item.raw.name,title:item.raw.title,account:item.account,accountName:item.accountName})),health:selected?"ready":locations.length?"location_selection_required":"location_access_required",lastDiscoveryAt:new Date().toISOString()};
+  const saved=await db.from("integration_connections").update({selected_resource:selected,metadata,last_verified_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",connection.id);if(saved.error)throw new ApiError("Business Profile discovery results could not be saved.",500,"DATABASE_BINDING_FAILED");
+  return{selected,resources:locations.length};
+}
+
 export async function syncAnalytics(db:SupabaseClient,tenant:{agencyId:string;clientId:string;projectId:string}){
   const connection=await loadSuiteConnection(db,{...tenant,provider:"google_analytics"}),accessToken=await suiteAccess(db,connection),property=connection.selected_resource;if(!property)throw new ApiError("Choose a GA4 property before syncing.",409,"PROPERTY_NOT_AUTHORIZED");
   const run=await db.from("provider_sync_runs").insert({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,connection_id:connection.id,provider:"google_analytics",operation:"daily_metrics"}).select("id").single();
