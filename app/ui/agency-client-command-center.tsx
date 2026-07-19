@@ -197,7 +197,7 @@ export function AgencyClientCommandCenter({
           key: `${summary.client.id}:opportunity`,
           level: "HIGH-VALUE OPPORTUNITY",
           title: summary.topOpportunity.keyword,
-          detail: `${summary.client.name} · score ${summary.topOpportunity.score}${summary.topOpportunity.estimatedMonthlyValue ? ` · $${summary.topOpportunity.estimatedMonthlyValue.toLocaleString()}/mo directional value` : ""}`,
+          detail: `${summary.client.name} · score ${summary.topOpportunity.score}${summary.topOpportunity.estimatedMonthlyValue ? ` · $${summary.topOpportunity.estimatedMonthlyValue.toLocaleString()}/mo directional gross profit` : ""}`,
           action: () => onOpenOpportunities(summary.client.id),
           weight: 70 + summary.topOpportunity.score / 100,
         });

@@ -424,6 +424,7 @@ function mapProject(row: DatabaseRow): LiveProject {
 
 function mapOpportunity(row: DatabaseRow): LiveOpportunity {
   const evidence = asRecord(row.evidence);
+  const businessValue = asRecord(evidence.businessValue);
   const reasonFromCodes = Array.isArray(row.reason_codes)
     ? row.reason_codes.join(", ")
     : "";
@@ -433,8 +434,8 @@ function mapOpportunity(row: DatabaseRow): LiveOpportunity {
     projectId: rowText(row, "project_id"),
     keyword: (evidence.keyword as string) ?? rowText(row, "opportunity_key"),
     currentRank:
-      typeof evidence.current_rank === "number"
-        ? (evidence.current_rank as number)
+      typeof (evidence.currentRank ?? evidence.current_rank) === "number"
+        ? ((evidence.currentRank ?? evidence.current_rank) as number)
         : null,
     targetRank:
       typeof evidence.target_rank === "number"
@@ -443,11 +444,14 @@ function mapOpportunity(row: DatabaseRow): LiveOpportunity {
     score:
       typeof row.opportunity_score === "number" ? row.opportunity_score : 0,
     actionType: rowText(row, "action_type"),
-    reason: (evidence.reason as string) ?? reasonFromCodes,
+    reason:
+      (typeof evidence.valueExplanation === "string"
+        ? evidence.valueExplanation
+        : (evidence.reason as string)) ?? reasonFromCodes,
     status: rowText(row, "status"),
     searchVolume:
-      typeof evidence.search_volume === "number"
-        ? evidence.search_volume
+      typeof (evidence.searchVolume ?? evidence.search_volume) === "number"
+        ? (evidence.searchVolume ?? evidence.search_volume) as number
         : null,
     cpc: typeof evidence.cpc === "number" ? evidence.cpc : null,
     difficulty:
@@ -455,18 +459,20 @@ function mapOpportunity(row: DatabaseRow): LiveOpportunity {
         ? evidence.keyword_difficulty
         : null,
     estimatedMonthlyValue:
-      typeof evidence.estimated_monthly_value === "number"
-        ? evidence.estimated_monthly_value
+      typeof (businessValue.expectedMonthlyProfit ?? evidence.estimated_monthly_value) === "number"
+        ? (businessValue.expectedMonthlyProfit ?? evidence.estimated_monthly_value) as number
         : null,
     estimatedEffort:
-      typeof evidence.estimated_effort === "number"
-        ? evidence.estimated_effort
+      typeof (businessValue.implementationCost ?? evidence.estimated_effort) === "number"
+        ? (businessValue.implementationCost ?? evidence.estimated_effort) as number
         : null,
     valuePerDollar:
       typeof evidence.value_per_dollar === "number"
         ? evidence.value_per_dollar
+        : typeof businessValue.expectedMonthlyProfit === "number" && typeof businessValue.implementationCost === "number" && businessValue.implementationCost > 0
+          ? businessValue.expectedMonthlyProfit / businessValue.implementationCost
         : null,
-    source: (evidence.source as string) ?? "manual",
+    source: (evidence.source as string) ?? "autonomous_evidence",
     createdAt: toIso(row.created_at),
   };
 }

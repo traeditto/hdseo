@@ -16,12 +16,12 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: new URL(`${protocol}://${host}`),
-    title: "HD SEO — Autonomous SEO, Accountable Results",
-    description: "HD SEO finds, prioritizes, implements, validates, and measures the safest, highest-value SEO work for your business.",
+    title: "HD SEO — Find, Approve, Implement, Measure",
+    description: "Find the highest-value SEO improvement, approve it, and let HD SEO implement and measure the result.",
     keywords: ["SEO operating system", "autonomous SEO", "local SEO", "agency SEO software", "SEO ROI"],
     alternates: { canonical: "/" },
-    openGraph: { title: "Turn SEO into a measurable growth system.", description: "Evidence-led SEO planning, controlled execution, and verified outcomes in one operating system.", type: "website", siteName: "HD SEO", images: [{ url: image, width: 1774, height: 887, alt: "HD SEO — autonomous SEO, accountable results" }] },
-    twitter: { card: "summary_large_image", title: "Turn SEO into a measurable growth system.", description: "Evidence-led SEO planning, controlled execution, and verified outcomes.", images: [image] },
+    openGraph: { title: "Find the best SEO improvement. Approve it. Measure it.", description: "A controlled SEO workflow for local service businesses, starting with a free 25-page audit.", type: "website", siteName: "HD SEO", url: "/", images: [{ url: image, width: 1774, height: 887, alt: "HD SEO — find, approve, implement, and measure" }] },
+    twitter: { card: "summary_large_image", title: "Find the best SEO improvement. Approve it. Measure it.", description: "A controlled SEO workflow for local service businesses.", images: [image] },
     robots: { index: true, follow: true },
   };
 }

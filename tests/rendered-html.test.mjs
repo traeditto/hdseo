@@ -5,15 +5,31 @@ import test from "node:test";
 const read=(path)=>readFileSync(new URL(`../${path}`,import.meta.url),"utf8");
 
 test("the production home presents the HD SEO marketing experience",()=>{
-  const page=read("app/page.tsx"),source=read("app/marketing-home.tsx");
+  const page=read("app/page.tsx"),source=read("app/marketing-home.tsx"),shared=read("app/marketing-shared.tsx");
   assert.match(page,/SoftwareApplication/);
   assert.match(page,/FAQPage/);
-  assert.match(source,/AUTONOMOUS SEO, ACCOUNTABLE RESULTS/);
-  assert.match(source,/Turn SEO into a/);
-  assert.match(source,/href="\/login\/client"/);
-  assert.match(source,/href="\/login\/agency"/);
+  assert.match(source,/Find the highest-value SEO improvement/);
+  assert.match(source,/Get My Free 25-Page SEO Audit/);
+  assert.match(source,/No credit card required/);
+  assert.match(source,/UNVERIFIED/);
+  assert.match(shared,/href="\/login\/client"/);
+  assert.match(source,/href="\/agencies"/);
   assert.match(source,/href="\/audit"/);
+  assert.doesNotMatch(source+shared,/mailto:|Start My SEO Plan|>Pricing</);
   assert.doesNotMatch(source,/codex-preview|react-loading-skeleton/);
+});
+
+test("the conversion routes have specific metadata and honest placeholders",()=>{
+  const audit=read("app/audit/page.tsx"),form=read("app/audit/audit-experience.tsx"),privacy=read("app/privacy/page.tsx"),terms=read("app/terms/page.tsx"),booking=read("app/book-demo/page.tsx");
+  assert.match(audit,/canonical: "\/audit"/);
+  assert.match(audit,/Free 25-Page SEO Audit/);
+  assert.match(form,/type="url"/);
+  assert.match(form,/autoComplete="url"/);
+  assert.match(form,/audit_form_start/);
+  assert.match(form,/audit_form_submit/);
+  assert.match(privacy,/canonical: "\/privacy"/);
+  assert.match(terms,/canonical: "\/terms"/);
+  assert.match(booking,/Booking placeholder/);
 });
 
 test("the agency login uses live verified identity without a demo fallback",()=>{

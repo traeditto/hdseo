@@ -7,7 +7,7 @@ const structuredData = [
     "@type": "Organization",
     name: "HD SEO",
     url: "/",
-    description: "An agent-first SEO operating system for accountable, evidence-led execution.",
+    description: "A controlled SEO system that finds the highest-value improvement, prepares approved work, and measures the result.",
   },
   {
     "@context": "https://schema.org",
@@ -15,7 +15,7 @@ const structuredData = [
     name: "HD SEO",
     applicationCategory: "BusinessApplication",
     operatingSystem: "Web",
-    description: "HD SEO discovers, prioritizes, prepares, publishes, validates, and measures approved SEO work.",
+    description: "HD SEO checks a website and local market, recommends the best next move, prepares approved work, and measures the result.",
   },
   {
     "@context": "https://schema.org",
@@ -27,10 +27,10 @@ const structuredData = [
     "@context": "https://schema.org",
     "@type": "FAQPage",
     mainEntity: [
-      ["Does HD SEO publish changes automatically?", "Only within the permissions, risk rules, budgets, and approval policies you configure. High-risk work remains approval-gated."],
-      ["Is HD SEO only for SEO experts?", "No. Business owners get a simple recommendation-and-approval experience, while agencies and enterprise teams can use deeper governance and reporting controls."],
-      ["How does HD SEO measure return?", "It keeps estimates separate from measured performance and confirmed business outcomes, including qualified leads, recorded revenue, gross profit, and actual SEO spend."],
-      ["Which websites can HD SEO work with?", "HD SEO supports controlled workflows for GitHub and Vercel, WordPress, Shopify, Webflow, guided implementation, developer handoff, and monitoring-only setups."],
+      ["What do I get in the free audit?", "A crawl of up to 25 public pages, a technical readiness summary, prioritized findings, and a plain-language next step. No credit card is required."],
+      ["Will HD SEO publish without asking me?", "No. Publishing follows the permissions and approval rules configured for the workspace."],
+      ["Does HD SEO guarantee rankings or revenue?", "No. HD SEO records completed work and keeps estimates separate from measured and verified outcomes."],
+      ["Is HD SEO generally available?", "Not yet. HD SEO is operating as a limited pilot while production readiness and customer proof are verified."],
     ].map(([name, text]) => ({ "@type": "Question", name, acceptedAnswer: { "@type": "Answer", text } })),
   },
 ];

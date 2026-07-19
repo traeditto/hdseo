@@ -487,7 +487,7 @@ export function LiveAgencyDashboard({
                         : "not ranking yet"}{" "}
                       · Target #{next.targetRank}
                       {next.estimatedMonthlyValue != null
-                        ? ` · Est. search value $${next.estimatedMonthlyValue.toLocaleString()}/mo`
+                        ? ` · Est. monthly gross profit $${next.estimatedMonthlyValue.toLocaleString()} (directional)`
                         : ""}
                     </span>
                   </div>
@@ -879,7 +879,7 @@ export function LiveAgencyDashboard({
                           {item.estimatedMonthlyValue.toLocaleString()} ·
                           Estimated effort: $
                           {item.estimatedEffort?.toLocaleString() ?? "—"} ·
-                          Value/effort: {item.valuePerDollar?.toFixed(2) ?? "—"}
+                          Expected profit/cost: {item.valuePerDollar?.toFixed(2) ?? "—"}
                         </small>
                       )}
                     </div>

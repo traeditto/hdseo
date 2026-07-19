@@ -1,6 +1,19 @@
-"use client";
-import Link from"next/link";
-import{FormEvent,useState}from"react";
+import type { Metadata } from "next";
+import AuditExperience from "./audit-experience";
+import "./audit.css";
 
-type Report={score:number;pagesAnalyzed:number;context:string|null;findings:Array<{code:string;severity:string;title:string;detail:string;urls:string[]}>;nextStep:string;limitations:string[]};
-export default function PublicAuditPage(){const[busy,setBusy]=useState(false),[error,setError]=useState(""),[result,setResult]=useState<{website:string;report:Report}|null>(null);async function submit(event:FormEvent<HTMLFormElement>){event.preventDefault();setBusy(true);setError("");const form=new FormData(event.currentTarget);try{const response=await fetch("/api/public/audit",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({website:form.get("website"),service:form.get("service")||undefined,serviceArea:form.get("serviceArea")||undefined})}),payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"Audit failed.");setResult(payload)}catch(cause){setError(cause instanceof Error?cause.message:"Audit failed.")}finally{setBusy(false)}}return <main className="audit-page"><header className="audit-header"><Link className="audit-brand" href="/">HD <b>SEO</b></Link><nav><Link href="/login/client">Business owner login</Link><Link href="/login/agency">Agency login →</Link></nav></header><section className="audit-hero"><small>FREE LOCAL SEO AUDIT</small><h1>Find the leaks before<br/>you spend more.</h1><p>A safe 25-page crawl shows technical and internal-link gaps. HD SEO does not ask you to guess your keywords or promise rankings.</p><form onSubmit={submit}><label>Website<input name="website" placeholder="yourbusiness.com" required/></label><div><label>Most important service<input name="service" placeholder="Roof repair"/></label><label>Primary service area<input name="serviceArea" placeholder="Jacksonville, FL"/></label></div><button disabled={busy}>{busy?"Crawling safely…":"Run my audit →"}</button>{error&&<em>{error}</em>}</form></section>{result&&<section className="audit-results"><div className="audit-score"><span>{result.report.score}</span><div><small>TECHNICAL READINESS</small><strong>{result.report.pagesAnalyzed} pages analyzed</strong><p>{result.report.context?`Context: ${result.report.context}`:"Connect the business profile to enforce service-area relevance."}</p></div></div><div className="audit-findings">{result.report.findings.length?result.report.findings.map(item=><article key={item.code}><b data-severity={item.severity}>{item.severity}</b><div><h2>{item.title}</h2><p>{item.detail}</p><small>{item.urls.length} affected page{item.urls.length===1?"":"s"}</small></div></article>):<article><div><h2>No basic blockers found</h2><p>{result.report.nextStep}</p></div></article>}</div><div className="audit-cta"><div><small>THE AUDIT IS THE START</small><h2>Let HD SEO turn this into a local growth plan.</h2><p>No keyword research or SEO knowledge required. You choose the business goal and safety level; HD SEO does the work.</p></div><Link href="/login/client">Start my business workspace →</Link></div><ul className="audit-limitations">{result.report.limitations.map(item=><li key={item}>{item}</li>)}</ul></section>}</main>}
+export const metadata: Metadata = {
+  title: "Free 25-Page SEO Audit for Local Businesses | HD SEO",
+  description: "Get a focused crawl of up to 25 public website pages, prioritized findings, and a plain-language next step. No credit card required.",
+  alternates: { canonical: "/audit" },
+  openGraph: {
+    title: "Get Your Free 25-Page SEO Audit",
+    description: "A focused website check for local service businesses, with prioritized findings and no credit card required.",
+    url: "/audit",
+    type: "website",
+    images: [{ url: "/og.png", width: 1774, height: 887, alt: "HD SEO free 25-page website audit" }],
+  },
+  twitter: { card: "summary_large_image", title: "Get Your Free 25-Page SEO Audit", description: "Prioritized website findings for local service businesses. No credit card required.", images: ["/og.png"] },
+};
+
+export default function AuditPage() { return <AuditExperience />; }

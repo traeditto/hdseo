@@ -29,6 +29,7 @@ export async function queueStaleEvidence(db:SupabaseClient,tenant:Tenant,freshne
   const bucket=new Date().toISOString().slice(0,13),jobs:string[]=[];
   if(freshness.connection?.id&&freshness.connection.selected_resource&&freshness.stale.some(item=>["searchConsole","rankings","metrics"].includes(item))){
     jobs.push(await enqueueEvidenceJob(db,{...tenant,connectionId:freshness.connection.id,jobType:"google.search_analytics",idempotencyKey:`freshness:gsc:${tenant.projectId}:${bucket}`,priority:90}));
+    jobs.push(await enqueueEvidenceJob(db,{...tenant,connectionId:freshness.connection.id,jobType:"google.sitemaps",idempotencyKey:`freshness:sitemaps:${tenant.projectId}:${bucket}`,priority:60}));
     jobs.push(await enqueueEvidenceJob(db,{...tenant,connectionId:freshness.connection.id,jobType:"google.url_inspection",idempotencyKey:`freshness:inspect:${tenant.projectId}:${bucket}`,priority:70}));
   }
   if(freshness.website?.id&&freshness.stale.includes("pages"))jobs.push(await enqueueEvidenceJob(db,{...tenant,websiteId:freshness.website.id,jobType:"crawler.crawl",payload:{maxPages:freshness.config.maxCrawlPages},idempotencyKey:`freshness:crawl:${tenant.projectId}:${bucket}`,priority:80}));

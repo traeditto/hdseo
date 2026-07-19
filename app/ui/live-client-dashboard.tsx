@@ -855,6 +855,14 @@ export function LiveClientBusinessDashboard({
                           It fits your services and {profile?.marketScope === "nationwide" ? "nationwide market" : "verified service area"}, and scored above other available work.
                         </span>
                       </div>
+                      {topOpportunity.estimatedMonthlyValue != null && (
+                        <div className="owner-why">
+                          <b>Expected value</b>
+                          <span>
+                            About {money(topOpportunity.estimatedMonthlyValue)} in monthly gross profit if the measured lift and recorded business assumptions hold. This is a directional estimate, not a guarantee.
+                          </span>
+                        </div>
+                      )}
                       <details>
                         <summary>Show the search evidence</summary>
                         <p>
