@@ -46,12 +46,14 @@ export async function changeAgentServicePlan(db:SupabaseClient,tenant:AgentServi
 }
 
 export async function updateAgentServiceSettings(db:SupabaseClient,tenant:AgentServiceTenant,input:{approvalOwner?:AgentApprovalOwner;operatorBrand?:"hdseo"|"agency";riskCeiling?:"low"|"medium"|"high";monthlyActionLimit?:number;monthlyProviderBudget?:number;allowedTools?:string[];resalePriceCents?:number;brandName?:string;supportEmail?:string}){
-  const update:Record<string,unknown>={updated_at:now()};
+  const current=await db.from("agent_service_enrollments").select("plan_key").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
+  if(!current.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
+  const entitlement=planEntitlements(current.data.plan_key),update:Record<string,unknown>={updated_at:now()};
   if(input.approvalOwner)update.approval_owner=input.approvalOwner;
   if(input.operatorBrand)update.operator_brand=input.operatorBrand;
   if(input.riskCeiling)update.risk_ceiling=input.riskCeiling;
-  if(input.monthlyActionLimit!=null)update.monthly_action_limit=Math.max(0,input.monthlyActionLimit);
-  if(input.monthlyProviderBudget!=null)update.monthly_provider_budget=Math.max(0,input.monthlyProviderBudget);
+  if(input.monthlyActionLimit!=null)update.monthly_action_limit=Math.min(entitlement.monthlyActionLimit,Math.max(0,input.monthlyActionLimit));
+  if(input.monthlyProviderBudget!=null)update.monthly_provider_budget=Math.min(entitlement.monthlyProviderBudget,Math.max(0,input.monthlyProviderBudget));
   if(input.allowedTools)update.allowed_tools=input.allowedTools;
   if(input.resalePriceCents!=null)update.resale_price_cents=Math.max(0,input.resalePriceCents);
   const result=await db.from("agent_service_enrollments").update(update).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("*").maybeSingle();
@@ -75,7 +77,7 @@ export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentSe
     db.from("agent_work_items").select("id,work_type,goal,assigned_agent_key,status,risk_level,spending_limit,spent_amount,final_outcome,updated_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).not("status","in","(succeeded,cancelled,failed,dead_letter)").order("priority",{ascending:false}).limit(30),
     db.from("agent_approvals").select("id,work_item_id,approval_type,title,summary,risk_level,status,requested_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).eq("status","awaiting").order("requested_at",{ascending:false}).limit(30),
   ]):[{data:[]},{data:[]}];
-  return{enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],summary:{actionsRemaining:Math.max(0,enrollment.data.monthly_action_limit-enrollment.data.actions_used),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used)),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
+  return{enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],summary:{actionsRemaining:Math.max(0,enrollment.data.monthly_action_limit-enrollment.data.actions_used)+Number(enrollment.data.purchased_action_balance??0),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
 }
 
 export async function resolveAgentServiceEscalation(db:SupabaseClient,tenant:AgentServiceTenant,id:string,resolution:string){

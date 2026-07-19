@@ -92,7 +92,7 @@ export const pricingPlans: PricingPlan[] = [
 export const pricingAddOns = [
   ["Additional business location", "$99/month"],
   ["Additional active website", "$149/month"],
-  ["Three additional standard SEO actions", "$299"],
+  ["Additional managed-agent action", "$15 one-time"],
   ["Human expert strategy review", "$299"],
   ["Custom migration or website integration", "Quoted before work begins"],
   ["Agency extra active client", "$79/month"],

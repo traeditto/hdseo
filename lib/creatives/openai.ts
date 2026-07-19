@@ -2,6 +2,8 @@ import "server-only";
 import {z} from "zod";
 import {env} from "@/lib/config/env";
 import {ApiError,logServerError} from "@/lib/api/errors";
+import type {SupabaseClient} from "@supabase/supabase-js";
+import {calculateModelCost,estimateMaximumModelCost,reserveModelCost,settleModelCost,type CostTenant,type TokenUsage} from "@/lib/agent-service/cost-control";
 
 const section=z.object({heading:z.string().min(2),purpose:z.string().min(2),body:z.string().min(40),evidenceIds:z.array(z.string().uuid())});
 const faq=z.object({question:z.string().min(5),answer:z.string().min(20)});
@@ -29,18 +31,22 @@ function outputText(payload:Record<string,unknown>){
   return "";
 }
 
-export async function generateEvidenceConstrainedCreative(input:Record<string,unknown>){
+export async function generateEvidenceConstrainedCreative(input:Record<string,unknown>,costContext:{db:SupabaseClient;tenant:CostTenant;idempotencyKey:string}){
   if(!env.OPENAI_API_KEY)throw new ApiError("Connect the HD SEO creative model before generating production copy.",503,"NOT_CONFIGURED");
-  const referenceId=crypto.randomUUID();
+  const referenceId=crypto.randomUUID(),serialized=JSON.stringify(input),estimatedCost=estimateMaximumModelCost(env.OPENAI_CREATIVE_MODEL,serialized,env.OPENAI_CREATIVE_MAX_OUTPUT_TOKENS);
+  const reservation=await reserveModelCost(costContext.db,costContext.tenant,{operation:"creative.generate",model:env.OPENAI_CREATIVE_MODEL,estimatedCost,idempotencyKey:costContext.idempotencyKey,metadata:{referenceId}});
   try{
     const response=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{authorization:`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json",...(env.OPENAI_PROJECT_ID?{"OpenAI-Project":env.OPENAI_PROJECT_ID}:{})},body:JSON.stringify({
-      model:env.OPENAI_CREATIVE_MODEL,store:false,reasoning:{effort:"medium"},max_output_tokens:7000,
+      model:env.OPENAI_CREATIVE_MODEL,store:false,reasoning:{effort:"low"},max_output_tokens:env.OPENAI_CREATIVE_MAX_OUTPUT_TOKENS,
       instructions:"You are HD SEO's production Content Agent. Create useful, specific, people-first copy that directly satisfies the supplied search intent. Use ONLY verified proof and approved claims in the input. Never invent jobs, people, reviews, credentials, prices, guarantees, years in business, service areas, or performance results. Do not use empty superlatives. If evidence is insufficient, omit the claim. Each section must list the exact proof or claim IDs that support it; use an empty list only for purely instructional language. Every claimIdsUsed, proofAssetIdsUsed, and evidenceIds value must be copied exactly from the supplied records. Follow the required sections, page ownership, internal-link plan, and restrictions. Return only the requested structured object.",
-      input:JSON.stringify(input),text:{format:{type:"json_schema",name:"hd_seo_creative",strict:true,schema:jsonSchema}}
+      input:serialized,text:{format:{type:"json_schema",name:"hd_seo_creative",strict:true,schema:jsonSchema}}
     })});
     const payload=await response.json() as Record<string,unknown>;
     if(!response.ok)throw new Error(`OpenAI Responses API returned ${response.status}.`);
     const text=outputText(payload);if(!text)throw new Error("Creative response did not contain structured output.");
-    return{creative:generatedSchema.parse(JSON.parse(text)),responseId:typeof payload.id==="string"?payload.id:null,model:env.OPENAI_CREATIVE_MODEL};
-  }catch(error){logServerError("creative_generation_failed",error,{referenceId,provider:"openai",operation:"creative.generate"});throw new ApiError("The creative could not be generated safely. No draft was saved.",502,"CREATIVE_GENERATION_FAILED",referenceId);}
+    const rawUsage=payload.usage&&typeof payload.usage==="object"?payload.usage as Record<string,unknown>:{},details=rawUsage.input_tokens_details&&typeof rawUsage.input_tokens_details==="object"?rawUsage.input_tokens_details as Record<string,unknown>:{};
+    const usage:TokenUsage={inputTokens:Math.max(0,Number(rawUsage.input_tokens)||0),cachedInputTokens:Math.max(0,Number(details.cached_tokens)||0),outputTokens:Math.max(0,Number(rawUsage.output_tokens)||0)},actualCost=calculateModelCost(env.OPENAI_CREATIVE_MODEL,usage);
+    await settleModelCost(costContext.db,reservation,{status:"completed",actualCost,usage,metadata:{responseId:typeof payload.id==="string"?payload.id:null}});
+    return{creative:generatedSchema.parse(JSON.parse(text)),responseId:typeof payload.id==="string"?payload.id:null,model:env.OPENAI_CREATIVE_MODEL,usage,actualCost};
+  }catch(error){await settleModelCost(costContext.db,reservation,{status:"failed",actualCost:0,metadata:{referenceId}}).catch(()=>undefined);logServerError("creative_generation_failed",error,{referenceId,provider:"openai",operation:"creative.generate"});throw new ApiError("The creative could not be generated safely. No draft was saved.",502,"CREATIVE_GENERATION_FAILED",referenceId);}
 }

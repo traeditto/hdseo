@@ -4,8 +4,9 @@ import { ApiError, jsonError, logServerError } from "@/lib/api/errors";
 import { env } from "@/lib/config/env";
 import { getLiveAdminClient } from "@/lib/live/identity";
 import { planEntitlements } from "@/lib/agent-service/catalog";
+import { agentCapacityAddOn } from "@/lib/agent-service/catalog";
 
-type StripeObject = { id: string; status?: string; customer?: string; subscription?: string; cancel_at_period_end?: boolean; current_period_end?: number; metadata?: Record<string,string> };
+type StripeObject = { id: string; status?: string; payment_status?: string; amount_total?: number; currency?: string; customer?: string; subscription?: string; cancel_at_period_end?: boolean; current_period_end?: number; metadata?: Record<string,string> };
 type StripeEvent = { id: string; type: string; created: number; data: { object: StripeObject } };
 
 function verify(payload: string, header: string | null) {
@@ -28,8 +29,10 @@ export async function POST(request: Request) {
     const projectId = object.metadata?.project_id;
     if (event.type === "checkout.session.completed" && projectId) {
       if(object.metadata?.kind==="agent_capacity"){
-        const enrollmentId=object.metadata.enrollment_id,units=Math.max(1,Number(object.metadata.capacity_units)||1),enrollment=enrollmentId?await db.from("agent_service_enrollments").select("id,agency_id,client_organization_id,project_id,monthly_action_limit").eq("id",enrollmentId).eq("project_id",projectId).maybeSingle():{data:null};
-        if(enrollment.data){await db.from("agent_service_enrollments").update({monthly_action_limit:enrollment.data.monthly_action_limit+units,updated_at:new Date().toISOString()}).eq("id",enrollment.data.id);await db.from("agent_service_usage").upsert({enrollment_id:enrollment.data.id,agency_id:enrollment.data.agency_id,client_organization_id:enrollment.data.client_organization_id,project_id:enrollment.data.project_id,usage_type:"capacity_purchase",quantity:units,unit:"action",idempotency_key:`stripe:${event.id}`,metadata:{stripeEventId:event.id}},{onConflict:"enrollment_id,idempotency_key"});}
+        const enrollmentId=object.metadata.enrollment_id,units=Math.max(1,Number(object.metadata.capacity_units)||1),expected=units*agentCapacityAddOn.priceCents;
+        if(object.payment_status!=="paid"||object.currency!=="usd"||Number(object.amount_total)!==expected)throw new ApiError("The capacity payment could not be verified.",409,"PAYMENT_VERIFICATION_FAILED");
+        const enrollment=enrollmentId?await db.from("agent_service_enrollments").select("id,agency_id,client_organization_id,project_id,purchased_action_balance,purchased_provider_balance").eq("id",enrollmentId).eq("project_id",projectId).maybeSingle():{data:null};
+        if(enrollment.data){await db.from("agent_service_enrollments").update({purchased_action_balance:Number(enrollment.data.purchased_action_balance??0)+units,purchased_provider_balance:Number(enrollment.data.purchased_provider_balance??0)+units*agentCapacityAddOn.providerBudgetPerAction,updated_at:new Date().toISOString()}).eq("id",enrollment.data.id);await db.from("agent_service_usage").upsert({enrollment_id:enrollment.data.id,agency_id:enrollment.data.agency_id,client_organization_id:enrollment.data.client_organization_id,project_id:enrollment.data.project_id,usage_type:"capacity_purchase",quantity:units,unit:"customer_deliverable",cost_amount:0,idempotency_key:`stripe:${event.id}`,metadata:{stripeEventId:event.id,amountPaidCents:object.amount_total,providerBudgetAdded:units*agentCapacityAddOn.providerBudgetPerAction}},{onConflict:"enrollment_id,idempotency_key"});}
       }else{
         const planKey=object.metadata?.plan_key,priceCents=planKey==="starter"?4900:planKey==="growth"?9900:planKey==="pro"?14900:0;
         await db.from("client_subscriptions").update({ plan_key: planKey, price_cents: priceCents, stripe_customer_id: object.customer, stripe_subscription_id: object.subscription, status: "active", trial_ends_at: null, updated_at: new Date().toISOString() }).eq("project_id", projectId);

@@ -57,7 +57,11 @@ const schema = z.object({
   PAGESPEED_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_PROJECT_ID: z.string().optional(),
-  OPENAI_CREATIVE_MODEL: z.string().default("gpt-5.6-sol"),
+  OPENAI_CREATIVE_MODEL: z.string().default("gpt-5.6-terra"),
+  OPENAI_CREATIVE_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1000).max(12000).default(4500),
+  OPENAI_MAX_COST_PER_REQUEST_USD: z.coerce.number().positive().max(10).default(0.35),
+  OPENAI_MAX_DAILY_COST_PER_PROJECT_USD: z.coerce.number().positive().max(1000).default(1),
+  OPENAI_MAX_DAILY_PLATFORM_COST_USD: z.coerce.number().positive().max(10000).default(10),
 });
 
 export const env = schema.parse(process.env);

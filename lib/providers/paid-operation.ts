@@ -5,8 +5,9 @@ import { env } from "@/lib/config/env";
 import { ApiError, logEvent } from "@/lib/api/errors";
 import type { ProviderOperation } from "./dataforseo/types";
 import { createHash } from "node:crypto";
+import {reserveManagedProviderCost,settleManagedProviderCost} from "@/lib/agent-service/cost-control";
 
-export interface PaidRunContext { db: SupabaseClient; usageId: string; lockId: string; agencyId: string; clientId: string; projectId: string }
+export interface PaidRunContext { db: SupabaseClient; usageId: string; lockId: string; agencyId: string; clientId: string; projectId: string; managedCostReservation:{usageId:string}|null }
 export interface PaidTenantContext {
   user: { id: string };
   agency: { id: string };
@@ -36,12 +37,16 @@ export async function beginPaidOperation(context: PaidTenantContext, input: { co
   if (!lock.data) throw new ApiError("A matching provider operation is already running.", 409, "CONFLICT");
   const usage = await db.from("data_usage_events").insert({ agency_id: context.agency.id, client_organization_id: context.client.id, project_id: context.project.id, provider: "dataforseo", operation_type: input.operation, requested_by: context.user.id, confirmation_id: input.confirmationId, units: input.estimatedUnits, estimated_cost: input.estimatedCost, status: "running" }).select("id").single();
   if (!usage.data) { await db.from("provider_job_locks").delete().eq("id", lock.data.id); throw new ApiError("Usage logging failed.", 500, "OPERATION_FAILED"); }
+  let managedCostReservation:{usageId:string}|null=null;
+  try{managedCostReservation=await reserveManagedProviderCost(db,{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id},{estimatedCost:input.estimatedCost,idempotencyKey:`dataforseo:${usage.data.id}`,provider:"dataforseo",operation:input.operation});}
+  catch(error){await db.from("data_usage_events").update({actual_cost:0,units:0,status:"failed"}).eq("id",usage.data.id);await db.from("provider_job_locks").delete().eq("id",lock.data.id);throw error;}
   logEvent("provider_run_started", { agencyId: context.agency.id, projectId: context.project.id, provider: "dataforseo", operation: input.operation });
-  return { db, usageId: usage.data.id, lockId: lock.data.id, agencyId: context.agency.id, clientId: context.client.id, projectId: context.project.id };
+  return { db, usageId: usage.data.id, lockId: lock.data.id, agencyId: context.agency.id, clientId: context.client.id, projectId: context.project.id,managedCostReservation };
 }
 
 export async function finishPaidOperation(context: PaidRunContext, values: { cost: number; units: number; status: "completed" | "failed"; error?: string }) {
   await context.db.from("data_usage_events").update({ actual_cost: values.cost, units: values.units, status: values.status }).eq("id", context.usageId);
+  await settleManagedProviderCost(context.db,context.managedCostReservation,{actualCost:values.cost,status:values.status,provider:"dataforseo"});
   await context.db.from("provider_job_locks").delete().eq("id", context.lockId);
   logEvent("provider_run_finished", { agencyId: context.agencyId, projectId: context.projectId, provider: "dataforseo", status: values.status });
 }

@@ -25,6 +25,8 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment){
   const items=work.data??[],awaiting=items.some(item=>item.status==="awaiting_approval"),done=items.length>0&&items.every(item=>terminal.has(item.status));
   if(!done){await db.from("agent_service_cycles").update({status:awaiting?"awaiting_approval":"running",stage:awaiting?"approval":"execution",updated_at:now()}).eq("id",cycle.data.id);await release(db,enrollment,awaiting?6:1);return true;}
   const failed=items.filter(item=>["failed","dead_letter","blocked"].includes(item.status));
+  const cancelled=items.some(item=>item.status==="cancelled");
+  if(failed.length||cancelled)await db.rpc("refund_agent_service_capacity",{p_enrollment_id:enrollment.id,p_original_idempotency_key:`cycle:${cycle.data.id}`,p_refund_idempotency_key:`cycle-refund:${cycle.data.id}`,p_reason:cancelled?"Managed cycle was cancelled before delivery":"Managed cycle failed before delivery"});
   await db.from("agent_service_cycles").update({status:failed.length?"failed":"succeeded",stage:"outcome",outcome_summary:{workItems:items.length,failed:failed.length},recommendation:failed.length?"IMPROVE":"KEEP",completed_at:now(),next_review_at:new Date(Date.now()+7*86400000).toISOString(),updated_at:now()}).eq("id",cycle.data.id);
   if(failed.length)await escalate(db,enrollment,cycle.data.id,"worker","Managed SEO work needs attention",`${failed.length} work item${failed.length===1?"":"s"} could not complete after bounded retries.`);
   await release(db,enrollment);return true;
@@ -46,7 +48,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment){
   // This cycle consumes existing evidence. Paid provider usage is recorded by
   // the provider worker only when a real external request succeeds.
   const providerCost=0;
-  const capacity=await db.rpc("consume_agent_service_capacity",{p_enrollment_id:enrollment.id,p_action_units:workTypes.length,p_provider_cost:providerCost,p_idempotency_key:`cycle:${cycle.data.id}`,p_metadata:{cycleId:cycle.data.id,opportunityId:opportunity.data.id}});
+  const capacity=await db.rpc("consume_agent_service_capacity",{p_enrollment_id:enrollment.id,p_action_units:1,p_provider_cost:providerCost,p_idempotency_key:`cycle:${cycle.data.id}`,p_metadata:{cycleId:cycle.data.id,opportunityId:opportunity.data.id,definition:"one completed customer-visible deliverable"}});
   if(capacity.error)throw new ApiError("Managed-service capacity could not be reserved.",503,"DATABASE_BINDING_FAILED");
   if(!capacity.data?.allowed){const reason=String(capacity.data?.reason??"CAPACITY_EXCEEDED");await db.from("agent_service_cycles").update({status:"blocked",stage:"capacity",failure_code:reason,failure_message:"The monthly managed-service limit was reached.",completed_at:now(),updated_at:now()}).eq("id",cycle.data.id);await escalate(db,enrollment,cycle.data.id,reason.includes("BUDGET")?"budget":"capacity","Managed SEO capacity reached","The next evidence-backed action is ready, but this month's managed-service capacity has been used.",enrollment.approval_owner!=="agency");await release(db,enrollment,24);return{enrollmentId:enrollment.id,cycleId:cycle.data.id,status:"capacity_blocked"};}
   const sourceId=cycle.data.id as string,results=[];

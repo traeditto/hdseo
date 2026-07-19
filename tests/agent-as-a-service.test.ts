@@ -2,6 +2,7 @@ import {readFileSync} from "node:fs";
 import {join} from "node:path";
 import {describe,expect,it} from "vitest";
 import {agentServicePlans,defaultManagedTools,planEntitlements} from "../lib/agent-service/catalog";
+import {calculateModelCost,capacityUnitEconomics,estimateMaximumModelCost} from "../lib/agent-service/economics";
 
 const read=(path:string)=>readFileSync(join(process.cwd(),path),"utf8");
 
@@ -33,6 +34,8 @@ describe("Agent-as-a-Service",()=>{
     expect(scheduler).toContain('recommendation:opportunity.data?null:"NO_ACTION"');
     expect(scheduler).toContain("consume_agent_service_capacity");
     expect(scheduler).toContain("const providerCost=0");
+    expect(scheduler).toContain("p_action_units:1");
+    expect(scheduler).toContain("refund_agent_service_capacity");
     expect(scheduler).toContain("approvalOwner:enrollment.approval_owner");
     expect(scheduler).toContain("reconcileActiveCycle");
   });
@@ -58,5 +61,20 @@ describe("Agent-as-a-Service",()=>{
     expect(webhook).toContain("agent_service_enrollments");
     expect(webhook).toContain('kind==="agent_capacity"');
     expect(env).toContain("STRIPE_PRICE_AGENT_CAPACITY=");
+  });
+
+  it("hard-stops model and provider costs before they can erase margin",()=>{
+    const sql=read("supabase/migrations/0027_profit_guarded_agent_capacity.sql"),cost=read("lib/agent-service/cost-control.ts"),openai=read("lib/creatives/openai.ts"),webhook=read("app/api/billing/webhook/route.ts");
+    for(const safeguard of ["reserve_model_usage","PROJECT_DAILY_MODEL_BUDGET_EXCEEDED","PLATFORM_DAILY_MODEL_BUDGET_EXCEEDED","reserve_agent_service_provider_cost","purchased_action_balance","purchased_provider_balance"])expect(sql).toContain(safeguard);
+    expect(cost).toContain("OPENAI_MAX_COST_PER_REQUEST_USD");
+    expect(cost).toContain("OPENAI_MAX_DAILY_COST_PER_PROJECT_USD");
+    expect(openai).toContain("settleModelCost");
+    expect(webhook).toContain('payment_status!=="paid"');
+    expect(webhook).toContain("agentCapacityAddOn.providerBudgetPerAction");
+    expect(calculateModelCost("gpt-5.6-terra",{inputTokens:10_000,cachedInputTokens:0,outputTokens:4_500})).toBe(.0925);
+    expect(estimateMaximumModelCost("gpt-5.6-terra","x".repeat(40_000),4_500)).toBe(.0925);
+    const economics=capacityUnitEconomics({priceCents:1500,providerBudgetDollars:3});
+    expect(economics.contributionMarginPercent).toBeGreaterThanOrEqual(70);
+    expect(economics.maxVariableCostCents).toBeLessThan(450);
   });
 });
