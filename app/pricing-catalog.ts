@@ -1,5 +1,6 @@
 export type PricingAudience = "business" | "agency";
 export type BillingCadence = "monthly" | "annual";
+export type PricingMode = "guide" | "agent-service";
 
 export type PricingPlan = {
   slug: string;
@@ -109,5 +110,63 @@ export const pricingFaq = [
   ["Which website platforms are supported?", "Supported connections can include CMS, GitHub, and Vercel workflows. Availability depends on the platform, permissions, and configuration."],
   ["What happens if a deployment fails?", "HD SEO stops the workflow, records the failed validation, alerts the appropriate reviewer, and uses rollback protection where the connected platform supports it."],
 ] as const;
+
+export type AgentServicePlan = {
+  slug: string;
+  audience: PricingAudience;
+  name: string;
+  monthly: number;
+  annual?: number;
+  label?: string;
+  priceQualifier: string;
+  foundingOffer?: string;
+  description: string;
+  features: string[];
+  cta: string;
+  href: string;
+};
+
+export const agentServicePlans: AgentServicePlan[] = [
+  {
+    slug: "autopilot",
+    audience: "business",
+    name: "HD SEO Autopilot",
+    monthly: 1299,
+    annual: 12990,
+    label: "RUN IT FOR ME",
+    priceQualifier: "per website and primary location",
+    foundingOffer: "$999/month for the first three months",
+    description: "Your autonomous SEO department—with human oversight for complex or high-risk decisions.",
+    features: ["Specialized SEO agent team", "Automatic evidence collection", "30/60/90-day strategy", "Commercial keyword discovery", "Competitor-gap analysis", "Up to 10 standard SEO actions monthly", "Up to two major page builds or comprehensive page refreshes", "Technical SEO corrections", "Internal linking", "Schema and metadata improvements", "Local SEO recommendations", "CMS or GitHub implementation", "Preview and approval workflow", "Deployment validation", "Rollback readiness", "Weekly monitoring", "Lead and revenue attribution", "Monthly human strategy review", "Plain-language reporting"],
+    cta: "Apply for Autopilot",
+    href: "/book-demo?audience=business&service=autopilot",
+  },
+  {
+    slug: "white-label-core",
+    audience: "agency",
+    name: "White-Label Agent Team — Core",
+    monthly: 1999,
+    label: "5 MANAGED CLIENT WEBSITES",
+    priceQualifier: "per month",
+    foundingOffer: "Additional Core client: $299/month",
+    description: "Add an autonomous, white-label SEO delivery team without adding payroll.",
+    features: ["White-label agent operations", "5 managed client websites", "Unlimited agency team and client viewer accounts", "Tenant-isolated client workspaces", "Per-client budgets and permissions", "Automated opportunity discovery", "Technical and content implementation", "CMS, GitHub, and Vercel workflows", "Approval inbox", "Portfolio work queue", "Deployment and rollback monitoring", "White-label reports", "Client outcome attribution", "Pooled execution capacity", "Human escalation", "Agency-controlled pricing and markup"],
+    cta: "Build My White-Label Team",
+    href: "/book-demo?audience=agency&service=white-label-agents",
+  },
+  {
+    slug: "white-label-scale",
+    audience: "agency",
+    name: "White-Label Agent Team — Scale",
+    monthly: 3999,
+    label: "15 MANAGED CLIENT WEBSITES",
+    priceQualifier: "per month",
+    foundingOffer: "Additional Scale client: $249/month",
+    description: "Add an autonomous, white-label SEO delivery team without adding payroll.",
+    features: ["Everything in White-Label Agent Team — Core", "15 managed client websites", "Unlimited agency team and client viewer accounts", "Tenant-isolated client workspaces", "Per-client budgets and permissions", "Automated opportunity discovery", "Technical and content implementation", "CMS, GitHub, and Vercel workflows", "Approval inbox and portfolio work queue", "Deployment and rollback monitoring", "White-label reports", "Client outcome attribution", "Expanded pooled execution capacity", "Human escalation", "Agency-controlled pricing and markup"],
+    cta: "Build My White-Label Team",
+    href: "/book-demo?audience=agency&service=white-label-agents",
+  },
+];
 
 export const formatUsd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);

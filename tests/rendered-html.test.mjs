@@ -29,12 +29,23 @@ test("the pricing experience uses one structured catalog and approval-safe comme
   assert.match(catalog,/annual: 1990/);
   assert.match(catalog,/monthly: 1999/);
   assert.match(experience,/Annual — 2 months free/);
-  assert.match(experience,/HD SEO never spends that budget automatically/);
+  assert.match(experience,/Subscription pricing covers the HD SEO platform and included agent work/);
   assert.match(experience,/Market ranges are illustrative/);
   assert.match(experience,/planning math is not a forecast/);
   assert.match(experience,/pricing_audience_toggle/);
   assert.match(experience,/pricing_billing_toggle/);
   assert.match(experience,/pricing-mobile-cta/);
+  assert.match(experience,/How do you want to work\?/);
+  assert.match(experience,/GUIDE ME/);
+  assert.match(experience,/RUN IT FOR ME/);
+  assert.match(experience,/Agent service does not mean unrestricted automation/);
+  assert.match(experience,/never purchased without approval/);
+  assert.match(catalog,/HD SEO Autopilot/);
+  assert.match(catalog,/monthly: 1299/);
+  assert.match(catalog,/annual: 12990/);
+  assert.match(catalog,/White-Label Agent Team/);
+  assert.match(catalog,/monthly: 3999/);
+  assert.doesNotMatch(experience+catalog,/\bAaaS\b/);
   assert.doesNotMatch(experience,/guaranteed revenue|guaranteed rankings/i);
 });
 

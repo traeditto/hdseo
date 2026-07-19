@@ -12,6 +12,7 @@ export type MarketingEventName =
   | "enterprise_cta_click"
   | "pricing_audience_toggle"
   | "pricing_billing_toggle"
+  | "pricing_work_mode_toggle"
   | "business_plan_selection"
   | "agency_plan_selection";
 
