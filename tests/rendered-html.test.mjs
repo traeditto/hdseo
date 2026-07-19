@@ -4,12 +4,15 @@ import test from "node:test";
 
 const read=(path)=>readFileSync(new URL(`../${path}`,import.meta.url),"utf8");
 
-test("the production home exposes three role portals",()=>{
-  const source=read("app/page.tsx");
-  assert.match(source,/key: "admin"/);
-  assert.match(source,/key: "agency"/);
-  assert.match(source,/key: "client"/);
-  assert.match(source,/SECURE PORTAL ACCESS/);
+test("the production home presents the HD SEO marketing experience",()=>{
+  const page=read("app/page.tsx"),source=read("app/marketing-home.tsx");
+  assert.match(page,/SoftwareApplication/);
+  assert.match(page,/FAQPage/);
+  assert.match(source,/AUTONOMOUS SEO, ACCOUNTABLE RESULTS/);
+  assert.match(source,/Turn SEO into a/);
+  assert.match(source,/href="\/login\/client"/);
+  assert.match(source,/href="\/login\/agency"/);
+  assert.match(source,/href="\/audit"/);
   assert.doesNotMatch(source,/codex-preview|react-loading-skeleton/);
 });
 

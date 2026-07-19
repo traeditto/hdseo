@@ -15,10 +15,14 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = `${protocol}://${host}/og.png`;
 
   return {
-    title: "HD SEO — Admin, Agency & Client Portals",
-    description: "Secure role-based access to the HD SEO operating platform.",
-    openGraph: { title: "HD SEO", description: "One SEO operating system with purpose-built Admin, Agency, and Client workspaces.", type: "website", images: [{ url: image, width: 1732, height: 908, alt: "HD SEO operating platform" }] },
-    twitter: { card: "summary_large_image", title: "HD SEO", description: "Secure Admin, Agency, and Client SEO workspaces.", images: [image] },
+    metadataBase: new URL(`${protocol}://${host}`),
+    title: "HD SEO — Autonomous SEO, Accountable Results",
+    description: "HD SEO finds, prioritizes, implements, validates, and measures the safest, highest-value SEO work for your business.",
+    keywords: ["SEO operating system", "autonomous SEO", "local SEO", "agency SEO software", "SEO ROI"],
+    alternates: { canonical: "/" },
+    openGraph: { title: "Turn SEO into a measurable growth system.", description: "Evidence-led SEO planning, controlled execution, and verified outcomes in one operating system.", type: "website", siteName: "HD SEO", images: [{ url: image, width: 1774, height: 887, alt: "HD SEO — autonomous SEO, accountable results" }] },
+    twitter: { card: "summary_large_image", title: "Turn SEO into a measurable growth system.", description: "Evidence-led SEO planning, controlled execution, and verified outcomes.", images: [image] },
+    robots: { index: true, follow: true },
   };
 }
 
