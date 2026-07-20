@@ -22,7 +22,7 @@ export const workTemplates={
   "content.plan":{agentKey:"content",goal:"Identify refresh wins before compiling high-value opportunities and verified business proof into evidence-gated creative specifications.",tools:["google.search_console.read","proof.read","content.refresh","internal_links.graph","creative.spec","growth_tool.spec","cms.draft"],riskLevel:"medium",priority:65},
   "local.plan":{agentKey:"local_seo",goal:"Identify local visibility, service-area, profile, and review opportunities.",tools:["google.search_console.read","google.business_profile.read","strategy.plan"],riskLevel:"medium",priority:65},
   "implementation.change":{agentKey:"implementation",goal:"Implement an approved SEO change with deployment and rollback protection.",tools:["cms.draft","cms.publish","github.read","github.write","vercel.deploy","vercel.rollback"],riskLevel:"high",priority:80},
-  "qa.validate":{agentKey:"qa",goal:"Independently validate the implementation and confirm rollback readiness.",tools:["lighthouse.run","seo.validate","schema.validate","sitemap.verify","robots.verify","vercel.rollback"],riskLevel:"high",priority:85},
+  "qa.validate":{agentKey:"qa",goal:"Independently validate the implementation and confirm rollback readiness.",tools:["lighthouse.run","seo.validate","schema.validate","sitemap.verify","robots.verify"],riskLevel:"medium",priority:85},
   "reporting.summary":{agentKey:"reporting",goal:"Explain completed work, evidence, spending, rankings, and verifiable outcomes in plain language.",tools:["google.search_console.read","proof.case_study","report.generate","audit.read"],riskLevel:"low",priority:50},
 } as const;
 

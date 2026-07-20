@@ -66,6 +66,17 @@ type Subscription = {
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
 };
+type TrialEntitlement = {
+  projectId: string;
+  benefitKey: "website_crawl";
+  allowance: number;
+  usedCount: number;
+  remaining: number;
+  status: "active" | "exhausted" | "expired" | "converted";
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  usageStatus: "claimed" | "queued" | "succeeded" | "failed" | null;
+};
 type Website = {
   id: string;
   projectId: string;
@@ -115,6 +126,7 @@ type ClientData = {
   events: ClientEvent[];
   growthProfiles: GrowthProfile[];
   subscriptions: Subscription[];
+  trialEntitlements: TrialEntitlement[];
   websites: Website[];
   integrations: Integration[];
   agentWork: AgentWork[];
@@ -199,6 +211,26 @@ function Brand() {
   );
 }
 
+function TrialPreviewNotice({area}:{area:string}) {
+  return <div className="owner-trial-preview-note"><span>PREVIEW MODE</span><p>You can explore {area}. Actions that create provider cost, publish changes, or start ongoing agents require a paid plan.</p><Link href="/pricing">Compare plans →</Link></div>;
+}
+
+function TrialAutopilotPreview() {
+  return <>
+    <section className="owner-page-heading"><small>AUTOPILOT PREVIEW</small><h1>See how the agent team would work.</h1><p>The free trial demonstrates the workflow without starting paid research, content generation, or publishing.</p></section>
+    <TrialPreviewNotice area="the managed agent workspace" />
+    <section className="owner-trial-feature-grid">
+      {[
+        ["Research Agent","Finds service-area keywords and competitor gaps automatically."],
+        ["Strategy Agent","Prioritizes work by expected profit, evidence, effort, and risk."],
+        ["Implementation Agent","Prepares approval-gated CMS or GitHub changes."],
+        ["QA Agent","Checks links, schema, Lighthouse, sitemap, robots, and rollback readiness."],
+      ].map(([title,detail])=><article key={title}><i>✓</i><div><strong>{title}</strong><p>{detail}</p></div><span>PAID PLAN</span></article>)}
+    </section>
+    <section className="owner-trial-upgrade"><div><small>NO SURPRISE SPEND</small><h2>Choose ongoing automation only after you see the crawl.</h2><p>Subscriptions include bounded agent actions. Extra provider spend stays behind explicit controls and approvals.</p></div><Link href="/pricing">See business plans →</Link></section>
+  </>;
+}
+
 function RetailOnboarding({
   user,
   onComplete,
@@ -274,6 +306,7 @@ function RetailOnboarding({
           <p>
             Tell us about the business. HD SEO will find the searches,
             competitors and work worth doing—you will not need to learn SEO.
+            Your free trial includes one public crawl of up to 25 pages.
           </p>
           <ol>
             {[
@@ -297,6 +330,10 @@ function RetailOnboarding({
         <div className="owner-onboarding-card">
           <div className="owner-step-progress">
             <span style={{ width: `${step * 25}%` }} />
+          </div>
+          <div className="owner-trial-promise">
+            <b>Free trial · no credit card</b>
+            <span>One 25-page website crawl, full product tour, and no publishing or paid data charges.</span>
           </div>
           {step === 1 && (
             <>
@@ -491,7 +528,7 @@ function RetailOnboarding({
                 ))}
               </div>
               <label>
-                Monthly growth budget
+                Future monthly growth budget
                 <input
                   value={draft.monthlyBudget}
                   onChange={(event) =>
@@ -502,8 +539,9 @@ function RetailOnboarding({
                   step="10"
                 />
                 <em>
-                  This is a spending guardrail, not permission for unrestricted
-                  charges.
+                  Nothing is charged during the free trial. If you later choose
+                  a plan, this becomes a spending guardrail—not permission for
+                  unrestricted charges.
                 </em>
               </label>
               <div className="owner-safety-note">
@@ -546,7 +584,7 @@ function RetailOnboarding({
                 ? "Creating your workspace…"
                 : step < 4
                   ? "Continue →"
-                  : "Create my growth workspace →"}
+                  : "Create my free trial workspace →"}
             </button>
           </footer>
         </div>
@@ -599,6 +637,9 @@ export function LiveClientBusinessDashboard({
       subscriptions: data.subscriptions.filter((item) =>
         projectIds.has(item.projectId),
       ),
+      trialEntitlements: (data.trialEntitlements ?? []).filter((item) =>
+        projectIds.has(item.projectId),
+      ),
       websites: data.websites.filter((item) => projectIds.has(item.projectId)),
       integrations: data.integrations.filter((item) =>
         projectIds.has(item.projectId),
@@ -617,6 +658,13 @@ export function LiveClientBusinessDashboard({
     subscription = company.subscriptions.find(
       (item) => item.projectId === project?.id,
     ),
+    trialEntitlement = company.trialEntitlements.find(
+      (item) => item.projectId === project?.id && item.benefitKey === "website_crawl",
+    ),
+    isFreeTrial = subscription?.planKey === "free_audit",
+    trialExpired = isFreeTrial && trialEntitlement?.status === "expired",
+    trialCrawlAvailable = isFreeTrial && !trialExpired && trialEntitlement?.status === "active" && (trialEntitlement?.remaining ?? 0) > 0,
+    trialCrawlFinished = trialEntitlement?.usageStatus === "succeeded",
     outcome = company.outcomes.find(
       (item) => item.projectId === project?.id,
     ) ?? {
@@ -687,14 +735,30 @@ export function LiveClientBusinessDashboard({
     ["results", "Results", "↗"],
     ["business", "My Business", "◎"],
   ];
-  const statusTitle = approvals.length
+  const statusTitle = isFreeTrial
+    ? trialExpired
+      ? "Your free trial has ended"
+      : trialCrawlAvailable
+      ? "Your free website crawl is ready"
+      : trialCrawlFinished
+        ? "Your free website crawl is complete"
+        : "Your free website crawl is in progress"
+    : approvals.length
     ? "We need one quick decision"
     : profile?.onboardingStatus !== "active"
       ? "Finish setup to start growing"
       : company.agentWork.length
         ? "HD SEO is working for you"
         : "Your growth plan is on track";
-  const statusText = approvals.length
+  const statusText = isFreeTrial
+    ? trialExpired
+      ? "Your workspace is still here. Choose a plan to run fresh evidence collection and start ongoing SEO work."
+      : trialCrawlAvailable
+      ? "Run one public crawl of up to 25 pages, then explore how HD SEO turns evidence into plans, approvals, and measurable results."
+      : trialCrawlFinished
+        ? "Explore your results and the full workspace. Ongoing crawling, paid data, agents, and publishing stay off until you choose a plan."
+        : "The crawl is queued safely. You can explore every product area while the worker collects public website evidence."
+    : approvals.length
     ? "Approving or requesting changes keeps the highest-value work moving."
     : profile?.onboardingStatus !== "active"
       ? "Confirm your connections, then let the agent team begin the first local audit."
@@ -768,6 +832,16 @@ export function LiveClientBusinessDashboard({
           </div>
         </header>
         <div className="owner-content">
+          {isFreeTrial && (
+            <section className="owner-trial-banner" aria-label="Free trial status">
+              <span>FREE TRIAL</span>
+              <div>
+                <strong>{trialExpired ? "Free trial ended" : trialCrawlAvailable ? "1 website crawl ready" : trialCrawlFinished ? "Free crawl complete" : "Free crawl queued"}</strong>
+                <small>Explore the full UI. Paid keyword data, ongoing agents, publishing, and external spend remain locked.</small>
+              </div>
+              <button onClick={() => setTab("business")}>{trialCrawlAvailable ? "Trial details" : "Compare plans"}</button>
+            </section>
+          )}
           {message && (
             <div className="owner-flash" role="status">
               {message}
@@ -776,16 +850,24 @@ export function LiveClientBusinessDashboard({
           {tab === "home" && (
             <>
               <section
-                className={`owner-status-hero ${approvals.length ? "attention" : ""}`}
+                className={`owner-status-hero ${!isFreeTrial && approvals.length ? "attention" : ""}`}
               >
                 <div>
                   <small>
-                    {approvals.length ? "ABOUT 2 MINUTES" : "TODAY"}
+                    {isFreeTrial ? "ONE-TIME FREE TRIAL" : approvals.length ? "ABOUT 2 MINUTES" : "TODAY"}
                   </small>
                   <h1>{statusTitle}</h1>
                   <p>{statusText}</p>
                 </div>
-                {approvals.length ? (
+                {isFreeTrial ? (
+                  trialCrawlAvailable && project ? (
+                    <button disabled={busyId === "retail_activate"} onClick={() => void act({action:"retail_activate",projectId:project.id})}>
+                      {busyId === "retail_activate" ? "Queueing your crawl…" : "Run my free 25-page crawl →"}
+                    </button>
+                  ) : (
+                    <button onClick={() => setTab("results")}>Explore the results workspace →</button>
+                  )
+                ) : approvals.length ? (
                   <button onClick={() => setTab("approvals")}>
                     Review the decision →
                   </button>
@@ -954,12 +1036,7 @@ export function LiveClientBusinessDashboard({
           )}
 
           {tab === "autopilot" && project && (
-            <AgentServicePanel
-              projects={[project]}
-              role="client"
-              canManage={selectedAccess?.role === "client_admin"}
-              canApprove={canApprove}
-            />
+            isFreeTrial ? <TrialAutopilotPreview /> : <AgentServicePanel projects={[project]} role="client" canManage={selectedAccess?.role === "client_admin"} canApprove={canApprove} />
           )}
 
           {tab === "plan" && (
@@ -972,6 +1049,7 @@ export function LiveClientBusinessDashboard({
                   evidence, effort and risk.
                 </p>
               </section>
+              {isFreeTrial && <TrialPreviewNotice area="the 30/60/90-day growth roadmap" />}
               <section className="owner-plan-summary">
                 <div>
                   <small>MARKET</small>
@@ -1097,6 +1175,7 @@ export function LiveClientBusinessDashboard({
                   risk and what happens next.
                 </p>
               </section>
+              {isFreeTrial && <TrialPreviewNotice area="the approval inbox" />}
               <section className="owner-approval-stack">
                 {approvals.map((item) => (
                   <article key={item.id}>
@@ -1207,6 +1286,7 @@ export function LiveClientBusinessDashboard({
                   verifiable work are the outcome.
                 </p>
               </section>
+              {isFreeTrial && <TrialPreviewNotice area="crawl findings, proof of work, rankings, leads, and ROI reporting" />}
               <section className="owner-results-hero">
                 <div>
                   <small>RECORDED BUSINESS VALUE · LAST 90 DAYS</small>
@@ -1297,6 +1377,7 @@ export function LiveClientBusinessDashboard({
               data={{
                 profile,
                 subscription,
+                trialEntitlement,
                 website,
                 gsc,
                 supportRequests: company.supportRequests,
@@ -1321,6 +1402,7 @@ function BusinessSettings({
   data: {
     profile: GrowthProfile | undefined;
     subscription: Subscription | undefined;
+    trialEntitlement: TrialEntitlement | undefined;
     website: Website | undefined;
     gsc: Integration | undefined;
     supportRequests: SupportRequest[];
@@ -1622,6 +1704,12 @@ function BusinessSettings({
                 ? `Trial through ${new Date(data.subscription.trialEndsAt).toLocaleDateString()}.`
                 : "Your account remains protected by plan and spending limits."}
             </p>
+            {data.subscription?.planKey === "free_audit" && (
+              <div className="owner-trial-meter">
+                <span><b>{data.trialEntitlement?.remaining ?? 0}</b> of {data.trialEntitlement?.allowance ?? 1} free crawls remaining</span>
+                <small>One crawl covers up to 25 public pages. It does not include paid keyword data or publishing.</small>
+              </div>
+            )}
             {billingMessage && (
               <div className="owner-error">{billingMessage}</div>
             )}

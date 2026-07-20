@@ -48,6 +48,8 @@ import {
   publishCmsPackage,
   rollbackCmsPublication,
 } from "@/lib/websites/publishing";
+import {implementationPackageDigest,implementationPackageSnapshot} from "@/lib/safety/package-approval";
+import {claimWebsiteCrawlAccess,markTrialCrawlQueued,releaseTrialCrawlClaim} from "@/lib/trials/crawl-entitlement";
 
 /**
  * The portal store used to be backed by a Cloudflare D1 database. It now reads
@@ -253,6 +255,18 @@ export type LiveClientSubscription = {
   trialEndsAt: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
+};
+
+export type LiveClientTrialEntitlement = {
+  projectId: string;
+  benefitKey: "website_crawl";
+  allowance: number;
+  usedCount: number;
+  remaining: number;
+  status: "active" | "exhausted" | "expired" | "converted";
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  usageStatus: "claimed" | "queued" | "succeeded" | "failed" | null;
 };
 
 export type LiveClientWebsite = {
@@ -1033,6 +1047,7 @@ export async function liveClientSnapshot(email: string) {
     events: [] as LiveEvent[],
     growthProfiles: [] as LiveClientGrowthProfile[],
     subscriptions: [] as LiveClientSubscription[],
+    trialEntitlements: [] as LiveClientTrialEntitlement[],
     websites: [] as LiveClientWebsite[],
     integrations: [] as LiveClientIntegration[],
     agentWork: [] as LiveClientAgentWork[],
@@ -1093,6 +1108,8 @@ export async function liveClientSnapshot(email: string) {
     eventsRes,
     profilesRes,
     subscriptionsRes,
+    trialEntitlementsRes,
+    trialUsageRes,
     websitesRes,
     integrationsRes,
     agentWorkRes,
@@ -1115,6 +1132,8 @@ export async function liveClientSnapshot(email: string) {
       .limit(100),
     db.from("client_growth_profiles").select("*").in("project_id", projectIds),
     db.from("client_subscriptions").select("*").in("project_id", projectIds),
+    db.from("client_trial_entitlements").select("*").in("project_id",projectIds),
+    db.from("client_trial_usage").select("project_id,status,claimed_at").in("project_id",projectIds).order("claimed_at",{ascending:false}),
     db
       .from("websites")
       .select("id,project_id,site_url,cms_type,status,last_verified_at")
@@ -1208,6 +1227,8 @@ export async function liveClientSnapshot(email: string) {
   );
 
   const outcomeMap = new Map<string, LiveClientOutcome>();
+  const latestTrialUsage=new Map<string,string>();
+  for(const raw of trialUsageRes.data??[]){const row=raw as DatabaseRow,projectId=rowText(row,"project_id");if(projectId&&!latestTrialUsage.has(projectId))latestTrialUsage.set(projectId,rowText(row,"status"));}
   for (const projectId of projectIds) {
     outcomeMap.set(projectId, {
       projectId,
@@ -1303,6 +1324,22 @@ export async function liveClientSnapshot(email: string) {
         trialEndsAt: rowNullableText(row, "trial_ends_at"),
         currentPeriodEnd: rowNullableText(row, "current_period_end"),
         cancelAtPeriodEnd: row.cancel_at_period_end === true,
+      };
+    }),
+    trialEntitlements: (trialEntitlementsRes.data ?? []).map((raw) => {
+      const row=raw as DatabaseRow,allowance=rowNumber(row,"allowance",1),usedCount=rowNumber(row,"used_count"),expiresAt=rowNullableText(row,"expires_at");
+      const usageStatus=latestTrialUsage.get(rowText(row,"project_id"));
+      const status=expiresAt&&new Date(expiresAt).getTime()<=Date.now()?"expired":rowText(row,"status","active");
+      return {
+        projectId:rowText(row,"project_id"),
+        benefitKey:"website_crawl" as const,
+        allowance,
+        usedCount,
+        remaining:Math.max(0,allowance-usedCount),
+        status:status as LiveClientTrialEntitlement["status"],
+        expiresAt,
+        lastUsedAt:rowNullableText(row,"last_used_at"),
+        usageStatus:["claimed","queued","succeeded","failed"].includes(usageStatus??"")?usageStatus as LiveClientTrialEntitlement["usageStatus"]:null,
       };
     }),
     websites: (websitesRes.data ?? []).map((raw) => {
@@ -1983,34 +2020,32 @@ export async function activateRetailGrowth(email: string, projectId: string) {
       409,
       "ONBOARDING_INCOMPLETE",
     );
-  const bucket = new Date().toISOString().slice(0, 10);
-  const evidenceJobId = await enqueueEvidenceJob(context.db, {
-    agencyId: context.agencyId,
-    clientId: context.clientId,
-    projectId,
-    websiteId: website.data.id,
-    jobType: "crawler.crawl",
-    idempotencyKey: `retail-crawl:${projectId}:${bucket}`,
-    priority: 95,
-  });
-  const serviceAreas = Array.isArray(profile.data.service_areas)
-    ? profile.data.service_areas
-    : [];
-  const agentWork = await seedOnboardingAgentTeam(
-    context.db,
-    {
+  const bucket = new Date().toISOString().slice(0, 10),trialKey=`trial-crawl:${projectId}`;
+  const crawlAccess=await claimWebsiteCrawlAccess(context.db,{projectId,idempotencyKey:trialKey});
+  let evidenceJobId:string;
+  try{
+    evidenceJobId = await enqueueEvidenceJob(context.db, {
       agencyId: context.agencyId,
       clientId: context.clientId,
       projectId,
-      userId: context.userId,
-    },
-    {
-      evidenceJobIds: [evidenceJobId],
-      discoveryJobId: null,
-      monthlyBudget: Number(profile.data.monthly_budget) || 99,
-      targetMarket: serviceAreas[0] ?? context.primaryMarket ?? "United States",
-      launchKey: `retail:${projectId}`,
-    },
+      websiteId: website.data.id,
+      jobType: "crawler.crawl",
+      payload:crawlAccess.mode==="trial"?{maxPages:25,trial:true}:{},
+      idempotencyKey: crawlAccess.mode==="trial"?trialKey:`retail-crawl:${projectId}:${bucket}`,
+      priority: 95,
+    });
+  }catch(error){
+    await releaseTrialCrawlClaim(context.db,crawlAccess,"QUEUE_FAILED");
+    throw error;
+  }
+  await markTrialCrawlQueued(context.db,crawlAccess,evidenceJobId);
+  const serviceAreas = Array.isArray(profile.data.service_areas)
+    ? profile.data.service_areas
+    : [];
+  const agentWork = crawlAccess.mode==="trial"?[]:await seedOnboardingAgentTeam(
+    context.db,
+    {agencyId: context.agencyId,clientId: context.clientId,projectId,userId: context.userId},
+    {evidenceJobIds:[evidenceJobId],discoveryJobId:null,monthlyBudget:Number(profile.data.monthly_budget)||99,targetMarket:serviceAreas[0]??context.primaryMarket??"United States",launchKey:`retail:${projectId}`},
   );
   const now = nowIso();
   await Promise.all([
@@ -2036,15 +2071,16 @@ export async function activateRetailGrowth(email: string, projectId: string) {
     agencyId: context.agencyId,
     clientOrganizationId: context.clientId,
     projectId,
-    eventType: "retail_growth_started",
-    title: "Your HD SEO agent team started working",
-    description:
-      "Website analysis and service-area research are queued. Sensitive changes will still pause for your approval.",
+    eventType: crawlAccess.mode==="trial"?"retail_trial_crawl_started":"retail_growth_started",
+    title: crawlAccess.mode==="trial"?"Your free website crawl started":"Your HD SEO agent team started working",
+    description: crawlAccess.mode==="trial"
+      ? "HD SEO queued the one included public crawl of up to 25 pages. Paid data, publishing, and ongoing automation remain off during the free trial."
+      : "Website analysis and service-area research are queued. Sensitive changes will still pause for your approval.",
     actorUserId: context.userId,
     actorEmail: email,
     clientVisible: true,
   });
-  return { evidenceJobId, agentWork };
+  return { evidenceJobId, agentWork, crawlMode:crawlAccess.mode };
 }
 
 export async function createClientSupportRequest(
@@ -4041,57 +4077,15 @@ export async function recordClientPackageDecision(
     );
   }
 
-  const { data: publication } = await db
-    .from("client_portal_publications")
-    .select("id,status")
-    .eq("agency_id", pkg.agency_id)
-    .eq("client_organization_id", pkg.client_organization_id)
-    .eq("project_id", pkg.project_id)
-    .eq("record_type", "implementation_package")
-    .eq("source_id", input.packageId)
-    .is("revoked_at", null)
-    .maybeSingle();
-  if (!publication || publication.status !== "awaiting_client") {
-    throw new ApiError(
-      "The published approval request was not found or was already decided.",
-      409,
-      "CONFLICT",
-    );
-  }
-
-  const packageUpdate = await db
-    .from("implementation_packages")
-    .update({ status: input.decision, updated_at: nowIso() })
-    .eq("id", input.packageId)
-    .in("status", ["client_review", "awaiting_client"])
-    .select("id")
-    .maybeSingle();
-  if (!packageUpdate.data) {
-    throw new ApiError("This approval was already processed.", 409, "CONFLICT");
-  }
-  await db
-    .from("client_portal_publications")
-    .update({ status: input.decision })
-    .eq("id", publication.id)
-    .eq("status", "awaiting_client");
-
-  await recordEvent(db, {
-    agencyId: pkg.agency_id,
-    clientOrganizationId: pkg.client_organization_id,
-    projectId: pkg.project_id,
-    eventType: input.decision,
-    title: `Client ${input.decision.replaceAll("_", " ")}`,
-    description: "The client decision was recorded through the secure portal.",
-    actorUserId: userId,
-    actorEmail: email,
-    clientVisible: true,
-  });
+  const approved=input.decision==="client_approved",approvalDigest=approved?implementationPackageDigest(pkg):null,approvedSnapshot=approved?implementationPackageSnapshot(pkg):{};
+  const decided=await db.rpc("decide_implementation_package",{p_agency_id:pkg.agency_id,p_client_organization_id:pkg.client_organization_id,p_project_id:pkg.project_id,p_package_id:input.packageId,p_user_id:userId,p_decision:input.decision,p_note:"The client decision was recorded through the secure portal.",p_approval_digest:approvalDigest,p_approved_snapshot:approvedSnapshot});
+  if(decided.error)throw new ApiError("This exact approval could not be committed or was already processed.",409,"CONFLICT");
   await recordAudit(db, {
     agencyId: pkg.agency_id,
     actorUserId: userId,
     action: "implementation_package.client_decision",
     resourceType: "implementation_package",
     resourceId: input.packageId,
-    afterState: { decision: input.decision, clientRole: member.role },
+    afterState: { decision: input.decision, clientRole: member.role, approvalDigest },
   });
 }

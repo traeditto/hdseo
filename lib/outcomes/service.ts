@@ -37,8 +37,10 @@ export async function outcomesSnapshot(db:SupabaseClient,tenant:Omit<OutcomeTena
 }
 
 export async function configureBudget(db:SupabaseClient,tenant:OutcomeTenant,input:{monthlyLimit:number;warningPercent:number;hardStop:boolean;allocations:Array<{category:string;monthlyAmount:number;approvalThreshold:number}>}){
-  const account=must<any>(await db.from("project_budget_accounts").upsert({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,monthly_limit:input.monthlyLimit,warning_percent:input.warningPercent,hard_stop:input.hardStop,status:"active",updated_at:now()},{onConflict:"project_id"}).select("id").single(),"The project budget could not be saved.");
   const total=input.allocations.reduce((sum,item)=>sum+item.monthlyAmount,0);if(total>input.monthlyLimit+.005)throw new ApiError("Budget allocations cannot exceed the monthly limit.",400,"VALIDATION_ERROR");
+  const profile=await db.from("client_growth_profiles").update({monthly_budget:input.monthlyLimit,updated_at:now()}).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId);
+  if(profile.error)throw new ApiError("The business profile budget could not be reconciled.",500,"DATABASE_BINDING_FAILED");
+  const account=must<any>(await db.from("project_budget_accounts").upsert({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,monthly_limit:input.monthlyLimit,warning_percent:input.warningPercent,hard_stop:input.hardStop,status:"active",updated_at:now()},{onConflict:"project_id"}).select("id").single(),"The project budget could not be saved.");
   if(input.allocations.length){const saved=await db.from("project_budget_allocations").upsert(input.allocations.map(item=>({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,budget_account_id:account.id,category:item.category,monthly_amount:item.monthlyAmount,approval_threshold:item.approvalThreshold,updated_at:now()})),{onConflict:"project_id,category"});if(saved.error)throw new ApiError("Budget allocations could not be saved.",500,"DATABASE_BINDING_FAILED");}
   return account;
 }

@@ -9,12 +9,13 @@ test("the production home presents the HD SEO marketing experience",()=>{
   assert.match(page,/SoftwareApplication/);
   assert.match(page,/FAQPage/);
   assert.match(source,/Find the highest-value SEO improvement/);
-  assert.match(source,/Get My Free 25-Page SEO Audit/);
+  assert.match(source,/Start My Free Trial/);
   assert.match(source,/No credit card required/);
   assert.match(source,/UNVERIFIED/);
   assert.match(shared,/href="\/login"/);
   assert.match(source+shared,/href="\/agencies"/);
   assert.match(source,/href="\/audit"/);
+  assert.match(source+shared,/href="\/register"/);
   assert.match(shared,/href="\/pricing"/);
   assert.match(source,/business_plan_selection/);
   assert.doesNotMatch(source+shared,/mailto:|Start My SEO Plan/);

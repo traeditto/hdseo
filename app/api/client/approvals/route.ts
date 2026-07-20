@@ -1,9 +1,28 @@
-import { z } from "zod";
-import { resolveClientContext,requireClientApproval } from "@/lib/auth/context";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { parseJson } from "@/lib/api/request";
-import { ApiError,jsonError } from "@/lib/api/errors";
+import {z} from "zod";
+
+import {ApiError,jsonError} from "@/lib/api/errors";
+import {parseJson} from "@/lib/api/request";
+import {requireClientApproval,resolveClientContext} from "@/lib/auth/context";
+import {implementationPackageDigest,implementationPackageSnapshot} from "@/lib/safety/package-approval";
+import {createSupabaseAdminClient} from "@/lib/supabase/admin";
 
 const schema=z.object({clientId:z.string().uuid(),projectId:z.string().uuid(),packageId:z.string().uuid(),decision:z.enum(["approved","rejected","revision_requested"]),note:z.string().max(4000).optional()});
-export async function GET(request:Request){try{const url=new URL(request.url),context=await resolveClientContext({clientId:url.searchParams.get("clientId")??undefined,projectId:url.searchParams.get("projectId")??undefined,requireProject:true}),db=createSupabaseAdminClient();if(!db||!context.project)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");const publications=await db.from("client_portal_publications").select("id,record_type,source_id,title,summary,status,payload,published_at").eq("agency_id",context.agency.id).eq("client_organization_id",context.client.id).eq("project_id",context.project.id).is("revoked_at",null).order("published_at",{ascending:false});if(publications.error)throw new ApiError("Client approvals could not be loaded.",500,"OPERATION_FAILED");return Response.json({ok:true,approvals:publications.data});}catch(error){return jsonError(error)}}
-export async function POST(request:Request){try{const input=await parseJson(request,schema),context=await resolveClientContext({clientId:input.clientId,projectId:input.projectId,requireProject:true});requireClientApproval(context);const db=createSupabaseAdminClient();if(!db||!context.project)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");const publication=await db.from("client_portal_publications").select("id,source_id,status").eq("agency_id",context.agency.id).eq("client_organization_id",context.client.id).eq("project_id",context.project.id).eq("record_type","implementation_package").eq("source_id",input.packageId).is("revoked_at",null).maybeSingle();if(!publication.data)throw new ApiError("Published approval request not found.",404,"NOT_FOUND");if(publication.data.status!=="awaiting_client")throw new ApiError("This approval request has already been decided.",409,"CONFLICT");await db.from("client_portal_publications").update({status:input.decision}).eq("id",publication.data.id);await db.from("implementation_packages").update({status:input.decision==="approved"?"client_approved":input.decision,updated_at:new Date().toISOString()}).eq("id",input.packageId).eq("project_id",context.project.id);const event=await db.from("proof_of_work_events").select("task_id,opportunity_id").eq("package_id",input.packageId).not("task_id","is",null).limit(1).maybeSingle();if(event.data?.task_id)await db.from("seo_task_approvals").update({status:input.decision,decided_by:context.user.id,decision_note:input.note??null,decided_at:new Date().toISOString()}).eq("task_id",event.data.task_id).eq("approval_type","client");await db.from("proof_of_work_events").insert({agency_id:context.agency.id,client_organization_id:context.client.id,project_id:context.project.id,opportunity_id:event.data?.opportunity_id??null,package_id:input.packageId,task_id:event.data?.task_id??null,event_type:`client_${input.decision}`,title:`Client ${input.decision.replace("_"," ")}`,description:input.note??"Client decision recorded.",client_visible:true,actor_user_id:context.user.id});return Response.json({ok:true,decision:input.decision});}catch(error){return jsonError(error)}}
+
+export async function GET(request:Request){try{
+  const url=new URL(request.url),context=await resolveClientContext({clientId:url.searchParams.get("clientId")??undefined,projectId:url.searchParams.get("projectId")??undefined,requireProject:true}),db=createSupabaseAdminClient();
+  if(!db||!context.project)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");
+  const publications=await db.from("client_portal_publications").select("id,record_type,source_id,title,summary,status,payload,published_at").eq("agency_id",context.agency.id).eq("client_organization_id",context.client.id).eq("project_id",context.project.id).is("revoked_at",null).order("published_at",{ascending:false});
+  if(publications.error)throw new ApiError("Client approvals could not be loaded.",500,"OPERATION_FAILED");
+  return Response.json({ok:true,approvals:publications.data});
+}catch(error){return jsonError(error)}}
+
+export async function POST(request:Request){try{
+  const input=await parseJson(request,schema),context=await resolveClientContext({clientId:input.clientId,projectId:input.projectId,requireProject:true});requireClientApproval(context);
+  const db=createSupabaseAdminClient();if(!db||!context.project)throw new ApiError("Supabase is not configured.",503,"NOT_CONFIGURED");
+  const pkg=await db.from("implementation_packages").select("*").eq("id",input.packageId).eq("agency_id",context.agency.id).eq("client_organization_id",context.client.id).eq("project_id",context.project.id).maybeSingle();
+  if(!pkg.data)throw new ApiError("Implementation package not found.",404,"NOT_FOUND");
+  const approved=input.decision==="approved",decision=approved?"client_approved":input.decision,approvalDigest=approved?implementationPackageDigest(pkg.data):null,approvedSnapshot=approved?implementationPackageSnapshot(pkg.data):{};
+  const result=await db.rpc("decide_implementation_package",{p_agency_id:context.agency.id,p_client_organization_id:context.client.id,p_project_id:context.project.id,p_package_id:input.packageId,p_user_id:context.user.id,p_decision:decision,p_note:input.note??null,p_approval_digest:approvalDigest,p_approved_snapshot:approvedSnapshot});
+  if(result.error)throw new ApiError("The exact client decision could not be committed. It may already have been decided.",409,"CONFLICT");
+  return Response.json({ok:true,decision:input.decision,approvalDigest});
+}catch(error){return jsonError(error)}}

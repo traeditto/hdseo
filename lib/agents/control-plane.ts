@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { ApiError } from "@/lib/api/errors";
 import { agentRegistry,workTemplates,type AgentWorkType } from "@/lib/agents/registry";
+import {actionDigest} from "@/lib/safety/action-digest";
 
 type AgentTenant={agencyId:string;clientId:string;projectId:string;userId:string|null};
 const protectedApprovalType=new Map([
@@ -24,15 +25,18 @@ function requiredApprovals(workType:AgentWorkType,tools:readonly string[],riskLe
 export async function enqueueAgentWorkItem(db:SupabaseClient,tenant:AgentTenant,input:{
   workType:AgentWorkType;goal?:string;evidence?:Record<string,unknown>;proposedPlan?:Record<string,unknown>;
   spendingLimit?:number;priority?:number;idempotencyKey:string;sourceType?:string;sourceId?:string;approvalOwner?:"agency"|"client"|"both";
+  allowedTools?:readonly string[];riskCeiling?:"low"|"medium"|"high";externalSpendRequiresApproval?:boolean;
 }){
   const template=workTemplates[input.workType];
   const client=await db.from("clients").select("id,automation_config").eq("agency_id",tenant.agencyId).eq("organization_id",tenant.clientId).maybeSingle();
   if(!client.data)throw new ApiError("The enterprise client record is unavailable.",409,"DATABASE_BINDING_FAILED");
-  const approvals=requiredApprovals(input.workType,template.tools,template.riskLevel,input.approvalOwner);
+  const riskOrder=["low","medium","high","critical"],ceiling=input.riskCeiling??"high";if(riskOrder.indexOf(template.riskLevel)>riskOrder.indexOf(ceiling))throw new ApiError(`The ${input.workType} risk exceeds this enrollment's ${ceiling} ceiling.`,409,"CONFLICT");
+  const allowlist=input.allowedTools??[],authorizedTools=allowlist.length?template.tools.filter(tool=>allowlist.includes(tool)):[...template.tools];if(!authorizedTools.length)throw new ApiError(`This enrollment does not authorize any tools required by ${input.workType}.`,403,"ROLE_FORBIDDEN");
+  const approvals=requiredApprovals(input.workType,authorizedTools,template.riskLevel,input.approvalOwner);if(input.externalSpendRequiresApproval&&(input.spendingLimit??0)>0&&!approvals.some(item=>item.type==="spending"))approvals.push({type:"spending",reason:"External provider spending requires explicit approval for this enrollment."});
   const result=await db.rpc("enqueue_agent_work_item",{
     p_agency_id:tenant.agencyId,p_client_id:client.data.id,p_project_id:tenant.projectId,p_work_type:input.workType,
     p_goal:input.goal?.trim()||template.goal,p_agent_key:template.agentKey,p_evidence:input.evidence??{},p_proposed_plan:input.proposedPlan??{},
-    p_authorized_tools:[...template.tools],p_spending_limit:Math.max(0,input.spendingLimit??0),p_risk_level:template.riskLevel,
+    p_authorized_tools:authorizedTools,p_spending_limit:Math.max(0,input.spendingLimit??0),p_risk_level:template.riskLevel,
     p_required_approvals:approvals,p_priority:input.priority??template.priority,p_idempotency_key:input.idempotencyKey,p_requested_by:tenant.userId,
     p_source_type:input.sourceType??null,p_source_id:input.sourceId??null,
   });
@@ -61,9 +65,10 @@ export async function agentWorkspaceSnapshot(db:SupabaseClient,tenant:Omit<Agent
   const client=await db.from("clients").select("id,automation_config").eq("agency_id",tenant.agencyId).eq("organization_id",tenant.clientId).maybeSingle();
   if(!client.data)throw new ApiError("Client agent workspace not found.",404,"NOT_FOUND");
   const since=new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString();
-  const [workRes,approvalsRes,activityRes,deploymentsRes,usageRes,toolSpendRes,opportunitiesRes,memoryRes]=await Promise.all([
+  const [workRes,approvalsRes,mutationRes,activityRes,deploymentsRes,usageRes,toolSpendRes,opportunitiesRes,memoryRes]=await Promise.all([
     db.from("agent_work_items").select("id,work_type,goal,assigned_agent_key,supervisor_agent_key,status,priority,risk_level,evidence,proposed_plan,authorized_tools,spending_limit,spent_amount,required_approvals,execution_context,validation_results,final_outcome,source_type,source_id,started_at,completed_at,failed_at,created_at,updated_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).order("created_at",{ascending:false}).limit(100),
     db.from("agent_approvals").select("id,work_item_id,step_id,approval_type,title,summary,risk_level,requested_decision,status,requested_by_agent_key,requested_at,expires_at,decided_at,decision_note").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).order("requested_at",{ascending:false}).limit(100),
+    db.from("mutation_intents").select("id,tool_key,resource_type,resource_id,environment,summary,risk_level,action_digest,status,requested_by,expires_at,created_at").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).order("created_at",{ascending:false}).limit(100),
     db.from("agent_activity_events").select("id,work_item_id,step_id,agent_key,event_type,title,description,metadata,occurred_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).order("occurred_at",{ascending:false}).limit(150),
     db.from("deployments").select("id,environment,git_ref,git_sha,url,status,validation_summary,created_at,completed_at,rollback_of_id").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).order("created_at",{ascending:false}).limit(20),
     db.from("data_usage_events").select("estimated_cost,actual_cost,status,created_at").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).gte("created_at",since),
@@ -72,6 +77,7 @@ export async function agentWorkspaceSnapshot(db:SupabaseClient,tenant:Omit<Agent
     db.from("agent_memory").select("agent_key,memory_type",{count:"exact"}).eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId),
   ]);
   if(workRes.error)throw new ApiError("The Agent Workspace database is not ready. Apply migration 0017.",503,"DATABASE_BINDING_FAILED");
+  if(mutationRes.error)throw new ApiError("Protected actions are not ready. Apply migration 0030.",503,"DATABASE_BINDING_FAILED");
   const workItems=workRes.data??[],workIds=workItems.map(item=>item.id);
   const steps=workIds.length?(await db.from("agent_work_steps").select("id,work_item_id,sequence,agent_key,step_type,title,status,tool_key,input,output,evidence_refs,validation,error_code,error_message,started_at,completed_at,created_at,updated_at").in("work_item_id",workIds).order("sequence")).data??[]:[];
   const usage=(usageRes.data??[]).reduce((sum,row)=>sum+numberValue(row.actual_cost??row.estimated_cost),0);
@@ -79,9 +85,10 @@ export async function agentWorkspaceSnapshot(db:SupabaseClient,tenant:Omit<Agent
   const expectedValue=(opportunitiesRes.data??[]).reduce((sum,row)=>sum+numberValue(asObject(row.evidence).estimated_monthly_value),0);
   const counts={queued:0,running:0,awaitingApproval:0,completed:0,blocked:0,failed:0};
   for(const item of workItems){if(item.status==="queued"||item.status==="planning"||item.status==="waiting_for_tools")counts.queued++;else if(item.status==="running"||item.status==="validating")counts.running++;else if(item.status==="awaiting_approval")counts.awaitingApproval++;else if(item.status==="succeeded")counts.completed++;else if(item.status==="blocked"||item.status==="dead_letter")counts.blocked++;else if(item.status==="failed")counts.failed++;}
+  counts.awaitingApproval+=(mutationRes.data??[]).filter(item=>item.status==="awaiting").length;
   const automation=asObject(client.data.automation_config);
   return{
-    agents:agentRegistry,workItems,steps,approvals:approvalsRes.data??[],activity:activityRes.data??[],deployments:deploymentsRes.data??[],
+    agents:agentRegistry,workItems,steps,approvals:approvalsRes.data??[],mutationIntents:mutationRes.data??[],activity:activityRes.data??[],deployments:deploymentsRes.data??[],
     summary:{...counts,moneyUsed:Number((usage+agentSpend).toFixed(2)),monthlyBudget:numberValue(automation.monthlyBudget),expectedMonthlyValue:Number(expectedValue.toFixed(2)),memoryCount:memoryRes.count??0},
   };
 }
@@ -92,13 +99,20 @@ async function enqueueSupervisorRetry(db:SupabaseClient,input:{agencyId:string;w
 }
 
 export async function decideAgentApproval(db:SupabaseClient,tenant:AgentTenant,input:{approvalId:string;decision:"approved"|"rejected";note?:string}){
+  if(!tenant.userId)throw new ApiError("Sign in before deciding protected agent work.",401,"AUTH_REQUIRED");
   const client=await db.from("clients").select("id").eq("organization_id",tenant.clientId).eq("agency_id",tenant.agencyId).maybeSingle();
   if(client.error||!client.data)throw new ApiError("Client agent workspace not found.",404,"NOT_FOUND");
-  const approval=await db.from("agent_approvals").select("id,work_item_id,status,title").eq("id",input.approvalId).eq("agency_id",tenant.agencyId).eq("project_id",tenant.projectId).eq("client_id",client.data.id).maybeSingle();
+  const approval=await db.from("agent_approvals").select("id,work_item_id,status,title,approval_type,requested_decision,action_digest,expires_at").eq("id",input.approvalId).eq("agency_id",tenant.agencyId).eq("project_id",tenant.projectId).eq("client_id",client.data.id).maybeSingle();
   if(!approval.data)throw new ApiError("Agent approval not found.",404,"NOT_FOUND");
   if(approval.data.status!=="awaiting")throw new ApiError("This decision has already been recorded.",409,"CONFLICT");
+  if(approval.data.expires_at&&new Date(approval.data.expires_at).getTime()<=Date.now()){await db.from("agent_approvals").update({status:"expired",decided_at:new Date().toISOString()}).eq("id",approval.data.id).eq("status","awaiting");throw new ApiError("This approval expired. The supervisor must request it again.",409,"APPROVAL_REQUIRED");}
+  if(!approval.data.action_digest||actionDigest(approval.data.requested_decision)!==approval.data.action_digest)throw new ApiError("The protected action changed or predates exact-action approvals. Request a new approval.",409,"INVALID_STATE");
+  const [agencyMember,clientMember]=await Promise.all([db.from("agency_members").select("role").eq("agency_id",tenant.agencyId).eq("user_id",tenant.userId).eq("status","active").maybeSingle(),db.from("client_members").select("role").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("user_id",tenant.userId).eq("status","active").maybeSingle()]);
+  const agencyDecision=["agency_owner","agency_admin","seo_director"].includes(String(agencyMember.data?.role)),clientDecision=["client_admin","client_approver"].includes(String(clientMember.data?.role));
+  if(approval.data.approval_type==="client"&&!clientDecision)throw new ApiError("This decision belongs to an authorized client approver.",403,"ROLE_FORBIDDEN");
+  if(approval.data.approval_type!=="client"&&!agencyDecision)throw new ApiError("This decision requires an accountable agency approver.",403,"ROLE_FORBIDDEN");
   const now=new Date().toISOString();
-  const updated=await db.from("agent_approvals").update({status:input.decision,decided_by:tenant.userId,decision_note:input.note??null,decided_at:now}).eq("id",approval.data.id).eq("status","awaiting");
+  const updated=await db.from("agent_approvals").update({status:input.decision,decided_by:tenant.userId,decision_note:input.note??null,decided_at:now,approved_action:approval.data.requested_decision}).eq("id",approval.data.id).eq("status","awaiting");
   if(updated.error)throw new ApiError("The approval decision could not be saved.",500,"DATABASE_BINDING_FAILED");
   if(input.decision==="rejected")await db.from("agent_work_items").update({status:"blocked",final_outcome:{reason:"Approval rejected",approvalId:approval.data.id},updated_at:now}).eq("id",approval.data.work_item_id);
   else{
