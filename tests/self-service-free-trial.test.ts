@@ -14,9 +14,23 @@ describe("self-service free trial", () => {
     expect(register).toContain('initialMode="signup"');
     expect(login).toContain("self_service_free_trial");
     expect(login).toContain("emailRedirectTo");
+    expect(login).toContain("productionAuthOrigin");
+    expect(login).toContain("showSignupPassword");
+    expect(login).toContain('aria-label={showSignupPassword?"Hide password":"Show password"}');
+    expect(login).toContain("That confirmation link is invalid, expired, or was already used.");
     expect(login).toContain("One crawl of up to 25 public pages");
     expect(login).toContain("No credit card required");
     expect(marketing).toContain('href="/register"');
+  });
+
+  it("completes both PKCE and token-hash email confirmations in the correct portal", () => {
+    const callback = read("app/auth/callback/route.ts");
+
+    expect(callback).toContain("exchangeCodeForSession");
+    expect(callback).toContain("token_hash");
+    expect(callback).toContain("verifyOtp");
+    expect(callback).toContain('return "/login/client"');
+    expect(callback).toContain("appBaseUrl()");
   });
 
   it("serializes and accounts for the single free crawl in Postgres", () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
@@ -14,11 +14,26 @@ const portalCopy = {
   client: { number:"03", eyebrow:"BUSINESS GROWTH", title:"Business Owner Portal", description:"Sign in to see results or start HD SEO for your business.", accent:"HD SEO finds the best local opportunities, completes safe work, and asks you only for simple business decisions." },
 } as const;
 
+const productionAuthOrigin=(process.env.NEXT_PUBLIC_APP_URL||"https://hdseo.vercel.app").replace(/\/+$/g,"");
+
+function externalAuthUrl(path:string){
+  const local=window.location.hostname==="localhost"||window.location.hostname==="127.0.0.1";
+  return new URL(path,`${local?window.location.origin:productionAuthOrigin}/`).toString();
+}
+
 export function PortalLogin({portal,authMode,initialMode="signin"}:{portal:PortalRole;authMode:"supabase"|"chatgpt";initialMode?:"signin"|"signup"}){
   const copy=portalCopy[portal],router=useRouter();
   const [status,setStatus]=useState<"idle"|"loading"|"recovery"|"signup">(initialMode==="signup"?"signup":"idle"),[message,setMessage]=useState("");
   const [showPassword,setShowPassword]=useState(false);
+  const [showSignupPassword,setShowSignupPassword]=useState(false);
   const [signupBusy,setSignupBusy]=useState(false);
+
+  useEffect(()=>{
+    if(window.location.hostname.endsWith(".vercel.app")&&window.location.origin!==productionAuthOrigin){window.location.replace(new URL(`${window.location.pathname}${window.location.search}`,`${productionAuthOrigin}/`).toString());return;}
+    const authError=new URLSearchParams(window.location.search).get("error");
+    const authMessage=authError==="invalid_or_expired_link"?"That confirmation link is invalid, expired, or was already used. Sign in if your email is verified, or create the account again to request a fresh link.":authError==="auth_not_configured"?"Production authentication is temporarily unavailable.":null;
+    if(authMessage){const timer=window.setTimeout(()=>setMessage(authMessage),0);return()=>window.clearTimeout(timer);}
+  },[]);
 
   async function submit(event:FormEvent<HTMLFormElement>){
     event.preventDefault();setStatus("loading");setMessage("");
@@ -46,7 +61,7 @@ export function PortalLogin({portal,authMode,initialMode="signin"}:{portal:Porta
     const data=new FormData(event.currentTarget),email=String(data.get("signupEmail")||""),password=String(data.get("signupPassword")||""),fullName=String(data.get("fullName")||""),db=createSupabaseBrowserClient();
     if(!db){setMessage("Production authentication is not configured for this deployment.");setSignupBusy(false);return;}
     const destination=portal==="client"?"/portal/client?welcome=1":"/portal/agency";
-    const result=await db.auth.signUp({email,password,options:{data:{full_name:fullName,account_type:portal,signup_source:portal==="client"?"self_service_free_trial":"self_service"},emailRedirectTo:`${window.location.origin}/auth/callback?next=${encodeURIComponent(destination)}`}});
+    const result=await db.auth.signUp({email,password,options:{data:{full_name:fullName,account_type:portal,signup_source:portal==="client"?"self_service_free_trial":"self_service"},emailRedirectTo:externalAuthUrl(`/auth/callback?next=${encodeURIComponent(destination)}`)}});
     if(result.error){setMessage(result.error.message);setSignupBusy(false);return;}
     if(result.data.session){router.push(destination);router.refresh();return;}
     setMessage(portal==="client"?"Check your email to verify the account, then return here to add your business.":"Check your email to verify the account, then return here to create your agency workspace.");
@@ -58,7 +73,7 @@ export function PortalLogin({portal,authMode,initialMode="signin"}:{portal:Porta
     if(!email){setMessage("Enter your email address first.");return;}
     if(!db){setMessage("Production authentication is not configured for this deployment.");return;}
     setStatus("loading");setMessage("");
-    const result=await db.auth.signInWithOtp({email,options:{emailRedirectTo:`${window.location.origin}/auth/callback?next=/portal/${portal}`,shouldCreateUser:false}});
+    const result=await db.auth.signInWithOtp({email,options:{emailRedirectTo:externalAuthUrl(`/auth/callback?next=/portal/${portal}`),shouldCreateUser:false}});
     setMessage(result.error?result.error.message:"Check your email for your secure HD SEO sign-in link.");setStatus("idle");
   }
 
@@ -67,9 +82,9 @@ export function PortalLogin({portal,authMode,initialMode="signin"}:{portal:Porta
     <section className="portal-login-form"><div className="login-form-wrap"><Link className="back-link" href="/login">← All portals</Link><PortalRoleSelector activeRole={portal} /><span className="form-eyebrow">{copy.eyebrow}</span><h2>{status==="recovery"?"Reset your password":status==="signup"&&portal==="client"?"Create your free business account":status==="signup"?"Create your agency account":`Sign in to ${copy.title}`}</h2><p>{status==="recovery"?"Enter your account email and we’ll send a secure recovery link.":status==="signup"&&portal==="client"?"Verify your email, add one business website, and run one free crawl of up to 25 public pages. No credit card required.":copy.description}</p>
       {status==="signup"&&portal==="client"&&<div className="signup-trial-facts"><strong>Your free trial includes</strong><span>✓ One website workspace</span><span>✓ One crawl of up to 25 public pages</span><span>✓ Access to explore the plans, approvals, agent, and results UI</span><small>Paid data providers, ongoing agents, publishing, and external spend stay locked until you choose a plan.</small></div>}
       {authMode==="chatgpt"?<><div className="live-login-note"><strong>Secure hosted access</strong><p>Continue with your verified ChatGPT identity to enter this protected workspace.</p></div><Link className="login-submit live-login-button" href={`/portal/${portal}`}>Continue with ChatGPT <span>→</span></Link></>
-      :status==="idle"||status==="loading"?<form onSubmit={submit}><label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@company.com" required/></label><label>Password<span style={{position:"relative",display:"block"}}><input name="password" type={showPassword?"text":"password"} autoComplete="current-password" placeholder="Enter your password" required style={{width:"100%",paddingRight:"3.75rem"}}/><button type="button" onClick={()=>setShowPassword(value=>!value)} aria-label={showPassword?"Hide password":"Show password"} aria-pressed={showPassword} style={{position:"absolute",right:"0.85rem",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",padding:0,cursor:"pointer",font:"inherit",fontSize:"0.8rem",fontWeight:600,color:"#2f6f5e"}}>{showPassword?"Hide":"Show"}</button></span></label><div className="login-options"><label><input type="checkbox"/> Remember me</label><button type="button" onClick={()=>{setStatus("recovery");setMessage("");}}>Forgot password?</button></div>{message&&<div className="login-message" role="status">{message}</div>}<button className="login-submit" type="submit" disabled={status==="loading"}>{status==="loading"?"Verifying access…":`Enter ${copy.title}`}<span>→</span></button><button className="recovery-back" type="button" disabled={status==="loading"} onClick={event=>{if(event.currentTarget.form)void sendMagicLink(event.currentTarget.form);}}>Email me a secure sign-in link</button></form>
+      :status==="idle"||status==="loading"?<form onSubmit={submit}><label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@company.com" required/></label><label>Password<span className="login-password-field"><input className="login-password-input" name="password" type={showPassword?"text":"password"} autoComplete="current-password" placeholder="Enter your password" required/><button className="login-password-toggle" type="button" onClick={()=>setShowPassword(value=>!value)} aria-label={showPassword?"Hide password":"Show password"} aria-pressed={showPassword}>{showPassword?"Hide":"Show"}</button></span></label><div className="login-options"><label><input type="checkbox"/> Remember me</label><button type="button" onClick={()=>{setStatus("recovery");setMessage("");}}>Forgot password?</button></div>{message&&<div className="login-message" role="status">{message}</div>}<button className="login-submit" type="submit" disabled={status==="loading"}>{status==="loading"?"Verifying access…":`Enter ${copy.title}`}<span>→</span></button><button className="recovery-back" type="button" disabled={status==="loading"} onClick={event=>{if(event.currentTarget.form)void sendMagicLink(event.currentTarget.form);}}>Email me a secure sign-in link</button></form>
       :status==="recovery"?<form onSubmit={recover}><label>Email address<input name="recoveryEmail" type="email" autoComplete="email" placeholder="you@company.com" required/></label>{message&&<div className="login-message" role="status">{message}</div>}<button className="login-submit" type="submit">Send recovery link <span>→</span></button><button className="recovery-back" type="button" onClick={()=>{setStatus("idle");setMessage("");}}>Back to sign in</button></form>
-      :<form onSubmit={signup}><label>Your name<input name="fullName" autoComplete="name" required/></label><label>{portal==="client"?"Email address":"Work email"}<input name="signupEmail" type="email" autoComplete="email" placeholder={portal==="client"?"you@yourbusiness.com":"you@agency.com"} required/></label><label>Create password<input name="signupPassword" type="password" autoComplete="new-password" minLength={10} required/><small>Use at least 10 characters.</small></label><label className="signup-consent"><input type="checkbox" required/><span>I agree to the <Link href="/terms">Terms</Link> and acknowledge the <Link href="/privacy">Privacy Policy</Link>.</span></label>{message&&<div className="login-message" role="status">{message}</div>}<button className="login-submit" type="submit" disabled={signupBusy}>{signupBusy?"Creating your account…":portal==="client"?"Create account and start free":"Create agency account"} <span>→</span></button><button className="recovery-back" type="button" disabled={signupBusy} onClick={()=>{setStatus("idle");setMessage("");}}>Already have an account? Sign in</button></form>}
+      :<form onSubmit={signup}><label>Your name<input name="fullName" autoComplete="name" required/></label><label>{portal==="client"?"Email address":"Work email"}<input name="signupEmail" type="email" autoComplete="email" placeholder={portal==="client"?"you@yourbusiness.com":"you@agency.com"} required/></label><label>Create password<span className="login-password-field"><input className="login-password-input" name="signupPassword" type={showSignupPassword?"text":"password"} autoComplete="new-password" minLength={10} required/><button className="login-password-toggle" type="button" onClick={()=>setShowSignupPassword(value=>!value)} aria-label={showSignupPassword?"Hide password":"Show password"} aria-pressed={showSignupPassword}>{showSignupPassword?"Hide":"Show"}</button></span><small>Use at least 10 characters.</small></label><label className="signup-consent"><input type="checkbox" required/><span>I agree to the <Link href="/terms">Terms</Link> and acknowledge the <Link href="/privacy">Privacy Policy</Link>.</span></label>{message&&<div className="login-message" role="status">{message}</div>}<button className="login-submit" type="submit" disabled={signupBusy}>{signupBusy?"Creating your account…":portal==="client"?"Create account and start free":"Create agency account"} <span>→</span></button><button className="recovery-back" type="button" disabled={signupBusy} onClick={()=>{setStatus("idle");setMessage("");}}>Already have an account? Sign in</button></form>}
       {(portal==="agency"||portal==="client")&&status!=="signup"&&<button className="recovery-back" type="button" onClick={()=>{setStatus("signup");setMessage("");}}>{portal==="client"?"New here? Start with your business":"Create a new agency account"}</button>}
       <small className="login-security">Protected by role-based authorization and encrypted session cookies.</small>
     </div></section>
