@@ -36,6 +36,19 @@ describe("self-service free trial", () => {
     expect(callback).toContain("appBaseUrl()");
   });
 
+  it("completes password recovery instead of returning users to a dead-end login", () => {
+    const login = read("app/ui/portal-login.tsx");
+    const callback = read("app/auth/callback/route.ts");
+    const reset = read("app/ui/reset-password-form.tsx");
+
+    expect(login).toContain("/reset-password?portal=${portal}");
+    expect(login).toContain("/auth/callback?next=");
+    expect(callback).toContain('next.startsWith("/reset-password")');
+    expect(reset).toContain("db.auth.updateUser({password})");
+    expect(reset).toContain("Save password and continue");
+    expect(reset).toContain("Show passwords");
+  });
+
   it("serializes and accounts for the single free crawl in Postgres", () => {
     const migration = read("supabase/migrations/0031_self_service_free_trial.sql");
 

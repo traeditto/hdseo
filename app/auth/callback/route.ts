@@ -16,6 +16,10 @@ function emailOtpType(value:string|null):SupportedEmailOtpType|null{
 function loginFor(next:string){
   if(next.startsWith("/portal/client"))return "/login/client";
   if(next.startsWith("/portal/agency"))return "/login/agency";
+  if(next.startsWith("/reset-password")){
+    const portal=new URL(next,"https://hdseo.local").searchParams.get("portal");
+    if(portal==="client"||portal==="agency"||portal==="admin")return `/login/${portal}`;
+  }
   return "/login/admin";
 }
 

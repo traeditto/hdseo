@@ -51,7 +51,8 @@ export function PortalLogin({portal,authMode,initialMode="signin"}:{portal:Porta
   async function recover(event:FormEvent<HTMLFormElement>){
     event.preventDefault();const data=new FormData(event.currentTarget),email=String(data.get("recoveryEmail")||""),db=createSupabaseBrowserClient();
     if(!db){setMessage("Password recovery is not configured for this deployment.");return;}
-    const result=await db.auth.resetPasswordForEmail(email,{redirectTo:`${window.location.origin}/login/${portal}`});
+    const resetDestination=`/reset-password?portal=${portal}`;
+    const result=await db.auth.resetPasswordForEmail(email,{redirectTo:externalAuthUrl(`/auth/callback?next=${encodeURIComponent(resetDestination)}`)});
     setMessage(result.error?result.error.message:"Check your email for a secure password reset link.");
   }
 
