@@ -252,6 +252,10 @@ export type LiveClientSubscription = {
   status: string;
   billingInterval: string;
   priceCents: number;
+  offerKey: string | null;
+  offerPriceCents: number | null;
+  offerEndsAt: string | null;
+  betaRedeemedAt: string | null;
   trialEndsAt: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
@@ -1321,6 +1325,10 @@ export async function liveClientSnapshot(email: string) {
         status: rowText(row, "status", "trialing"),
         billingInterval: rowText(row, "billing_interval", "month"),
         priceCents: rowNumber(row, "price_cents"),
+        offerKey: rowNullableText(row,"offer_key"),
+        offerPriceCents: row.offer_price_cents===null||row.offer_price_cents===undefined?null:rowNumber(row,"offer_price_cents"),
+        offerEndsAt: rowNullableText(row,"offer_ends_at"),
+        betaRedeemedAt: rowNullableText(row,"beta_redeemed_at"),
         trialEndsAt: rowNullableText(row, "trial_ends_at"),
         currentPeriodEnd: rowNullableText(row, "current_period_end"),
         cancelAtPeriodEnd: row.cancel_at_period_end === true,

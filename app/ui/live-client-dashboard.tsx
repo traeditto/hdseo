@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import { AgentServicePanel } from "@/app/ui/agent-service-panel";
+import {FOUNDING_BETA_OFFER_KEY,retailBillingPlans} from "@/lib/billing/catalog";
 
 type User = { displayName: string; email: string };
 type Client = { id: string; name: string; domain: string; status: string };
@@ -62,6 +63,10 @@ type Subscription = {
   status: string;
   billingInterval: string;
   priceCents: number;
+  offerKey: string | null;
+  offerPriceCents: number | null;
+  offerEndsAt: string | null;
+  betaRedeemedAt: string | null;
   trialEndsAt: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
@@ -1696,12 +1701,16 @@ function BusinessSettings({
               <h2>{planLabels[data.subscription?.planKey ?? "free_audit"]}</h2>
             </header>
             <strong>
-              {data.subscription?.priceCents
+              {data.subscription?.offerKey===FOUNDING_BETA_OFFER_KEY&&data.subscription.offerPriceCents
+                ? `${money(data.subscription.offerPriceCents / 100)} Founding Beta`
+                : data.subscription?.priceCents
                 ? `${money(data.subscription.priceCents / 100)}/month`
                 : "Free audit period"}
             </strong>
             <p>
-              {data.subscription?.trialEndsAt
+              {data.subscription?.offerKey===FOUNDING_BETA_OFFER_KEY&&data.subscription.offerEndsAt
+                ? `Founding Beta through ${new Date(data.subscription.offerEndsAt).toLocaleDateString()}, then ${money(data.subscription.priceCents/100)}/month unless canceled.`
+                : data.subscription?.trialEndsAt
                 ? `Trial through ${new Date(data.subscription.trialEndsAt).toLocaleDateString()}.`
                 : "Your account remains protected by plan and spending limits."}
             </p>
@@ -1793,39 +1802,20 @@ function BusinessSettings({
           <h2>Start simple. Add automation when it earns your trust.</h2>
         </header>
         <div>
-          {[
-            [
-              "starter",
-              "Essentials",
-              "$199",
-              "Foundational SEO implementation for one business website",
-            ],
-            [
-              "growth",
-              "Growth Copilot",
-              "$499",
-              "Operate six guided SEO workflows with evidence, controls and validation",
-            ],
-            [
-              "pro",
-              "Autopilot",
-              "$999",
-              "Six managed actions, one major page and 30 minutes of human strategy",
-            ],
-            [
-              "autopilot_plus",
-              "Autopilot Plus",
-              "$1,299",
-              "Ten managed actions, two major pages and 60 minutes of human strategy",
-            ],
-          ].map(([key, name, price, detail]) => (
+          {([
+            ["starter","Foundational SEO implementation for one business website"],
+            ["growth","Operate six guided SEO workflows with evidence, controls and validation"],
+            ["pro","Six managed actions, one major page and 30 minutes of human strategy"],
+            ["autopilot_plus","Ten managed actions, two major pages and 60 minutes of human strategy"],
+          ] as const).map(([key,detail]) => {const plan=retailBillingPlans[key],betaEligible=data.subscription?.planKey==="free_audit"&&!data.subscription.betaRedeemedAt,name=plan.label,price=betaEligible?money(plan.beta.priceCents/100):money(plan.priceCents/100);return (
             <article className={key === "pro" ? "featured" : ""} key={key}>
-              <small>{key === "pro" ? "BEST VALUE" : "MONTHLY"}</small>
+              <small>{betaEligible?key==="pro"?"RUN IT FOR ME · FOUNDING BETA":"FOUNDING BETA":key === "pro" ? "BEST VALUE" : "MONTHLY"}</small>
               <h3>{name}</h3>
               <strong>
                 {price}
-                <em>/mo</em>
+                <em>{betaEligible?" first month":"/mo"}</em>
               </strong>
+              {betaEligible&&<span className="owner-beta-renewal">Then {money(plan.priceCents/100)}/month unless canceled · {plan.beta.enrollmentLimit} spots</span>}
               <p>{detail}</p>
               <button
                 disabled={
@@ -1834,7 +1824,7 @@ function BusinessSettings({
                 onClick={() =>
                   void billing(
                     "/api/billing/checkout",
-                    { projectId: project.id, planKey: key },
+                    { projectId: project.id, planKey: key,...(betaEligible?{offerKey:FOUNDING_BETA_OFFER_KEY}:{}) },
                     key,
                   )
                 }
@@ -1843,10 +1833,10 @@ function BusinessSettings({
                   ? "Current plan"
                   : billingBusy === key
                     ? "Opening secure checkout…"
-                    : `Choose ${name}`}
+                    : betaEligible?`Start ${name} Beta`:`Choose ${name}`}
               </button>
             </article>
-          ))}
+          )})}
         </div>
       </section>
     </>
