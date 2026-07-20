@@ -5,6 +5,7 @@ import { parseJson } from "@/lib/api/request";
 import { resolveClientContext } from "@/lib/auth/context";
 import { appBaseUrl, env } from "@/lib/config/env";
 import { getLiveAdminClient } from "@/lib/live/identity";
+import {stripeForm} from "@/lib/billing/stripe";
 
 export async function POST(request: Request) {
   try {
@@ -15,9 +16,8 @@ export async function POST(request: Request) {
     const db = getLiveAdminClient();
     const row = await db.from("client_subscriptions").select("stripe_customer_id").eq("project_id", input.projectId).eq("client_organization_id", context.client.id).maybeSingle();
     if (!row.data?.stripe_customer_id) throw new ApiError("Choose a paid plan before opening billing management.", 409, "BILLING_ACCOUNT_REQUIRED");
-    const response = await fetch("https://api.stripe.com/v1/billing_portal/sessions", { method: "POST", headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ customer: row.data.stripe_customer_id, return_url: `${appBaseUrl()}/portal/client` }) });
-    const payload = await response.json() as { url?: string; error?: { message?: string } };
-    if (!response.ok || !payload.url) throw new ApiError(payload.error?.message ?? "Stripe could not open billing management.", 502, "BILLING_PROVIDER_FAILED");
+    const payload=await stripeForm<{url?:string;error?:{message?:string}}>("/v1/billing_portal/sessions",new URLSearchParams({customer:row.data.stripe_customer_id,return_url:`${appBaseUrl()}/portal/client`}),`retail-portal-${input.projectId}-${request.headers.get("idempotency-key")!}`);
+    if (!payload.url) throw new ApiError("Stripe could not open billing management.", 502, "BILLING_PROVIDER_FAILED");
     return Response.json({ ok: true, url: payload.url });
   } catch (error) { return jsonError(error); }
 }

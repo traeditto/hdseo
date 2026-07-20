@@ -5,6 +5,7 @@ import { auditEvent } from "@/lib/automation/control-plane";
 import { encryptSecret,decryptSecret } from "@/lib/security/encryption";
 import { verifyIntegrationState } from "@/lib/security/signed-state";
 import { exchangeGoogleCode,googleAccountEmail,listSearchConsoleProperties,propertyMatchesDomain } from "@/lib/google/search-console";
+import {consumeIntegrationState} from "@/lib/security/integration-state-ledger";
 
 export async function GET(request:Request){
   const referenceId=crypto.randomUUID();
@@ -13,9 +14,8 @@ export async function GET(request:Request){
     if(providerError)throw new ApiError("Google authorization was cancelled or denied.",400,"GOOGLE_OAUTH_FAILED",referenceId);
     if(!code||!rawState)throw new ApiError("Google callback is missing its authorization code or state.",400,"INVALID_STATE",referenceId);
     const state=verifyIntegrationState(rawState,"google_search_console");
-    if(!state.oauthStateId||!state.clientId||!state.projectId||!state.setupAction)throw new ApiError("Google connection state is incomplete.",400,"INVALID_STATE",referenceId);
-    const db=getLiveAdminClient(),consumed=await db.rpc("consume_integration_oauth_state",{p_state_id:state.oauthStateId,p_nonce:state.setupAction}),oauthRow=consumed.data?.[0];
-    if(consumed.error||!oauthRow)throw new ApiError("Google connection state expired or was already used.",400,"INVALID_STATE",referenceId);
+    if(!state.oauthStateId||!state.clientId||!state.projectId)throw new ApiError("Google connection state is incomplete.",400,"INVALID_STATE",referenceId);
+    const db=getLiveAdminClient();await consumeIntegrationState(db,{rawState,state,provider:"google_search_console",callbackHost:url.host});
     const credentials=await exchangeGoogleCode(code);
     if(!credentials.refreshToken){
       const previous=await db.from("integration_connections").select("encrypted_secret_reference").eq("agency_id",state.agencyId).eq("client_organization_id",state.clientId).eq("project_id",state.projectId).eq("provider","google_search_console").maybeSingle();

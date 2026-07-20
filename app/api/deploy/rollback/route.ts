@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { resolveTenantContext,requirePermission } from "@/lib/auth/context";
 import { parseJson } from "@/lib/api/request";
+import {requireSecureRequestContext} from "@/lib/api/secure-request-context";
 import { jsonError,ApiError } from "@/lib/api/errors";
 import { auditEvent,enforceRateLimit,requireAdminDb } from "@/lib/automation/control-plane";
 import {assertMutationApproved,requestMutationIntent,type MutationAction} from "@/lib/safety/mutation-gateway";
 
 const schema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid(),projectId:z.string().uuid(),sourceDeploymentId:z.string().uuid(),targetDeploymentId:z.string().uuid(),idempotencyKey:z.string().min(12).max(200).optional(),mutationIntentId:z.string().uuid().optional()});
 export async function POST(request:Request){try{
-  const input=await parseJson(request,schema),context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});requirePermission(context,"deploy.rollback");
+  const input=await parseJson(request,schema),secure=await requireSecureRequestContext(request,{permission:"deploy.rollback",agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true,requireAal2:true}),context=secure.tenantContext;
   await enforceRateLimit(`${context.agency.id}:${context.user.id}`,"deploy.rollback",5,300);
   const db=requireAdminDb(),idempotencyKey=input.idempotencyKey??request.headers.get("idempotency-key")??`rollback:${input.sourceDeploymentId}:${input.targetDeploymentId}`;
   const action:MutationAction={agencyId:context.agency.id,clientId:input.clientId,projectId:input.projectId,toolKey:"vercel.rollback",resourceType:"deployment",resourceId:input.sourceDeploymentId,environment:"production",payload:{sourceDeploymentId:input.sourceDeploymentId,targetDeploymentId:input.targetDeploymentId}};

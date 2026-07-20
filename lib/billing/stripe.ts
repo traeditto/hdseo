@@ -11,7 +11,9 @@ async function stripeRequest<T extends StripeError>(path:string,init:RequestInit
   const response=await fetch(`https://api.stripe.com${path}`,{
     ...init,
     headers:{Authorization:`Bearer ${env.STRIPE_SECRET_KEY}`,...init.headers},
+    redirect:"error",cache:"no-store",signal:AbortSignal.timeout(15_000),
   });
+  if(Number(response.headers.get("content-length")||0)>2_000_000)throw new ApiError("Stripe response exceeded the permitted size.",502,"PROVIDER_RESPONSE_TOO_LARGE");
   const payload=await response.json() as T;
   return {response,payload};
 }

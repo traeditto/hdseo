@@ -2,7 +2,8 @@ import {z} from "zod";
 
 import {parseJson} from "@/lib/api/request";
 import {ApiError,jsonError} from "@/lib/api/errors";
-import {resolveTenantContext,requirePermission} from "@/lib/auth/context";
+import {resolveTenantContext} from "@/lib/auth/context";
+import {requireSecureRequestContext} from "@/lib/api/secure-request-context";
 import {auditEvent,requireAdminDb} from "@/lib/automation/control-plane";
 import {decideMutationIntent,guardedTools,requestMutationIntent,type GuardedTool,type MutationRisk} from "@/lib/safety/mutation-gateway";
 
@@ -12,7 +13,7 @@ const requestSchema=z.object({
   environment:z.string().trim().max(40).nullable().optional(),summary:z.string().trim().min(8).max(500),
   payload:z.record(z.string(),z.unknown()),idempotencyKey:z.string().trim().min(12).max(200),expiresInMinutes:z.number().int().min(5).max(1440).optional(),
 });
-const decisionSchema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid(),projectId:z.string().uuid(),intentId:z.string().uuid(),decision:z.enum(["approved","rejected"])});
+const decisionSchema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid(),projectId:z.string().uuid(),intentId:z.string().uuid(),decision:z.enum(["approved","rejected"]),confirmation:z.string().trim().max(40).optional()});
 
 const toolPolicy:Record<GuardedTool,{permission:string;risk:MutationRisk}>={
   "vercel.deploy":{permission:"deploy.create",risk:"high"},"vercel.rollback":{permission:"deploy.rollback",risk:"critical"},
@@ -30,9 +31,8 @@ export async function GET(request:Request){try{
 }catch(error){return jsonError(error)}}
 
 export async function POST(request:Request){try{
-  const input=await parseJson(request,requestSchema),context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});
+  const input=await parseJson(request,requestSchema),policy=toolPolicy[input.toolKey],secure=await requireSecureRequestContext(request,{permission:policy.permission,agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true,requireAal2:true}),context=secure.tenantContext;
   if(!context.project||!context.client)throw new ApiError("Project access is required.",403,"TENANT_DENIED");
-  const policy=toolPolicy[input.toolKey];requirePermission(context,policy.permission);
   if(input.toolKey==="vercel.deploy"&&input.environment==="preview")throw new ApiError("Preview deployments are policy-authorized automatically and do not need a human approval request.",409,"CONFLICT");
   const db=requireAdminDb(),intent=await requestMutationIntent(db,{action:{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,toolKey:input.toolKey,resourceType:input.resourceType,resourceId:input.resourceId,environment:input.environment,payload:input.payload},summary:input.summary,riskLevel:policy.risk,approvalPolicy:"human",requestedBy:context.user.id,idempotencyKey:input.idempotencyKey,expiresInMinutes:input.expiresInMinutes});
   await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"mutation.approval_requested",resourceType:"mutation_intent",resourceId:intent.id,request,afterState:{toolKey:input.toolKey,actionDigest:intent.action_digest,riskLevel:policy.risk,expiresAt:intent.expires_at}});
@@ -40,10 +40,9 @@ export async function POST(request:Request){try{
 }catch(error){return jsonError(error)}}
 
 export async function PATCH(request:Request){try{
-  const input=await parseJson(request,decisionSchema),context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});
+  const input=await parseJson(request,decisionSchema),secure=await requireSecureRequestContext(request,{permission:"execution.approve",agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true,requireAal2:true}),context=secure.tenantContext;
   if(!context.project||!context.client)throw new ApiError("Project access is required.",403,"TENANT_DENIED");
-  requirePermission(context,"execution.approve");
-  const db=requireAdminDb(),intent=await decideMutationIntent(db,{intentId:input.intentId,agencyId:context.agency.id,projectId:context.project.id,actorId:context.user.id,decision:input.decision});
+  const db=requireAdminDb(),intent=await decideMutationIntent(db,{intentId:input.intentId,agencyId:context.agency.id,projectId:context.project.id,actorId:context.user.id,decision:input.decision,confirmation:input.confirmation});
   await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:`mutation.${input.decision}`,resourceType:"mutation_intent",resourceId:input.intentId,request,afterState:{actionDigest:intent.action_digest,status:intent.status}});
   return Response.json({ok:true,intent});
 }catch(error){return jsonError(error)}}

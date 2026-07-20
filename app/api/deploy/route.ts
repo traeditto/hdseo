@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { resolveTenantContext, requirePermission } from "@/lib/auth/context";
 import { parseJson } from "@/lib/api/request";
+import {requireSecureRequestContext} from "@/lib/api/secure-request-context";
 import { jsonError, ApiError } from "@/lib/api/errors";
 import { auditEvent, enforceRateLimit, requireAdminDb } from "@/lib/automation/control-plane";
 import { env } from "@/lib/config/env";
@@ -9,7 +9,7 @@ import {assertMutationApproved,requestMutationIntent,type MutationAction} from "
 const schema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid(),projectId:z.string().uuid(),repositoryId:z.string().uuid(),vercelProjectId:z.string().uuid(),environment:z.enum(["preview","staging","production"]).default("preview"),gitRef:z.string().min(1).max(250).optional(),gitSha:z.string().regex(/^[a-f0-9]{7,40}$/i).optional(),priority:z.number().int().min(0).max(100).default(50),idempotencyKey:z.string().min(12).max(200).optional(),mutationIntentId:z.string().uuid().optional()});
 
 export async function POST(request:Request){try{
-  const input=await parseJson(request,schema),context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});requirePermission(context,"deploy.create");
+  const input=await parseJson(request,schema),secure=await requireSecureRequestContext(request,{permission:"deploy.create",agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true,requireAal2:true}),context=secure.tenantContext;
   await enforceRateLimit(`${context.agency.id}:${context.user.id}`,"deploy.create",20,60);
   const db=requireAdminDb(),active=await db.from("background_jobs").select("id",{count:"exact",head:true}).eq("agency_id",context.agency.id).in("status",["queued","running","retry_scheduled"]);
   if((active.count??0)>=env.AUTOMATION_MAX_CONCURRENT_PER_AGENCY)throw new ApiError("This agency has reached its concurrent deployment limit.",429,"RATE_LIMITED");

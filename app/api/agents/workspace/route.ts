@@ -14,7 +14,7 @@ const schema=z.discriminatedUnion("action",[
   z.object({action:z.literal("create"),projectId:z.string().uuid(),workType:z.enum(workTypes),goal:z.string().trim().min(10).max(1000).optional(),spendingLimit:z.number().min(0).max(100000).default(0)}),
   z.object({action:z.literal("run_team"),projectId:z.string().uuid(),spendingLimit:z.number().min(0).max(100000).default(0)}),
   z.object({action:z.literal("decide"),projectId:z.string().uuid(),approvalId:z.string().uuid(),decision:z.enum(["approved","rejected"]),note:z.string().trim().max(1000).optional()}),
-  z.object({action:z.literal("decide_mutation"),projectId:z.string().uuid(),intentId:z.string().uuid(),decision:z.enum(["approved","rejected"])}),
+  z.object({action:z.literal("decide_mutation"),projectId:z.string().uuid(),intentId:z.string().uuid(),decision:z.enum(["approved","rejected"]),confirmation:z.string().trim().max(40).optional()}),
   z.object({action:z.literal("control"),projectId:z.string().uuid(),workItemId:z.string().uuid(),command:z.enum(["cancel","retry"])}),
 ]);
 
@@ -46,7 +46,7 @@ export async function POST(request:Request){
     }else if(input.action==="decide_mutation"){
       const protectedAction=await context.db.from("mutation_intents").select("tool_key").eq("id",input.intentId).eq("agency_id",context.agencyId).eq("client_organization_id",context.clientId).eq("project_id",input.projectId).maybeSingle();if(!protectedAction.data)throw new ApiError("Protected action not found.",404,"NOT_FOUND");
       if(["vercel.rollback","cms.rollback"].includes(protectedAction.data.tool_key))await requireLiveAgencyProject({projectId:input.projectId,permission:"deploy.rollback"});
-      const intent=await decideMutationIntent(context.db,{intentId:input.intentId,agencyId:context.agencyId,projectId:input.projectId,actorId:context.userId,decision:input.decision});
+      const intent=await decideMutationIntent(context.db,{intentId:input.intentId,agencyId:context.agencyId,projectId:input.projectId,actorId:context.userId,decision:input.decision,confirmation:input.confirmation});
       await auditEvent({agencyId:context.agencyId,actorUserId:context.userId,action:`mutation.${input.decision}`,resourceType:"mutation_intent",resourceId:input.intentId,afterState:{actionDigest:intent.action_digest,status:intent.status},request});
     }else{
       await controlAgentWorkItem(context.db,tenant,input);

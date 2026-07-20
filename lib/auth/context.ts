@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ApiError } from "@/lib/api/errors";
 import { hasPermission, type AgencyRole } from "./permissions";
+import { requireAal2 } from "./mfa";
 
 export interface TenantContext {
   user: { id: string; email: string };
@@ -22,11 +23,12 @@ export interface ClientTenantContext {
   role: ClientRole;
 }
 
-export async function resolveTenantContext(input: { agencyId?: string; clientId?: string; projectId?: string; requireProject?: boolean } = {}): Promise<TenantContext> {
+export async function resolveTenantContext(input: { agencyId?: string; clientId?: string; projectId?: string; requireProject?: boolean; requireAal2?: boolean } = {}): Promise<TenantContext> {
   const db = await createSupabaseServerClient();
   if (!db) throw new ApiError("Supabase is not configured.", 503, "NOT_CONFIGURED");
   const { data: { user } } = await db.auth.getUser();
   if (!user?.email) throw new ApiError("Authentication required.", 401, "AUTH_REQUIRED");
+  if (input.requireAal2) await requireAal2(db);
   const store = await cookies();
   const agencyId = input.agencyId ?? store.get("hd_agency")?.value;
   let memberships = db.from("agency_members").select("agency_id,role,agencies(id,name,slug)").eq("user_id", user.id).eq("status", "active");

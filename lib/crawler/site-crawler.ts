@@ -1,8 +1,9 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
+import {Agent,fetch as pinnedFetch} from "undici";
 import { ApiError } from "@/lib/api/errors";
-import { assertPublicSiteUrl } from "@/lib/websites/url-security";
+import { assertPublicSiteUrl,resolvePinnedPublicSite } from "@/lib/websites/url-security";
 
 const MAX_RESPONSE_BYTES=2_000_000;
 const MAX_REDIRECTS=5;
@@ -31,15 +32,17 @@ async function limitedBody(response:Response){
 async function safeFetch(value:string,accept:string){
   let current=value;
   for(let redirects=0;redirects<=MAX_REDIRECTS;redirects++){
-    await assertPublicSiteUrl(current);
+    const pinned=await resolvePinnedPublicSite(current),address=pinned.addresses[0],family:4|6=address.family===6?6:4,dispatcher=new Agent({connect:{lookup:(hostname,_options,callback)=>{if(hostname!==pinned.hostname)return callback(new Error("CRAWL_HOST_CHANGED"),"",4);callback(null,address.address,family);}}});
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15_000);
     let response:Response;
-    try{response=await fetch(current,{headers:{accept,"user-agent":USER_AGENT},redirect:"manual",cache:"no-store",signal:controller.signal});}
-    catch{throw new ApiError("The website did not respond within the crawl safety limit.",503,"CRAWL_FAILED");}
+    try{response=await pinnedFetch(current,{headers:{accept,"user-agent":USER_AGENT,"accept-encoding":"gzip, br"},redirect:"manual",signal:controller.signal,dispatcher}) as unknown as Response;}
+    catch{await dispatcher.close();throw new ApiError("The website did not respond within the crawl safety limit.",503,"CRAWL_FAILED");}
     finally{clearTimeout(timer);}
-    if(response.status>=300&&response.status<400){const location=response.headers.get("location");if(!location)throw new ApiError("The website returned an invalid redirect.",502,"CRAWL_FAILED");current=new URL(location,current).toString();continue;}
-    const contentType=(response.headers.get("content-type")??"").toLowerCase(),content=await limitedBody(response);
-    return{response,contentType,...content,finalUrl:current};
+    try{
+      if(response.status>=300&&response.status<400){const location=response.headers.get("location");if(!location)throw new ApiError("The website returned an invalid redirect.",502,"CRAWL_FAILED");current=new URL(location,current).toString();continue;}
+      const contentType=(response.headers.get("content-type")??"").toLowerCase(),content=await limitedBody(response);
+      return{response,contentType,...content,finalUrl:current};
+    }finally{await dispatcher.close();}
   }
   throw new ApiError("The website exceeded the five-redirect crawl limit.",508,"CRAWL_FAILED");
 }

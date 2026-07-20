@@ -8,6 +8,7 @@ import { hasPermission, type AgencyRole } from "@/lib/auth/permissions";
 import { getLiveAdminClient, resolveLiveIdentity } from "@/lib/live/identity";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { IntegrationState } from "@/lib/security/signed-state";
+import { requireAal2 } from "@/lib/auth/mfa";
 
 export type GitHubManagementContext = {
   db: SupabaseClient;
@@ -68,6 +69,7 @@ export async function resolveGitHubManagementContext(input: { agencyId: string; 
   const session = await createSupabaseServerClient();
   const user = session ? (await session.auth.getUser()).data.user : null;
   if (!user?.email) throw new ApiError("Authentication required.", 401, "AUTH_REQUIRED");
+  await requireAal2(session!);
   return authorizeAgency(db, {userId:user.id,email:user.email,agencyId:input.agencyId,platformAdmin:await platformAdmin(db,user.id),clientId:input.clientId,projectId:input.projectId});
 }
 

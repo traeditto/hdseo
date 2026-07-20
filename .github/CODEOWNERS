@@ -1,0 +1,10 @@
+* @traeditto
+
+/app/api/ @traeditto
+/lib/auth/ @traeditto
+/lib/security/ @traeditto
+/lib/billing/ @traeditto
+/lib/safety/ @traeditto
+/supabase/migrations/ @traeditto
+/infra/ @traeditto
+/.github/workflows/ @traeditto

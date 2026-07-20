@@ -17,8 +17,10 @@ export async function vercelRequest<T>(path: string, credentials: VercelCredenti
   try {
     const response = await fetch(withScope(path, credentials), {
       ...options, cache: "no-store", signal: controller.signal,
+      redirect: "error",
       headers: { Authorization: `Bearer ${credentials.token}`, Accept: "application/json", "Content-Type": "application/json", ...(options.headers ?? {}) },
     });
+    if(Number(response.headers.get("content-length")||0)>10_000_000)throw new ApiError("Vercel response exceeded the permitted size.",502,"PROVIDER_RESPONSE_TOO_LARGE");
     if (!response.ok) {
       const providerRequestId = response.headers.get("x-vercel-id") ?? undefined;
       const providerCode = await response.json().then((value: { error?: { code?: string } }) => value.error?.code).catch(() => undefined);
@@ -62,7 +64,7 @@ export function promoteVercelDeployment(credentials: VercelCredentials, projectI
 }
 
 export async function exchangeVercelCode(code: string, clientId: string, clientSecret: string) {
-  const response = await fetch(`${API}/v2/oauth/access_token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: "https://hdseo.vercel.app/api/vercel/connect" }), cache: "no-store" });
+  const response = await fetch(`${API}/v2/oauth/access_token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: "https://hdseo.vercel.app/api/vercel/connect" }), cache: "no-store",redirect:"error",signal:AbortSignal.timeout(15_000) });
   if (!response.ok) throw new ApiError("Vercel authorization could not be completed.", 502, "OPERATION_FAILED");
   return await response.json() as { access_token: string; team_id?: string; user_id?: string; token_type?: string };
 }

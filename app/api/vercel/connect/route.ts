@@ -1,13 +1,14 @@
 import { z } from "zod";
-import { env } from "@/lib/config/env";
+import { env,appBaseUrl } from "@/lib/config/env";
 import { resolveTenantContext, requirePermission } from "@/lib/auth/context";
 import { parseJson } from "@/lib/api/request";
 import { jsonError, ApiError } from "@/lib/api/errors";
-import { createIntegrationState, verifyIntegrationState } from "@/lib/security/signed-state";
+import { verifyIntegrationState } from "@/lib/security/signed-state";
 import { encryptSecret } from "@/lib/security/encryption";
 import { auditEvent, enterpriseClientId, requireAdminDb } from "@/lib/automation/control-plane";
 import { addVercelProjectDomain, createVercelProject, exchangeVercelCode, getVercelProject, listVercelProjectDomains, vercelRequest, type VercelCredentials } from "@/lib/vercel/client";
 import { loadVercelCredentials } from "@/lib/vercel/credentials";
+import {consumeIntegrationState,issueIntegrationState} from "@/lib/security/integration-state-ledger";
 
 const beginSchema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid().optional(),projectId:z.string().uuid().optional()});
 const platformConnectionSchema=z.object({agencyId:z.string().uuid(),usePlatformToken:z.literal(true)});
@@ -31,29 +32,30 @@ export async function GET(request:Request){try{
   const url=new URL(request.url),code=url.searchParams.get("code"),stateValue=url.searchParams.get("state"),callbackTeamId=url.searchParams.get("teamId"),configurationId=url.searchParams.get("configurationId");
   if(code&&stateValue){
     if(!env.VERCEL_CLIENT_ID||!env.VERCEL_CLIENT_SECRET)throw new ApiError("Vercel OAuth is not configured.",503,"NOT_CONFIGURED");
-    const state=verifyIntegrationState(stateValue,"vercel_connect"),context=await resolveTenantContext({agencyId:state.agencyId,clientId:state.clientId,projectId:state.projectId,requireProject:Boolean(state.projectId)});requirePermission(context,"integrations.manage");
+    const state=verifyIntegrationState(stateValue,"vercel_connect"),context=await resolveTenantContext({agencyId:state.agencyId,clientId:state.clientId,projectId:state.projectId,requireProject:Boolean(state.projectId),requireAal2:true});requirePermission(context,"integrations.manage");
     if(context.user.id!==state.userId)throw new ApiError("The Vercel connection belongs to a different session.",403,"TENANT_DENIED");
+    await consumeIntegrationState(requireAdminDb(),{rawState:stateValue,state,provider:"vercel",callbackHost:url.host});
     const token=await exchangeVercelCode(code,env.VERCEL_CLIENT_ID,env.VERCEL_CLIENT_SECRET),saved=await storeConnection({agencyId:context.agency.id,userId:context.user.id,token:token.access_token,teamId:token.team_id??callbackTeamId,configurationId});
     await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"vercel.connection.connected",resourceType:"vercel_connection",resourceId:saved.id,request});
     return Response.redirect(new URL(`/portal/agency?vercel=connected&connectionId=${saved.id}`,"https://hdseo.vercel.app"),303);
   }
   if(!env.VERCEL_INTEGRATION_SLUG)throw new ApiError("Vercel Integration slug is not configured.",503,"NOT_CONFIGURED");
   const parsed=beginSchema.safeParse(Object.fromEntries(url.searchParams));if(!parsed.success)throw new ApiError("A valid agency is required.",400,"VALIDATION_ERROR");
-  const context=await resolveTenantContext({...parsed.data,requireProject:Boolean(parsed.data.projectId)});requirePermission(context,"integrations.manage");
-  const state=createIntegrationState({purpose:"vercel_connect",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,userId:context.user.id});
+  const context=await resolveTenantContext({...parsed.data,requireProject:Boolean(parsed.data.projectId),requireAal2:true});requirePermission(context,"integrations.manage");
+  const state=await issueIntegrationState(requireAdminDb(),{provider:"vercel",callbackHost:new URL("/api/vercel/connect",appBaseUrl()).host,state:{purpose:"vercel_connect",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,userId:context.user.id}});
   return Response.redirect(`https://vercel.com/integrations/${env.VERCEL_INTEGRATION_SLUG}/new?state=${encodeURIComponent(state)}`,307);
 }catch(error){return jsonError(error)}}
 
 export async function POST(request:Request){try{
   const input=await parseJson(request,z.union([platformConnectionSchema,connectSchema]));
   if("usePlatformToken" in input){
-    const context=await resolveTenantContext({agencyId:input.agencyId});requirePermission(context,"agency.manage");requirePermission(context,"integrations.manage");
+    const context=await resolveTenantContext({agencyId:input.agencyId,requireAal2:true});requirePermission(context,"agency.manage");requirePermission(context,"integrations.manage");
     if(!env.VERCEL_ACCESS_TOKEN)throw new ApiError("The platform Vercel token is not configured.",503,"NOT_CONFIGURED");
     const saved=await storeConnection({agencyId:context.agency.id,userId:context.user.id,token:env.VERCEL_ACCESS_TOKEN,teamId:env.VERCEL_TEAM_ID??null});
     await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"vercel.connection.platform_bound",resourceType:"vercel_connection",resourceId:saved.id,request,afterState:{teamId:env.VERCEL_TEAM_ID??null}});
     return Response.json({ok:true,connectionId:saved.id,status:"active"});
   }
-  const context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true});requirePermission(context,"integrations.manage");
+  const context=await resolveTenantContext({agencyId:input.agencyId,clientId:input.clientId,projectId:input.projectId,requireProject:true,requireAal2:true});requirePermission(context,"integrations.manage");
   const db=requireAdminDb(),repositoryResult=await db.from("repositories").select("id,full_name,default_branch").eq("id",input.repositoryId).eq("agency_id",context.agency.id).eq("project_id",input.projectId).single();
   if(!repositoryResult.data)throw new ApiError("Connected GitHub repository not found.",404,"NOT_FOUND");
   let connectionId=input.connectionId,credentials:VercelCredentials;

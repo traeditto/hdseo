@@ -6,6 +6,7 @@ import { encryptSecret,decryptSecret } from "@/lib/security/encryption";
 import { integrationStatePurpose,verifyIntegrationState } from "@/lib/security/signed-state";
 import { exchangeGoogleCode,googleAccountEmail } from "@/lib/google/search-console";
 import { listAnalyticsProperties,listBusinessAccounts,listBusinessLocations } from "@/lib/google/suite";
+import {consumeIntegrationState} from "@/lib/security/integration-state-ledger";
 
 export async function GET(request:Request){
   const referenceId=crypto.randomUUID();
@@ -16,9 +17,8 @@ export async function GET(request:Request){
     const purpose=integrationStatePurpose(rawState);
     if(purpose!=="google_analytics"&&purpose!=="google_business_profile")throw new ApiError("Google integration state is invalid.",400,"INVALID_STATE",referenceId);
     const state=verifyIntegrationState(rawState,purpose);
-    if(!state.oauthStateId||!state.clientId||!state.projectId||!state.setupAction)throw new ApiError("Google integration state is incomplete.",400,"INVALID_STATE",referenceId);
-    const db=getLiveAdminClient(),consumed=await db.rpc("consume_integration_oauth_state",{p_state_id:state.oauthStateId,p_nonce:state.setupAction});
-    if(consumed.error||!consumed.data?.[0])throw new ApiError("Google connection state expired or was already used.",400,"INVALID_STATE",referenceId);
+    if(!state.oauthStateId||!state.clientId||!state.projectId)throw new ApiError("Google integration state is incomplete.",400,"INVALID_STATE",referenceId);
+    const db=getLiveAdminClient();await consumeIntegrationState(db,{rawState,state,provider:purpose,callbackHost:url.host});
     const credentials=await exchangeGoogleCode(code,googleSuiteCallbackUrl());
     if(!credentials.refreshToken){const previous=await db.from("integration_connections").select("encrypted_secret_reference").eq("project_id",state.projectId).eq("provider",purpose).maybeSingle();if(previous.data?.encrypted_secret_reference)try{credentials.refreshToken=(JSON.parse(decryptSecret(previous.data.encrypted_secret_reference)) as {refreshToken?:string}).refreshToken??"";}catch{}}
     if(!credentials.refreshToken)throw new ApiError("Google did not issue offline access. Reconnect and approve access again.",409,"GOOGLE_OAUTH_FAILED",referenceId);

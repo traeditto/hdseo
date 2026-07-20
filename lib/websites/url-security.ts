@@ -32,3 +32,10 @@ export async function assertPublicSiteUrl(value:string){
   if(!addresses.length||addresses.some(item=>isPrivateAddress(item.address)))throw new ApiError("The website must resolve only to public internet addresses.",400,"WEBSITE_VERIFICATION_FAILED");
   return normalized;
 }
+
+export async function resolvePinnedPublicSite(value:string){
+  const normalized=normalizeSiteUrl(value),url=new URL(normalized.siteUrl);
+  let addresses:{address:string;family:number}[];try{addresses=await lookup(url.hostname,{all:true,verbatim:true});}catch{throw new ApiError("The website hostname could not be resolved.",400,"WEBSITE_VERIFICATION_FAILED");}
+  if(!addresses.length||addresses.some(item=>isPrivateAddress(item.address)))throw new ApiError("The website must resolve only to public internet addresses.",400,"WEBSITE_VERIFICATION_FAILED");
+  return{...normalized,hostname:url.hostname,addresses};
+}

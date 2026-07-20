@@ -17,6 +17,12 @@ const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
+  // These headers are injected by the Sites dispatcher and are not an
+  // authentication mechanism on the public Vercel application. A caller can
+  // set arbitrary HTTP headers, so accepting them on Vercel would cross the
+  // primary identity trust boundary.
+  if (process.env.VERCEL) return null;
+
   const requestHeaders = await headers();
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!email) return null;

@@ -1,0 +1,68 @@
+name: Security release gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dependency-and-secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {fetch-depth: 0}
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with: {version: 10}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: {node-version: 22.13.0, cache: pnpm}
+      - run: pnpm install --frozen-lockfile
+      - name: Block high and critical dependency vulnerabilities
+        run: pnpm audit --audit-level=high
+      - name: Scan repository history for credentials
+        uses: trufflesecurity/trufflehog@b84c3d14d189e16da175e2c27fa8136603783ffc # v3.90.12
+        with: {extra_args: --results=verified,unknown}
+      - name: Scan Terraform and configuration
+        uses: bridgecrewio/checkov-action@7b972723c44fb3d256283fac96fae5d7c1894bb7 # v12
+        with: {directory: infra, quiet: true, soft_fail: false}
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with: {path: ., format: spdx-json, output-file: hdseo.spdx.json}
+
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: github/codeql-action/init@ddf5ce7296213f5548c91e2dd19df2d77d2b2d66 # v3
+        with: {languages: javascript-typescript, queries: security-extended}
+      - uses: github/codeql-action/analyze@ddf5ce7296213f5548c91e2dd19df2d77d2b2d66 # v3
+
+  live-database-posture:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SECURITY_AUDIT_DATABASE_URL: ${{ secrets.SECURITY_AUDIT_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Fail on tenant tables without RLS or with browser grants
+        if: ${{ env.SECURITY_AUDIT_DATABASE_URL != '' }}
+        run: psql "$SECURITY_AUDIT_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/security/live-catalog-audit.sql
+
+  staging-dast:
+    if: ${{ github.event_name == 'schedule' && vars.STAGING_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: zaproxy/action-baseline@2b5fc7f98d837319798ab7f128ea50b7d40563b6 # v0.14.0
+        with:
+          target: ${{ vars.STAGING_URL }}
+          fail_action: true
