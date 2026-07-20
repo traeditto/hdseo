@@ -18,6 +18,9 @@ describe("self-service free trial", () => {
     expect(login).toContain("showSignupPassword");
     expect(login).toContain('aria-label={showSignupPassword?"Hide password":"Show password"}');
     expect(login).toContain("That confirmation link is invalid, expired, or was already used.");
+    expect(login).toContain("An account already exists for that email.");
+    expect(login).toContain("Resend verification email");
+    expect(login).toContain('db.auth.resend({type:"signup"');
     expect(login).toContain("One crawl of up to 25 public pages");
     expect(login).toContain("No credit card required");
     expect(marketing).toContain('href="/register"');
