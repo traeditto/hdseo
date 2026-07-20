@@ -129,17 +129,23 @@ export async function saveAttributionConnection(
         client_organization_id: tenant.clientId,
         project_id: tenant.projectId,
         provider: input.provider,
-        connection_type: "api_token",
+        connection_type:
+          input.provider === "hubspot" ? "service_key" : "api_token",
         status: "active",
         external_account_id: verified.externalAccountId,
         selected_resource: input.accountId ?? verified.externalAccountId,
         encrypted_secret_reference: encryptSecret(
           JSON.stringify({ token: input.token, accountId: input.accountId }),
         ),
-        scopes: ["read:outcomes"],
+        scopes:
+          input.provider === "hubspot"
+            ? ["crm.objects.contacts.read"]
+            : ["read:outcomes"],
         last_verified_at: now,
         metadata: {
           accountName: verified.accountName,
+          authentication:
+            input.provider === "hubspot" ? "service_key" : "api_v3_key",
           health: "ready",
           connectedAt: now,
         },
