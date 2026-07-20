@@ -12,7 +12,7 @@ test("the production home presents the HD SEO marketing experience",()=>{
   assert.match(source,/Get My Free 25-Page SEO Audit/);
   assert.match(source,/No credit card required/);
   assert.match(source,/UNVERIFIED/);
-  assert.match(shared,/href="\/login\/client"/);
+  assert.match(shared,/href="\/login"/);
   assert.match(source+shared,/href="\/agencies"/);
   assert.match(source,/href="\/audit"/);
   assert.match(shared,/href="\/pricing"/);
@@ -63,10 +63,15 @@ test("the conversion routes have specific metadata and honest placeholders",()=>
 });
 
 test("the agency login uses live verified identity without a demo fallback",()=>{
-  const source=read("app/ui/portal-login.tsx");
+  const source=read("app/ui/portal-login.tsx"),selector=read("app/ui/portal-role-selector.tsx"),hub=read("app/login/page.tsx");
   assert.match(source,/Sign in to \$\{copy\.title\}/);
   assert.match(source,/Continue with ChatGPT/);
   assert.match(source,/\/api\/auth\/portal-access/);
+  assert.match(source,/href="\/login"/);
+  assert.match(selector,/Admin/);
+  assert.match(selector,/Agency/);
+  assert.match(selector,/Business Owner/);
+  assert.match(hub,/portalRoles\.map/);
   assert.doesNotMatch(source,/Preview \{copy\.title\}/);
 });
 

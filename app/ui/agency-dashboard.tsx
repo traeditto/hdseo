@@ -123,7 +123,7 @@ export function AgencyDashboard({ portalAccess = false }: { portalAccess?: boole
           <button className="menu-button" onClick={() => setMobileNav(true)} aria-label="Open navigation">☰</button>
           <div className="breadcrumbs"><span>HD SEO Agency</span><b>/</b><strong>{active}</strong></div>
           <div className="top-actions">
-            {portalAccess && <Link className="portal-switch-link" href="/">Switch portal</Link>}
+            {portalAccess && <Link className="portal-switch-link" href="/login">Switch portal</Link>}
             <button onClick={() => open("search", "Search HD SEO", "Find clients, keywords, opportunities, tasks, and reports.")} aria-label="Search">⌕</button>
             <button className="notification" onClick={() => open("notifications", "Notifications", "Review important agency activity and alerts.")} aria-label="Notifications">♢{notifications > 0 && <i />}</button>
             <button className="add-client" onClick={() => open("add-client", "Add a client", "Create the client organization and its first SEO project.")}>＋ Add client</button>
