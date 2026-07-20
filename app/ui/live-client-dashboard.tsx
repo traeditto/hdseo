@@ -58,7 +58,7 @@ type GrowthProfile = {
 };
 type Subscription = {
   projectId: string;
-  planKey: "free_audit" | "starter" | "growth" | "pro";
+  planKey: "free_audit" | "starter" | "growth" | "pro" | "autopilot_plus";
   status: string;
   billingInterval: string;
   priceCents: number;
@@ -164,8 +164,9 @@ const goalLabels: Record<string, string> = {
 const planLabels: Record<string, string> = {
   free_audit: "Free Audit",
   starter: "Essentials",
-  growth: "Growth",
-  pro: "Scale",
+  growth: "Growth Copilot",
+  pro: "Autopilot",
+  autopilot_plus: "Autopilot Plus",
 };
 const splitList = (value: FormDataEntryValue | null) =>
   String(value ?? "")
@@ -1801,19 +1802,25 @@ function BusinessSettings({
             ],
             [
               "growth",
-              "Growth",
+              "Growth Copilot",
               "$499",
-              "Consistent implementation, publishing and outcome tracking",
+              "Operate six guided SEO workflows with evidence, controls and validation",
             ],
             [
               "pro",
-              "Scale",
+              "Autopilot",
               "$999",
-              "Multi-site and multi-location execution with advanced controls",
+              "Six managed actions, one major page and 30 minutes of human strategy",
+            ],
+            [
+              "autopilot_plus",
+              "Autopilot Plus",
+              "$1,299",
+              "Ten managed actions, two major pages and 60 minutes of human strategy",
             ],
           ].map(([key, name, price, detail]) => (
-            <article className={key === "growth" ? "featured" : ""} key={key}>
-              <small>{key === "growth" ? "RECOMMENDED" : "MONTHLY"}</small>
+            <article className={key === "pro" ? "featured" : ""} key={key}>
+              <small>{key === "pro" ? "BEST VALUE" : "MONTHLY"}</small>
               <h3>{name}</h3>
               <strong>
                 {price}

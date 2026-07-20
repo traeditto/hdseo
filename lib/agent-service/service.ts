@@ -21,6 +21,8 @@ async function enforcePaidEnrollment(db:SupabaseClient,tenant:AgentServiceTenant
     const subscription=await db.from("client_subscriptions").select("plan_key,status").eq("project_id",tenant.projectId).maybeSingle();
     if(!subscription.data||!["trialing","active"].includes(subscription.data.status))throw new ApiError("Choose an active HD SEO plan before turning on Autopilot.",402,"SUBSCRIPTION_REQUIRED");
     if(subscription.data.plan_key!==input.planKey)throw new ApiError("This service level does not match the business subscription.",409,"PLAN_MISMATCH");
+    const expectedMode=["pro","autopilot_plus"].includes(input.planKey)?"managed_agent":"copilot";
+    if(input.serviceMode!==expectedMode)throw new ApiError(expectedMode==="managed_agent"?"Choose Autopilot or Autopilot Plus for managed agent execution.":"This plan includes Copilot controls, not managed agent execution.",409,"PLAN_MISMATCH");
     return;
   }
   if(!["agency_core","agency_scale"].includes(input.planKey))throw new ApiError("Agency subscriptions support Managed Core or Managed Scale client service.",400,"PLAN_MISMATCH");
@@ -44,6 +46,7 @@ export async function enrollAgentService(db:SupabaseClient,tenant:AgentServiceTe
   const payload={agency_id:tenant.agencyId,client_organization_id:tenant.clientId,client_id:clientId,project_id:tenant.projectId,created_by:tenant.userId,
     service_mode:input.serviceMode,operator_brand:input.operatorBrand,approval_owner:input.approvalOwner,billing_owner:input.billingOwner,plan_key:input.planKey,
     status:existing.data?.status==="past_due"?"past_due":"active",monthly_action_limit:entitlements.monthlyActionLimit,
+    monthly_major_page_limit:entitlements.monthlyMajorPageLimit,
     monthly_provider_budget:entitlements.monthlyProviderBudget,monthly_human_review_minutes:entitlements.humanReviewMinutes,
     cycle_cadence_hours:entitlements.cycleCadenceHours,next_cycle_at:now(),allowed_tools:input.allowedTools?.length?input.allowedTools:[...defaultManagedTools],
     resale_price_cents:Math.max(0,input.resalePriceCents??0),pause_reason:null,updated_at:now()};
@@ -70,7 +73,7 @@ export async function changeAgentServicePlan(db:SupabaseClient,tenant:AgentServi
   const current=await db.from("agent_service_enrollments").select("billing_owner,operator_brand,approval_owner,service_mode").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
   if(!current.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
   await enforcePaidEnrollment(db,tenant,{planKey,serviceMode:current.data.service_mode,operatorBrand:current.data.operator_brand,approvalOwner:current.data.approval_owner,billingOwner:current.data.billing_owner},tenant.projectId);
-  const plan=planEntitlements(planKey),result=await db.from("agent_service_enrollments").update({plan_key:planKey,monthly_action_limit:plan.monthlyActionLimit,monthly_provider_budget:plan.monthlyProviderBudget,monthly_human_review_minutes:plan.humanReviewMinutes,cycle_cadence_hours:plan.cycleCadenceHours,updated_at:now()}).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("*").maybeSingle();
+  const plan=planEntitlements(planKey),result=await db.from("agent_service_enrollments").update({plan_key:planKey,monthly_action_limit:plan.monthlyActionLimit,monthly_major_page_limit:plan.monthlyMajorPageLimit,monthly_provider_budget:plan.monthlyProviderBudget,monthly_human_review_minutes:plan.humanReviewMinutes,cycle_cadence_hours:plan.cycleCadenceHours,updated_at:now()}).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("*").maybeSingle();
   if(result.error||!result.data)throw new ApiError("Managed agent service is not enrolled for this project.",404,"NOT_FOUND");
   return result.data;
 }
@@ -107,7 +110,8 @@ export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentSe
     db.from("agent_work_items").select("id,work_type,goal,assigned_agent_key,status,risk_level,spending_limit,spent_amount,final_outcome,updated_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).not("status","in","(succeeded,cancelled,failed,dead_letter)").order("priority",{ascending:false}).limit(30),
     db.from("agent_approvals").select("id,work_item_id,approval_type,title,summary,risk_level,status,requested_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).eq("status","awaiting").order("requested_at",{ascending:false}).limit(30),
   ]):[{data:[]},{data:[]}];
-  return{enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],summary:{actionsRemaining:Math.max(0,enrollment.data.monthly_action_limit-enrollment.data.actions_used)+Number(enrollment.data.purchased_action_balance??0),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
+  const majorPagesUsed=(usage.data??[]).filter(item=>item.usage_type==="page_build").reduce((sum,item)=>sum+Number(item.quantity??0),0);
+  return{enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],summary:{actionsRemaining:Math.max(0,enrollment.data.monthly_action_limit-enrollment.data.actions_used)+Number(enrollment.data.purchased_action_balance??0),majorPagesRemaining:Math.max(0,Number(enrollment.data.monthly_major_page_limit??0)-majorPagesUsed),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
 }
 
 export async function resolveAgentServiceEscalation(db:SupabaseClient,tenant:AgentServiceTenant,id:string,resolution:string){

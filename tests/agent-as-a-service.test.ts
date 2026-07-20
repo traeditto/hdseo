@@ -19,9 +19,11 @@ describe("Agent-as-a-Service",()=>{
   });
 
   it("provides bounded direct and white-label service plans",()=>{
-    expect(agentServicePlans.growth.monthlyActionLimit).toBeGreaterThan(0);
+    expect(agentServicePlans.growth).toMatchObject({label:"Growth Copilot",monthlyActionLimit:6,monthlyMajorPageLimit:0,humanReviewMinutes:0});
+    expect(agentServicePlans.pro).toMatchObject({label:"Autopilot",monthlyActionLimit:6,monthlyMajorPageLimit:1,humanReviewMinutes:30});
+    expect(agentServicePlans.autopilot_plus).toMatchObject({label:"Autopilot Plus",monthlyActionLimit:10,monthlyMajorPageLimit:2,humanReviewMinutes:60});
     expect(agentServicePlans.agency_scale.cycleCadenceHours).toBeLessThan(agentServicePlans.agency_core.cycleCadenceHours);
-    expect(planEntitlements("unknown")).toEqual(agentServicePlans.growth);
+    expect(planEntitlements("unknown")).toEqual(agentServicePlans.starter);
     expect(defaultManagedTools).toContain("opportunities.score");
     expect(defaultManagedTools).not.toContain("dns.write");
     expect(defaultManagedTools).not.toContain("legal.publish");
@@ -50,7 +52,7 @@ describe("Agent-as-a-Service",()=>{
 
   it("gives agencies a managed-client workspace and owners a simple Autopilot view",()=>{
     const panel=read("app/ui/agent-service-panel.tsx"),agency=read("app/ui/live-agency-dashboard.tsx"),client=read("app/ui/live-client-dashboard.tsx");
-    for(const text of ["HD SEO AUTOPILOT","WHITE-LABEL AGENT TEAM","No busywork","Plain-language approval inbox","ACTIONS LEFT","PROVIDER BUDGET LEFT"])expect(panel).toContain(text);
+    for(const text of ["HD SEO AUTOPILOT","WHITE-LABEL AGENT TEAM","No busywork","Plain-language approval inbox","ACTIONS LEFT","MAJOR PAGES LEFT","INTERNAL COST CAP LEFT"])expect(panel).toContain(text);
     expect(agency).toContain('"Agent Service"');
     expect(client).toContain('["autopilot", "Autopilot"');
   });
@@ -60,7 +62,18 @@ describe("Agent-as-a-Service",()=>{
     expect(checkout).toContain("metadata[plan_key]");
     expect(webhook).toContain("agent_service_enrollments");
     expect(webhook).toContain('kind==="agent_capacity"');
+    expect(webhook).toContain('planKey==="pro"||planKey==="autopilot_plus"?"managed_agent":"copilot"');
+    expect(env).toContain("STRIPE_PRICE_AUTOPILOT_PLUS_MONTHLY=");
     expect(env).toContain("STRIPE_PRICE_AGENT_CAPACITY=");
+  });
+
+  it("enforces major-page capacity as an idempotent database entitlement",()=>{
+    const sql=read("supabase/migrations/0034_profit_aligned_retail_pricing.sql"),execution=read("lib/jobs/stages/execution.ts");
+    expect(sql).toContain("consume_agent_service_major_page");
+    expect(sql).toContain("MAJOR_PAGE_CAPACITY_EXCEEDED");
+    expect(sql).toContain("monthly_major_page_limit");
+    expect(execution).toContain("reserveManagedMajorPage");
+    expect(execution).toContain("consume_agent_service_major_page");
   });
 
   it("hard-stops model and provider costs before they can erase margin",()=>{

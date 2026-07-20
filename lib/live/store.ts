@@ -248,7 +248,7 @@ export type LiveClientGrowthProfile = {
 
 export type LiveClientSubscription = {
   projectId: string;
-  planKey: "free_audit" | "starter" | "growth" | "pro";
+  planKey: "free_audit" | "starter" | "growth" | "pro" | "autopilot_plus";
   status: string;
   billingInterval: string;
   priceCents: number;

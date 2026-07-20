@@ -39,8 +39,11 @@ describe("retail business-owner experience", () => {
     expect(webhook).toContain("WEBHOOK_REPLAY_REJECTED");
     expect(webhook).toContain("PAYMENT_VERIFICATION_FAILED");
     expect(webhook).toContain("Stripe webhook signature is missing.");
-    for (const amount of ["19_900", "49_900", "99_900"]) expect(catalog).toContain(amount);
-    for (const price of ["$199", "$499", "$999"]) expect(portal).toContain(price);
+    for (const amount of ["19_900", "49_900", "99_900", "129_900"]) expect(catalog).toContain(amount);
+    for (const price of ["$199", "$499", "$999", "$1,299"]) expect(portal).toContain(price);
+    expect(catalog).toContain('growth: { label: "Growth Copilot"');
+    expect(catalog).toContain('pro: { label: "Autopilot"');
+    expect(catalog).toContain('autopilot_plus: { label: "Autopilot Plus"');
   });
 
   it("opens the client portal for verified first-run retail accounts without exposing tenant data", () => {

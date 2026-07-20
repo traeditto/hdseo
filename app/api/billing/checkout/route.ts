@@ -8,7 +8,7 @@ import { getLiveAdminClient } from "@/lib/live/identity";
 
 const schema = z.object({
   projectId: z.string().uuid(),
-  planKey: z.enum(["starter", "growth", "pro"]),
+  planKey: z.enum(["starter", "growth", "pro", "autopilot_plus"]),
 });
 async function stripe(path: string, body: URLSearchParams) {
   if (!env.STRIPE_SECRET_KEY) throw new ApiError("Stripe billing is not configured yet.", 503, "NOT_CONFIGURED");
@@ -27,7 +27,12 @@ export async function POST(request: Request) {
     const input = await parseJson(request, schema);
     const context = await resolveClientContext({ projectId: input.projectId, requireProject: true });
     if (context.role !== "client_admin") throw new ApiError("Only the business owner can change the plan.", 403, "ROLE_FORBIDDEN");
-    const priceId = input.planKey === "starter" ? env.STRIPE_PRICE_STARTER_MONTHLY : input.planKey === "growth" ? env.STRIPE_PRICE_GROWTH_MONTHLY : env.STRIPE_PRICE_PRO_MONTHLY;
+    const priceId = {
+      starter: env.STRIPE_PRICE_STARTER_MONTHLY,
+      growth: env.STRIPE_PRICE_GROWTH_MONTHLY,
+      pro: env.STRIPE_PRICE_PRO_MONTHLY,
+      autopilot_plus: env.STRIPE_PRICE_AUTOPILOT_PLUS_MONTHLY,
+    }[input.planKey];
     if (!priceId) throw new ApiError(`The ${input.planKey} Stripe price is not configured.`, 503, "NOT_CONFIGURED");
     const db = getLiveAdminClient();
     const subscription = await db.from("client_subscriptions").select("id,stripe_customer_id").eq("project_id", input.projectId).eq("client_organization_id", context.client.id).maybeSingle();
