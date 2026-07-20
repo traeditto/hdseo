@@ -9,18 +9,18 @@ describe("self-service free trial", () => {
   it("has a dedicated verified signup path with an honest bounded offer", () => {
     const register = read("app/register/page.tsx");
     const login = read("app/ui/portal-login.tsx");
+    const signup = read("app/api/auth/signup/route.ts");
     const marketing = read("app/marketing-home.tsx") + read("app/marketing-shared.tsx");
 
     expect(register).toContain('initialMode="signup"');
-    expect(login).toContain("self_service_free_trial");
-    expect(login).toContain("emailRedirectTo");
+    expect(signup).toContain("self_service_free_trial");
+    expect(signup).toContain("emailRedirectTo");
     expect(login).toContain("productionAuthOrigin");
     expect(login).toContain("showSignupPassword");
     expect(login).toContain('aria-label={showSignupPassword?"Hide password":"Show password"}');
     expect(login).toContain("That confirmation link is invalid, expired, or was already used.");
-    expect(login).toContain("An account already exists for that email.");
     expect(login).toContain("Resend verification email");
-    expect(login).toContain('db.auth.resend({type:"signup"');
+    expect(read("app/api/auth/recovery/route.ts")).toContain('db.auth.resend({type:"signup"');
     expect(login).toContain("One crawl of up to 25 public pages");
     expect(login).toContain("No credit card required");
     expect(marketing).toContain('href="/register"');
@@ -37,12 +37,12 @@ describe("self-service free trial", () => {
   });
 
   it("completes password recovery instead of returning users to a dead-end login", () => {
-    const login = read("app/ui/portal-login.tsx");
+    const recovery = read("app/api/auth/recovery/route.ts");
     const callback = read("app/auth/callback/route.ts");
     const reset = read("app/ui/reset-password-form.tsx");
 
-    expect(login).toContain("/reset-password?portal=${portal}");
-    expect(login).toContain("/auth/callback?next=");
+    expect(recovery).toContain("/reset-password?portal=${input.portal}");
+    expect(recovery).toContain("/auth/callback?next=");
     expect(callback).toContain('next.startsWith("/reset-password")');
     expect(reset).toContain("db.auth.updateUser({password})");
     expect(reset).toContain("Save password and continue");

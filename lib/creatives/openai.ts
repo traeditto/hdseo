@@ -4,6 +4,7 @@ import {env} from "@/lib/config/env";
 import {ApiError,logServerError} from "@/lib/api/errors";
 import type {SupabaseClient} from "@supabase/supabase-js";
 import {calculateModelCost,estimateMaximumModelCost,reserveModelCost,settleModelCost,type CostTenant,type TokenUsage} from "@/lib/agent-service/cost-control";
+import {buildAgentEvidenceEnvelope,UNTRUSTED_EVIDENCE_POLICY} from "@/lib/agents/untrusted-evidence";
 
 const section=z.object({heading:z.string().min(2),purpose:z.string().min(2),body:z.string().min(40),evidenceIds:z.array(z.string().uuid())});
 const faq=z.object({question:z.string().min(5),answer:z.string().min(20)});
@@ -33,12 +34,13 @@ function outputText(payload:Record<string,unknown>){
 
 export async function generateEvidenceConstrainedCreative(input:Record<string,unknown>,costContext:{db:SupabaseClient;tenant:CostTenant;idempotencyKey:string}){
   if(!env.OPENAI_API_KEY)throw new ApiError("Connect the HD SEO creative model before generating production copy.",503,"NOT_CONFIGURED");
-  const referenceId=crypto.randomUUID(),serialized=JSON.stringify(input),estimatedCost=estimateMaximumModelCost(env.OPENAI_CREATIVE_MODEL,serialized,env.OPENAI_CREATIVE_MAX_OUTPUT_TOKENS);
+  const envelope=buildAgentEvidenceEnvelope({policyContext:{tenant:{agencyId:costContext.tenant.agencyId,clientId:costContext.tenant.clientId,projectId:costContext.tenant.projectId},purpose:"evidence_constrained_seo_creative",authorizedTools:[]},userRequest:{spec:input.spec},untrustedEvidence:{verifiedProof:input.verifiedProof,approvedClaims:input.approvedClaims}});
+  const referenceId=crypto.randomUUID(),serialized=JSON.stringify(envelope),estimatedCost=estimateMaximumModelCost(env.OPENAI_CREATIVE_MODEL,serialized,env.OPENAI_CREATIVE_MAX_OUTPUT_TOKENS);
   const reservation=await reserveModelCost(costContext.db,costContext.tenant,{operation:"creative.generate",model:env.OPENAI_CREATIVE_MODEL,estimatedCost,idempotencyKey:costContext.idempotencyKey,metadata:{referenceId}});
   try{
     const response=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{authorization:`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json",...(env.OPENAI_PROJECT_ID?{"OpenAI-Project":env.OPENAI_PROJECT_ID}:{})},body:JSON.stringify({
       model:env.OPENAI_CREATIVE_MODEL,store:false,reasoning:{effort:"low"},max_output_tokens:env.OPENAI_CREATIVE_MAX_OUTPUT_TOKENS,
-      instructions:"You are HD SEO's production Content Agent. Create useful, specific, people-first copy that directly satisfies the supplied search intent. Use ONLY verified proof and approved claims in the input. Never invent jobs, people, reviews, credentials, prices, guarantees, years in business, service areas, or performance results. Do not use empty superlatives. If evidence is insufficient, omit the claim. Each section must list the exact proof or claim IDs that support it; use an empty list only for purely instructional language. Every claimIdsUsed, proofAssetIdsUsed, and evidenceIds value must be copied exactly from the supplied records. Follow the required sections, page ownership, internal-link plan, and restrictions. Return only the requested structured object.",
+      instructions:`You are HD SEO's production Content Agent. ${UNTRUSTED_EVIDENCE_POLICY} Create useful, specific, people-first copy that directly satisfies policyContext and userRequest. Use ONLY verified proof and approved claims in untrustedEvidence as facts. Never invent jobs, people, reviews, credentials, prices, guarantees, years in business, service areas, or performance results. Do not use empty superlatives. If evidence is insufficient, omit the claim. Each section must list the exact proof or claim IDs that support it; use an empty list only for purely instructional language. Every claimIdsUsed, proofAssetIdsUsed, and evidenceIds value must be copied exactly from the supplied records. Return only the requested structured object.`,
       input:serialized,text:{format:{type:"json_schema",name:"hd_seo_creative",strict:true,schema:jsonSchema}}
     })});
     const payload=await response.json() as Record<string,unknown>;

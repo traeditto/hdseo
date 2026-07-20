@@ -31,6 +31,23 @@ const worker = {
     setRuntimeEnvironment(env);
     const url = new URL(request.url);
 
+    const privileged = url.pathname === "/login" ||
+      url.pathname.startsWith("/login/") ||
+      url.pathname === "/portal" ||
+      url.pathname.startsWith("/portal/") ||
+      url.pathname === "/admin" ||
+      url.pathname.startsWith("/admin/") ||
+      url.pathname === "/api" ||
+      url.pathname.startsWith("/api/") ||
+      url.pathname.startsWith("/reset-password") ||
+      url.pathname.startsWith("/signin-with-chatgpt") ||
+      url.pathname.startsWith("/signout-with-chatgpt") ||
+      url.pathname.startsWith("/callback");
+    if (privileged) {
+      const canonical = new URL(`${url.pathname}${url.search}`, "https://hdseo.vercel.app");
+      return Response.redirect(canonical, 307);
+    }
+
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {

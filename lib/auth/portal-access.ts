@@ -1,6 +1,5 @@
 import "server-only";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { platformAdminEmails } from "@/lib/config/env";
 import type { PortalIdentity,PortalRole } from "./portal-types";
 
 export async function resolvePortalAccess(portal:PortalRole):Promise<PortalIdentity|null>{
@@ -8,7 +7,6 @@ export async function resolvePortalAccess(portal:PortalRole):Promise<PortalIdent
   const {data:{user}}=await db.auth.getUser();if(!user?.email)return null;
   const displayName=String(user.user_metadata?.full_name||user.user_metadata?.name||user.email.split("@")[0]);
   if(portal==="admin"){
-    if(platformAdminEmails.has(user.email.toLowerCase()))return {userId:user.id,email:user.email,displayName,organization:"HD SEO Platform",role:"platform_owner",destination:"/portal/admin"};
     const result=await db.from("platform_admins").select("role,status").eq("user_id",user.id).eq("status","active").maybeSingle();
     return result.data?{userId:user.id,email:user.email,displayName,organization:"HD SEO Platform",role:result.data.role,destination:"/portal/admin"}:null;
   }

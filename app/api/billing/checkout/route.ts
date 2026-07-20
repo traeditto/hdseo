@@ -17,6 +17,7 @@ const schema = z.object({
 export async function POST(request: Request) {
   try {
     const input = await parseJson(request, schema);
+    const requestKey=request.headers.get("idempotency-key")!;
     const context = await resolveClientContext({ projectId: input.projectId, requireProject: true });
     if (context.role !== "client_admin") throw new ApiError("Only the business owner can change the plan.", 403, "ROLE_FORBIDDEN");
     const plan=retailBillingPlans[input.planKey],beta=isFoundingBetaOffer(input.offerKey);
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
       let customerId = subscription.data.stripe_customer_id as string | null;
       if (!customerId) {
         const customerBody = new URLSearchParams({ email: context.user.email, "metadata[agency_id]": context.agency.id, "metadata[client_id]": context.client.id, "metadata[project_id]": input.projectId });
-        const customer = await stripeForm<{id?:string;error?:{message?:string}}>("/v1/customers", customerBody);
+        const customer = await stripeForm<{id?:string;error?:{message?:string}}>("/v1/customers", customerBody,`retail-customer-${context.client.id}-${requestKey}`);
         if (!customer.id) throw new ApiError("Stripe did not return a customer ID.", 502, "BILLING_PROVIDER_FAILED");
         customerId = customer.id;
         await db.from("client_subscriptions").update({ stripe_customer_id: customerId, updated_at: new Date().toISOString() }).eq("id", subscription.data.id);
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
       const base = appBaseUrl(),expectedAmount=beta?plan.beta.priceCents:plan.priceCents;
       const body = new URLSearchParams({customer: customerId,mode: "subscription",success_url: `${base}/portal/client?billing=success`,cancel_url: `${base}/portal/client?billing=canceled`,client_reference_id: input.projectId,"line_items[0][price]": priceId,"line_items[0][quantity]": "1","metadata[kind]":"retail_subscription","metadata[agency_id]": context.agency.id,"metadata[client_id]": context.client.id,"metadata[project_id]": input.projectId,"metadata[plan_key]": input.planKey,"metadata[expected_amount_cents]":String(expectedAmount),"subscription_data[metadata][kind]":"retail_subscription","subscription_data[metadata][agency_id]": context.agency.id,"subscription_data[metadata][client_id]": context.client.id,"subscription_data[metadata][project_id]": input.projectId,"subscription_data[metadata][plan_key]": input.planKey});
       if(beta&&couponId&&reservationId){body.set("discounts[0][coupon]",couponId);body.set("metadata[offer_key]",FOUNDING_BETA_OFFER_KEY);body.set("metadata[beta_reservation_id]",reservationId);body.set("metadata[max_all_in_cost_cents]",String(plan.beta.maxAllInCostCents));body.set("metadata[included_founder_minutes]",String(plan.beta.includedFounderMinutes));body.set("subscription_data[metadata][offer_key]",FOUNDING_BETA_OFFER_KEY);}
-      const session = await stripeForm<{id?:string;url?:string;error?:{message?:string}}>("/v1/checkout/sessions", body);
+      const session = await stripeForm<{id?:string;url?:string;error?:{message?:string}}>("/v1/checkout/sessions", body,`retail-checkout-${input.projectId}-${requestKey}`);
       if (!session.id||!session.url) throw new ApiError("Stripe did not return a checkout URL.", 502, "BILLING_PROVIDER_FAILED");
       if(reservationId){const attached=await db.rpc("attach_beta_checkout",{p_reservation_id:reservationId,p_checkout_session_id:session.id});if(attached.error)throw new ApiError("Founding Beta checkout could not be attached to its reservation.",503,"DATABASE_BINDING_FAILED");}
       return Response.json({ ok: true, url: session.url });

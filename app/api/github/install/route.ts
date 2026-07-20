@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { env, hasGitHubInstallConfig, appBaseUrl, githubCallbackUrl } from "@/lib/config/env";
-import { createIntegrationState } from "@/lib/security/signed-state";
 import { jsonError, ApiError } from "@/lib/api/errors";
 import { getAuthenticatedApp } from "@/lib/github/app-client";
 import { resolveGitHubManagementContext } from "@/lib/github/integration-context";
 import { findExistingInstallation } from "@/lib/github/installation-binding";
+import {issueIntegrationState} from "@/lib/security/integration-state-ledger";
 
 const querySchema = z.object({ agencyId:z.string().uuid(), clientId:z.string().uuid().optional(), projectId:z.string().uuid().optional(), returnUrl:z.string().max(500).optional() });
 
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
     const returnUrl=safeReturnUrl(parsed.data.returnUrl);
     const existingInstallationId=await findExistingInstallation(context);
     if(existingInstallationId){
-      const bindState=createIntegrationState({purpose:"github_bind",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,returnUrl,userId:context.user.id,installationId:existingInstallationId,setupAction:"existing"});
+      const bindState=await issueIntegrationState(context.db,{provider:"github",callbackHost:new URL(githubCallbackUrl()).host,state:{purpose:"github_bind",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,returnUrl,userId:context.user.id,installationId:existingInstallationId,setupAction:"existing"}});
       const authorizeUrl=new URL("https://github.com/login/oauth/authorize");
       authorizeUrl.searchParams.set("client_id",env.GITHUB_CLIENT_ID!);
       authorizeUrl.searchParams.set("redirect_uri",githubCallbackUrl());
@@ -34,7 +34,7 @@ export async function GET(request: Request) {
       console.info("[github.install] existing installation detected",{appSlug,installationId:existingInstallationId,agencyId:context.agency.id,clientId:context.client?.id??null,projectId:context.project?.id??null,flow:"verify_and_bind"});
       return Response.redirect(authorizeUrl,303);
     }
-    const state = createIntegrationState({ purpose:"github_install", agencyId:context.agency.id, clientId:context.client?.id, projectId:context.project?.id, returnUrl, userId:context.user.id });
+    const state = await issueIntegrationState(context.db,{provider:"github",callbackHost:new URL("/api/github/setup",appBaseUrl()).host,state:{purpose:"github_install",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,returnUrl,userId:context.user.id}});
     const installationUrl = new URL(`https://github.com/apps/${appSlug}/installations/new`);
     installationUrl.searchParams.set("state", state);
     console.info("[github.install] redirect",{appSlug,configuredSlug:env.GITHUB_APP_SLUG,installationUrlBase:installationUrl.origin+installationUrl.pathname,agencyId:context.agency.id,clientId:context.client?.id??null,projectId:context.project?.id??null});

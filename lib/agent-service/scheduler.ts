@@ -5,13 +5,22 @@ import {ApiError} from "@/lib/api/errors";
 import {enqueueAgentWorkItem} from "@/lib/agents/control-plane";
 import {getLiveAdminClient} from "@/lib/live/identity";
 
-type Enrollment={id:string;agency_id:string;client_organization_id:string;client_id:string;project_id:string;created_by:string|null;approval_owner:"agency"|"client"|"both";monthly_action_limit:number;actions_used:number;monthly_provider_budget:number;provider_spend_used:number;cycle_cadence_hours:number;status:string;risk_ceiling:"low"|"medium"|"high";allowed_tools:string[];external_spend_requires_approval:boolean};
+type Enrollment={id:string;agency_id:string;client_organization_id:string;client_id:string;project_id:string;created_by:string|null;approval_owner:"agency"|"client"|"both";monthly_action_limit:number;actions_used:number;monthly_provider_budget:number;provider_spend_used:number;cycle_cadence_hours:number;status:string;risk_ceiling:"low"|"medium"|"high";allowed_tools:string[];external_spend_requires_approval:boolean;worker_id:string|null};
 const terminal=new Set(["succeeded","blocked","failed","cancelled","dead_letter"]),now=()=>new Date().toISOString();
 const object=(value:unknown)=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const number=(value:unknown)=>Number.isFinite(Number(value))?Number(value):0;
 
 async function release(db:SupabaseClient,enrollment:Enrollment,hours=enrollment.cycle_cadence_hours){
-  await db.from("agent_service_enrollments").update({worker_id:null,locked_at:null,lock_expires_at:null,last_cycle_at:now(),next_cycle_at:new Date(Date.now()+hours*3600000).toISOString(),updated_at:now()}).eq("id",enrollment.id);
+  const released=await db.from("agent_service_enrollments").update({last_cycle_at:now(),next_cycle_at:new Date(Date.now()+hours*3600000).toISOString(),updated_at:now()}).eq("id",enrollment.id).eq("worker_id",enrollment.worker_id).select("id").maybeSingle();
+  if(!released.data)throw new ApiError("The managed-service worker lost its enrollment lease.",409,"CONFLICT");
+}
+async function enrollmentHeartbeat(db:SupabaseClient,enrollment:Enrollment){
+  if(!enrollment.worker_id)throw new ApiError("The managed-service enrollment has no lease owner.",500,"INVALID_STATE");
+  let stopped=false,lost=false,inFlight:Promise<void>|null=null;
+  const renew=async()=>{if(stopped||lost)return;const result=await db.rpc("extend_agent_service_enrollment_lease",{p_enrollment_id:enrollment.id,p_worker_id:enrollment.worker_id,p_lock_seconds:300});if(result.error||!result.data)lost=true;};
+  await renew();if(lost)throw new ApiError("The managed-service worker lost its enrollment lease.",409,"CONFLICT");
+  const timer=setInterval(()=>{if(!inFlight)inFlight=renew().finally(()=>{inFlight=null;});},60_000);timer.unref?.();
+  return{async verify(){if(inFlight)await inFlight;if(lost)throw new ApiError("The managed-service worker lost its enrollment lease.",409,"CONFLICT");},async stop(){stopped=true;clearInterval(timer);if(inFlight)await inFlight;}};
 }
 async function escalate(db:SupabaseClient,enrollment:Enrollment,cycleId:string|null,type:string,title:string,summary:string,requiresClient=false){
   await db.from("agent_service_escalations").insert({enrollment_id:enrollment.id,cycle_id:cycleId,agency_id:enrollment.agency_id,client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,escalation_type:type,title,summary,risk_level:type==="billing"?"high":"medium",requires_client:requiresClient,metadata:{source:"agent_service_scheduler"}});
@@ -36,7 +45,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment){
   if(await reconcileActiveCycle(db,enrollment))return{enrollmentId:enrollment.id,status:"reconciled"};
   const subscription=await db.from("client_subscriptions").select("status").eq("project_id",enrollment.project_id).maybeSingle();
   if(subscription.data&&!["active","trialing"].includes(subscription.data.status)){
-    await db.from("agent_service_enrollments").update({status:subscription.data.status==="past_due"?"past_due":"paused",pause_reason:"Billing is not active",worker_id:null,locked_at:null,lock_expires_at:null,updated_at:now()}).eq("id",enrollment.id);
+    await db.from("agent_service_enrollments").update({status:subscription.data.status==="past_due"?"past_due":"paused",pause_reason:"Billing is not active",updated_at:now()}).eq("id",enrollment.id).eq("worker_id",enrollment.worker_id);
     await escalate(db,enrollment,null,"billing","Managed SEO is paused","Billing must be active before the next agent cycle can run.",true);return{enrollmentId:enrollment.id,status:"billing_blocked"};
   }
   const opportunity=await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_milestone,evidence,recommended_actions,status").eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).in("status",["open","selected","approved"]).gte("opportunity_score",55).order("opportunity_score",{ascending:false}).order("confidence_score",{ascending:false}).limit(1).maybeSingle();
@@ -65,6 +74,6 @@ export async function processAgentServiceBatch(size=10,workerId=`agent-service:$
   const db=getLiveAdminClient(),claimed=await db.rpc("claim_due_agent_service_enrollments",{p_worker_id:workerId,p_batch_size:size,p_lock_seconds:300});
   if(claimed.error)throw new ApiError("Managed agent enrollments could not be claimed. Apply migration 0026.",503,"DATABASE_BINDING_FAILED");
   const enrollments=(claimed.data??[]) as Enrollment[],results=[];
-  for(const enrollment of enrollments){try{results.push(await beginCycle(db,enrollment));}catch(error){const message=error instanceof Error?error.message:"Managed cycle failed";await db.from("agent_service_enrollments").update({worker_id:null,locked_at:null,lock_expires_at:null,next_cycle_at:new Date(Date.now()+3600000).toISOString(),updated_at:now()}).eq("id",enrollment.id);await escalate(db,enrollment,null,"worker","Managed SEO cycle failed",message);results.push({enrollmentId:enrollment.id,status:"failed"});}}
+  for(const enrollment of enrollments){let heartbeat:Awaited<ReturnType<typeof enrollmentHeartbeat>>|null=null;try{heartbeat=await enrollmentHeartbeat(db,enrollment);const result=await beginCycle(db,enrollment);await heartbeat.verify();await heartbeat.stop();heartbeat=null;const released=await db.from("agent_service_enrollments").update({worker_id:null,locked_at:null,lock_expires_at:null,updated_at:now()}).eq("id",enrollment.id).eq("worker_id",enrollment.worker_id).select("id").maybeSingle();if(!released.data)throw new ApiError("The managed-service worker lost its enrollment lease.",409,"CONFLICT");results.push(result);}catch(error){await heartbeat?.stop();const message=error instanceof Error?error.message:"Managed cycle failed";await db.from("agent_service_enrollments").update({worker_id:null,locked_at:null,lock_expires_at:null,next_cycle_at:new Date(Date.now()+3600000).toISOString(),updated_at:now()}).eq("id",enrollment.id).eq("worker_id",enrollment.worker_id);await escalate(db,enrollment,null,"worker","Managed SEO cycle failed",message);results.push({enrollmentId:enrollment.id,status:"failed"});}}
   return{claimed:enrollments.length,results};
 }

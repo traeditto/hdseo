@@ -47,9 +47,20 @@ const schema = z.object({
   RESEND_FROM_EMAIL: z.string().email().optional().or(z.literal("")),
   CRON_SECRET: z.string().min(16).optional().or(z.literal("")),
   APP_ENCRYPTION_KEY: z.string().min(32).optional().or(z.literal("")),
+  INTEGRATION_STATE_SIGNING_KEY: z.string().min(32).optional().or(z.literal("")),
+  INTEGRATION_STATE_PREVIOUS_SIGNING_KEY: z.string().min(32).optional().or(z.literal("")),
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY: z.string().optional(),
+  TURNSTILE_SECRET_KEY: z.string().optional(),
+  GCP_PROJECT_ID: z.string().optional(),
+  GCP_PROJECT_NUMBER: z.string().optional(),
+  GCP_WORKLOAD_IDENTITY_POOL: z.string().optional(),
+  GCP_WORKLOAD_IDENTITY_PROVIDER: z.string().optional(),
+  GCP_SERVICE_ACCOUNT_EMAIL: z.string().email().optional().or(z.literal("")),
+  GCP_KMS_CONNECTOR_KEY: z.string().optional(),
+  GCP_PUBSUB_AUDIENCE: z.string().optional(),
   NEXT_PUBLIC_APP_URL: optionalUrl,
   APP_URL: optionalUrl,
-  PLATFORM_ADMIN_EMAILS: z.string().optional(),
+  AUTONOMOUS_PRODUCTION_WRITES_ENABLED: z.enum(["true","false"]).default("false").transform(value=>value==="true"),
   MAX_DAILY_DATAFORSEO_COST_USD: z.coerce.number().positive().default(2),
   MAX_DAILY_DATAFORSEO_PLATFORM_COST_USD: z.coerce.number().positive().default(5),
   MAX_KEYWORDS_PER_RUN: z.coerce.number().int().positive().max(700).default(100),
@@ -74,13 +85,12 @@ export const hasSupabaseConfig = Boolean(env.NEXT_PUBLIC_SUPABASE_URL && env.NEX
 export const hasSupabaseAdminConfig = Boolean(hasSupabaseConfig && env.SUPABASE_SERVICE_ROLE_KEY);
 export const hasDataForSeoConfig = Boolean(env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD);
 export const hasGitHubConfig = Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY);
-export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
-export const hasGoogleSearchConsoleConfig = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.APP_ENCRYPTION_KEY);
+export const hasGitHubInstallConfig = Boolean(hasGitHubConfig && env.GITHUB_APP_SLUG && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && (env.INTEGRATION_STATE_SIGNING_KEY||env.APP_ENCRYPTION_KEY));
+export const hasGoogleSearchConsoleConfig = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && (env.INTEGRATION_STATE_SIGNING_KEY||env.APP_ENCRYPTION_KEY));
 export const hasGoogleAnalyticsConfig = Boolean(hasGoogleSearchConsoleConfig);
 export const hasGoogleBusinessProfileConfig = Boolean(hasGoogleSearchConsoleConfig);
 export const hasAttributionWebhookConfig = Boolean(env.ATTRIBUTION_WEBHOOK_SECRET);
 export const hasCreativeModelConfig = Boolean(env.OPENAI_API_KEY);
-export const platformAdminEmails = new Set((env.PLATFORM_ADMIN_EMAILS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
 
 // Stable, configured production base URL for all external callbacks.
 // Never derived from request headers, VERCEL_URL, preview domains, or browser hostname.

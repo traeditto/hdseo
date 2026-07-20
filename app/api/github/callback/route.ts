@@ -4,7 +4,7 @@ import { listUserInstallations } from "@/lib/github/app-client";
 import { bindGitHubInstallation } from "@/lib/github/installation-binding";
 import { resolveSignedGitHubContext } from "@/lib/github/integration-context";
 import { integrationStatePurpose,verifyIntegrationState } from "@/lib/security/signed-state";
-import { GET as legacyConnectCallback } from "@/app/api/github/connect/route";
+import {consumeIntegrationState} from "@/lib/security/integration-state-ledger";
 
 function safeReturnUrl(value:string|undefined){const fallback=new URL("/admin/settings/github?connected=1",`${appBaseUrl()}/`);if(!value)return fallback;try{const url=new URL(value,fallback);return url.origin===fallback.origin&&["/admin/settings/github","/portal/agency"].includes(url.pathname)?url:fallback;}catch{return fallback;}}
 
@@ -26,11 +26,11 @@ function callbackError(error:unknown,stage:CallbackStage){
 
 export async function GET(request:Request){
   const url=new URL(request.url),stateValue=url.searchParams.get("state");
-  if(!stateValue||integrationStatePurpose(stateValue)!=="github_bind")return legacyConnectCallback(request);
+  if(!stateValue||integrationStatePurpose(stateValue)!=="github_bind")return jsonError(new ApiError("This GitHub callback flow is no longer accepted. Start a new connection from HD SEO.",400,"INVALID_STATE"));
   let stage:CallbackStage="state";
   try{
     const state=verifyIntegrationState(stateValue,"github_bind");
-    stage="context";const context=await resolveSignedGitHubContext(state);
+    stage="context";const context=await resolveSignedGitHubContext(state);await consumeIntegrationState(context.db,{rawState:stateValue,state,provider:"github",callbackHost:url.host});
     stage="installation";const installationId=state.installationId;if(!installationId)throw new ApiError("GitHub did not return an installation ID.",400,"MISSING_INSTALLATION_ID");
     stage="oauth";const code=url.searchParams.get("code");if(!code)throw new ApiError("GitHub user verification did not return an authorization code.",400,"GITHUB_OAUTH_FAILED");
     if(!env.GITHUB_CLIENT_ID||!env.GITHUB_CLIENT_SECRET)throw new ApiError("GitHub user verification is not configured.",503,"NOT_CONFIGURED");
