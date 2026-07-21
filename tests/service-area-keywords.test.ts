@@ -79,6 +79,10 @@ describe("service-area keyword enforcement", () => {
     expect(assessKeywordServiceArea("roof repair 33101", policy).allowed).toBe(
       false,
     );
+    expect(
+      assessKeywordServiceArea("roofing companies middleburg fl", policy)
+        .allowed,
+    ).toBe(false);
   });
 
   it("filters provider candidates before they can become active opportunities", () => {

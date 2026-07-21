@@ -1,7 +1,12 @@
 export interface PageSignal { url: string; title?: string | null; metaDescription?: string | null; h1?: string | null; canonical?: string | null; headings?: string[]; internalLinks?: string[]; assignedKeywords?: string[]; service?: string | null; location?: string | null }
 const normalize = (value: string | null | undefined) => value?.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() ?? "";
 const ignoredTokens = new Set(["and","best","company","companies","contractor","contractors","in","near","service","services","the"]);
-const tokenAlias = (token: string) => token === "jax" ? "jacksonville" : token;
+const tokenAlias = (token: string) => {
+  if (token === "jax") return "jacksonville";
+  if (["roofing", "roofer", "roofers", "roofs"].includes(token)) return "roof";
+  if (token === "gutters") return "gutter";
+  return token;
+};
 const tokens = (value: string) => new Set(normalize(value).split(" ").map(tokenAlias).filter((token) => token.length > 1 && !ignoredTokens.has(token)));
 const overlap = (left: Set<string>, right: Set<string>) => left.size ? [...left].filter((value) => right.has(value)).length / left.size : 0;
 const urlIdentity = (value: string) => {
@@ -14,13 +19,33 @@ const urlIdentity = (value: string) => {
     return value.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/+$/, "").toLowerCase();
   }
 };
+const pathTokens = (value: string) => {
+  try {
+    return tokens(new URL(value).pathname);
+  } catch {
+    return tokens(value);
+  }
+};
 
 export function analyzePageOwnership(keyword: string, pages: PageSignal[]) {
   const uniquePages = [...new Map(pages.map((page) => [urlIdentity(page.url), page])).values()];
   const keywordTokens = tokens(keyword), normalizedKeyword = normalize(keyword);
   const scored = uniquePages.map((page) => {
-    const visible = [page.title, page.metaDescription, page.h1, ...(page.headings ?? []), page.service, page.location].filter(Boolean).join(" ");
-    let score = overlap(keywordTokens, tokens(visible)) * 55;
+    const primary = [page.title, page.h1, page.service, page.location]
+      .filter(Boolean)
+      .join(" ");
+    const secondary = [page.metaDescription, ...(page.headings ?? [])]
+      .filter(Boolean)
+      .join(" ");
+    const urlTokens = pathTokens(page.url);
+    const unmatchedUrlTokens = [...urlTokens].filter(
+      (token) => !keywordTokens.has(token),
+    ).length;
+    let score =
+      overlap(keywordTokens, tokens(primary)) * 70 +
+      overlap(keywordTokens, tokens(secondary)) * 10 +
+      overlap(keywordTokens, urlTokens) * 15 -
+      unmatchedUrlTokens * 25;
     if ((page.assignedKeywords ?? []).some((value) => normalize(value) === normalizedKeyword)) score += 35;
     if (page.canonical && normalize(page.canonical) === normalize(page.url)) score += 5;
     if ((page.internalLinks ?? []).length >= 3) score += 5;

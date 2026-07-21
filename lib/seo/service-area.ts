@@ -96,6 +96,58 @@ const stateNames = [
   "district of columbia",
 ];
 
+// Ambiguous English words such as "in", "or", "me", "ok", and "hi" are
+// intentionally omitted. Matched service-area aliases are accepted before
+// this out-of-market check runs.
+const unambiguousStateCodes = new Set([
+  "al",
+  "ak",
+  "az",
+  "ar",
+  "ca",
+  "co",
+  "ct",
+  "de",
+  "fl",
+  "ga",
+  "id",
+  "il",
+  "ia",
+  "ks",
+  "ky",
+  "la",
+  "md",
+  "ma",
+  "mi",
+  "mn",
+  "ms",
+  "mo",
+  "mt",
+  "ne",
+  "nv",
+  "nh",
+  "nj",
+  "nm",
+  "ny",
+  "nc",
+  "nd",
+  "oh",
+  "pa",
+  "ri",
+  "sc",
+  "sd",
+  "tn",
+  "tx",
+  "ut",
+  "vt",
+  "va",
+  "wa",
+  "wv",
+  "wi",
+  "wy",
+  "dc",
+]);
+
 // Used only to detect an explicit out-of-area modifier. Generic searches remain
 // eligible because their demand and rankings are collected in the target market.
 const commonUsCities = [
@@ -429,8 +481,16 @@ export function assessKeywordServiceArea(
   const explicitCity = commonUsCities.find((city) =>
     containsPhrase(normalized, city),
   );
+  const explicitStateCode = normalized
+    .split(" ")
+    .find((token) => unambiguousStateCodes.has(token));
   const explicitPostalCode = /\b\d{5}(?:-\d{4})?\b/.test(keyword);
-  if (explicitState || explicitCity || explicitPostalCode) {
+  if (
+    explicitState ||
+    explicitStateCode ||
+    explicitCity ||
+    explicitPostalCode
+  ) {
     return {
       allowed: false,
       locationRelevance: 0,
