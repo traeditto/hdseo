@@ -61,6 +61,7 @@ describe("website connections",()=>{
     expect(callback).toContain('"/portal/agency"');
     expect(callback).toContain('"/portal/client"');
     expect(context).toContain('clientMembership.data?.role !== "client_admin"');
+    expect(context).toContain('["trial", "active"]');
     expect(portal).toContain("Connect GitHub repository");
     expect(portal).toContain("I don’t use GitHub—help me connect");
     expect(binding).toContain("upsertGitHubWebsite");

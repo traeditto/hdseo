@@ -33,8 +33,15 @@ async function authorizeAgency(
   db: SupabaseClient,
   input: { userId: string; email: string; agencyId: string; platformAdmin: boolean; clientId?: string; projectId?: string },
 ): Promise<GitHubManagementContext> {
-  const agencyResult = await db.from("agencies").select("id,name,slug").eq("id", input.agencyId).eq("status", "active").single();
+  const agencyResult = await db
+    .from("agencies")
+    .select("id,name,slug,status")
+    .eq("id", input.agencyId)
+    .maybeSingle();
   if (!agencyResult.data) throw new ApiError("Agency access denied.", 403, "TENANT_DENIED");
+  if (!["trial", "active"].includes(agencyResult.data.status)) {
+    throw new ApiError("This workspace is not currently allowed to connect integrations.", 403, "TENANT_DENIED");
+  }
 
   let projectContext: GitHubManagementContext["project"];
   let clientContext: GitHubManagementContext["client"];
@@ -77,7 +84,7 @@ async function authorizeAgency(
   const context: GitHubManagementContext = {
     db,
     user:{id:input.userId,email:input.email},
-    agency:agencyResult.data,
+    agency:{id:agencyResult.data.id,name:agencyResult.data.name,slug:agencyResult.data.slug},
     platformAdmin:input.platformAdmin,
     role,
     ...(projectContext ? { project: projectContext } : {}),
