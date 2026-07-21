@@ -70,7 +70,9 @@ describe("self-service free trial", () => {
     expect(route).toContain("maxPages:25");
     expect(route).toContain("markTrialCrawlQueued");
     expect(store).toContain('const agentWork = crawlAccess.mode === "trial"');
-    expect(store).toContain('? []\n    : await seedOnboardingAgentTeam');
+    expect(store).toContain('? []\n    : await (async () =>');
+    expect(store).toContain("requestManagedAgentServiceCycle");
+    expect(store).toContain("runManagedAgentCycle");
     expect(worker).toContain('settleTrialCrawl(db,{jobId:job.id,status:"succeeded"})');
     expect(worker).toContain('settleTrialCrawl(db,{jobId:job.id,status:"failed"');
   });
@@ -87,7 +89,7 @@ describe("self-service free trial", () => {
     expect(activation).toContain("resumeEvidenceBlockedAgentWork");
     expect(activation).not.toContain("discoveryJobId:null");
     expect(activation.indexOf("discoverKeywordOpportunitiesForActor")).toBeLessThan(
-      activation.indexOf("seedOnboardingAgentTeam"),
+      activation.indexOf("requestManagedAgentServiceCycle"),
     );
   });
 

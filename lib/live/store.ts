@@ -46,6 +46,8 @@ import {
   resumeEvidenceBlockedAgentWork,
   seedOnboardingAgentTeam,
 } from "@/lib/agents/control-plane";
+import { requestManagedAgentServiceCycle } from "@/lib/agent-service/service";
+import { runManagedAgentCycle } from "@/lib/agent-service/scheduler";
 import {
   publishCmsPackage,
   rollbackCmsPublication,
@@ -2086,31 +2088,37 @@ export async function activateRetailGrowth(email: string, projectId: string) {
           userId: context.userId,
         },
       );
-  if (crawlAccess.mode !== "trial" && (existingOpportunityCount > 0 || (discovery?.selected ?? 0) > 0)) {
-    await resumeEvidenceBlockedAgentWork(context.db, {
-      agencyId: context.agencyId,
-      projectId,
-      recoveryKey: discovery?.jobId ?? bucket,
-    });
-  }
   const agentWork = crawlAccess.mode === "trial"
     ? []
-    : await seedOnboardingAgentTeam(
-        context.db,
-        {
+    : await (async () => {
+        const tenant = {
           agencyId: context.agencyId,
           clientId: context.clientId,
           projectId,
           userId: context.userId,
-        },
-        {
-          evidenceJobIds: [evidenceJobId],
+        };
+        const managed = await requestManagedAgentServiceCycle(context.db, tenant);
+        const resumed = await resumeEvidenceBlockedAgentWork(context.db, {
+          agencyId: context.agencyId,
+          projectId,
+          recoveryKey: discovery?.jobId ?? bucket,
+          allowedTools: managed.allowedTools,
+        });
+        const cycle = await runManagedAgentCycle(context.db, {
+          agencyId: context.agencyId,
+          clientId: context.clientId,
+          projectId,
+          requestedBy: context.userId,
+        });
+        return [{
+          managed: true,
+          resumed,
+          cycle,
+          evidenceJobId,
           discoveryJobId: discovery?.jobId ?? null,
-          monthlyBudget,
-          targetMarket: discovery?.targetMarket ?? targetMarket,
-          launchKey: `retail:${projectId}`,
-        },
-      );
+          billableDefinition: "one verified customer-visible outcome",
+        }];
+      })();
   const now = nowIso();
   await Promise.all([
     context.db

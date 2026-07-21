@@ -35,7 +35,10 @@ describe("retail business-owner experience", () => {
     expect(checkout).toContain("/v1/checkout/sessions");
     expect(checkout).toContain("resolveClientContext");
     expect(webhook).toContain("timingSafeEqual");
-    expect(webhook).toContain("webhook_events");
+    expect(webhook).toContain("claimWebhookEvent");
+    expect(webhook).toContain("completeWebhookEvent");
+    expect(webhook).toContain("failWebhookEvent");
+    expect(webhook).not.toContain('from("webhook_events").upsert');
     expect(webhook).toContain("WEBHOOK_REPLAY_REJECTED");
     expect(webhook).toContain("PAYMENT_VERIFICATION_FAILED");
     expect(webhook).toContain("Stripe webhook signature is missing.");

@@ -27,6 +27,12 @@ describe("agent-first operating environment",()=>{
   it("supervises budgets, approvals, evidence waits, retries, dead letters, and audit history",()=>{
     const supervisor=read("lib/agents/supervisor.ts");
     for(const safeguard of ["enforceBudget","enforceApprovals","authorized_tools.includes","awaiting_approval","waiting_for_tools","dead_letter","max_attempts","agent_tool_executions","agent_memory","agent_activity_events","system_heartbeats"])expect(supervisor).toContain(safeguard);
+    expect(supervisor).toContain("DEPENDENCY_FAILED");
+    expect(supervisor).toContain("pendingEvidenceJobs");
+    expect(supervisor).toContain("Research completed without inventing work");
+    expect(supervisor).toContain("waitingSince");
+    expect(supervisor).toContain('.in("status",["ready","running"])');
+    expect(supervisor).toContain('.in("status",["ready","waiting"])');
     expect(supervisor).toContain('component:"agents"');
     expect(supervisor).toContain('p_queue:"agents"');
   });
@@ -36,6 +42,11 @@ describe("agent-first operating environment",()=>{
     expect(route).toContain("requireLiveAgencyProject");
     expect(route).toContain("enforceRateLimit");
     expect(route).toContain('"execution.approve"');
+    expect(route).toContain("requestManagedAgentServiceCycle");
+    expect(route).toContain("resumeEvidenceBlockedAgentWork");
+    expect(route).not.toContain('sourceType:"agent_workspace_team"');
+    expect(ui).toContain("Requests the next managed cycle through your plan allowance");
+    expect(ui).not.toContain("Paid research limit");
     for(const label of ["Agent Workspace","Agent activity","Approval inbox","MONEY USED","EXPECTED VALUE","DEPLOYMENT SAFETY","Run agent team"] )expect(ui).toContain(label);
     expect(dashboard).toContain('"Agent Workspace"');
   });
@@ -45,7 +56,7 @@ describe("agent-first operating environment",()=>{
     expect(store).toContain("seedOnboardingAgentTeam");
     expect(store).toContain("resumeEvidenceBlockedAgentWork");
     expect(controlPlane).toContain("agent.evidence-recovered:");
-    expect(controlPlane).toContain('final_outcome->>code');
+    expect(controlPlane).toContain("asObject(work.final_outcome).code");
     expect(supervisor).toContain('eq("work_type","research.discovery")');
     expect(supervisor).toContain("waiting for the Research Agent to finish prioritizing opportunities");
     for(const workType of ["onboarding.profile","technical.audit","research.discovery","strategy.roadmap","reporting.summary"])expect(controlPlane).toContain(workType);

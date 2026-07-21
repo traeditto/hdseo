@@ -6,6 +6,14 @@ import { ApiError } from "@/lib/api/errors";
 import { getLiveAdminClient,resolveLiveIdentity } from "@/lib/live/identity";
 import { hasPermission,type AgencyRole } from "@/lib/auth/permissions";
 
+type ClientRole="client_admin"|"client_approver"|"client_viewer";
+
+const clientPermissions:Record<ClientRole,readonly string[]>={
+  client_admin:["seo.read","seo.write","draft.approve","execution.approve","provider.authorize","integrations.manage","clients.manage","billing.manage","deploy.rollback"],
+  client_approver:["seo.read","draft.approve","execution.approve","provider.authorize","deploy.rollback"],
+  client_viewer:["seo.read"],
+};
+
 export async function requireLiveAgencyProject(input:{projectId:string;permission?:string}){
   let user=await getChatGPTUser();
   if(!user){
@@ -27,11 +35,8 @@ export async function requireLiveAgencyProject(input:{projectId:string;permissio
   if(!targetProject.data)throw new ApiError("Business project not found.",404,"NOT_FOUND");
   const clientMembership=await db.from("client_members").select("agency_id,client_organization_id,role").eq("user_id",identity.userId).eq("agency_id",targetProject.data.agency_id).eq("client_organization_id",targetProject.data.client_organization_id).eq("status","active").maybeSingle();
   if(!clientMembership.data)throw new ApiError("Business access denied.",403,"TENANT_DENIED");
-  const clientRole=clientMembership.data.role as "client_admin"|"client_approver"|"client_viewer";
-  const clientCanManage=input.permission==="provider.authorize"
-    ? ["client_admin","client_approver"].includes(clientRole)
-    : clientRole==="client_admin";
-  if(input.permission&&!clientCanManage)throw new ApiError("Only the business owner can manage this connection.",403,"ROLE_FORBIDDEN");
+  const clientRole=clientMembership.data.role as ClientRole;
+  if(input.permission&&!clientPermissions[clientRole]?.includes(input.permission))throw new ApiError("Your business role cannot perform this action.",403,"ROLE_FORBIDDEN");
   return{db,userId:identity.userId,email:identity.email,agencyId:clientMembership.data.agency_id as string,clientId:targetProject.data.client_organization_id as string,project:targetProject.data,role:clientRole,actorType:"client" as const};
 }
 

@@ -15,11 +15,27 @@ export const agentCapacityAddOn={priceCents:1500,providerBudgetPerAction:3} as c
 export type AgentServicePlanKey=keyof typeof agentServicePlans;
 export const isAgentServicePlanKey=(value:string):value is AgentServicePlanKey=>value in agentServicePlans;
 
-export const defaultManagedTools=[
+const legacyDefaultManagedTools=[
   "website.detect","website.crawl","google.search_console.read","google.analytics.read","google.business_profile.read",
   "keywords.discover","competitors.analyze","opportunities.score","strategy.plan","cms.draft","github.read",
   "lighthouse.run","seo.validate","schema.validate","sitemap.verify","robots.verify","report.generate","audit.read",
 ] as const;
+
+export const defaultManagedTools=[
+  ...legacyDefaultManagedTools,
+  "growth.plan","internal_links.graph","proof.read","content.refresh","creative.spec","growth_tool.spec","proof.case_study",
+  // Publishing remains protected by the supervisor's exact approval digest;
+  // including the tool here only allows an approved managed package to reach
+  // that gate instead of failing later with ROLE_FORBIDDEN.
+  "cms.publish",
+] as const;
+
+export function upgradeLegacyManagedTools(tools:readonly string[]){
+  const unique=[...new Set(tools)];
+  const legacy=new Set(legacyDefaultManagedTools);
+  const isUnmodifiedLegacyDefault=unique.length===legacy.size&&unique.every(tool=>legacy.has(tool as typeof legacyDefaultManagedTools[number]));
+  return isUnmodifiedLegacyDefault?[...defaultManagedTools]:unique;
+}
 
 export function planEntitlements(planKey:string){
   return agentServicePlans[isAgentServicePlanKey(planKey)?planKey:"starter"];

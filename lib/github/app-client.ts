@@ -71,3 +71,22 @@ export async function createAtomicDraftPullRequest(connection:RepositoryConnecti
   const pull=await request<{number:number;html_url:string}>(`/repos/${repo}/pulls`,token,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:input.title,head:input.branch,base:connection.default_branch,body:input.body,draft:true})});
   return{...pull,commitSha:commit.sha};
 }
+
+export async function mergeApprovedPullRequest(connection:RepositoryConnection,input:{pullRequestNumber:number;expectedHeadSha:string}){
+  const token=await installationToken(connection.installation_id),repo=`${connection.repository_owner}/${connection.repository_name}`;
+  let pull=await request<{node_id:string;state:string;draft:boolean;merged:boolean;mergeable:boolean|null;merge_commit_sha:string|null;head:{sha:string};base:{ref:string}}>(`/repos/${repo}/pulls/${input.pullRequestNumber}`,token);
+  if(pull.head.sha!==input.expectedHeadSha)throw new ApiError("The pull request changed after preview approval. Run a fresh preview before release.",409,"INVALID_STATE");
+  if(pull.base.ref!==connection.default_branch)throw new ApiError("The pull request no longer targets the approved production branch.",409,"INVALID_STATE");
+  if(pull.merged)return{merged:true,sha:pull.merge_commit_sha??pull.head.sha,alreadyMerged:true};
+  if(pull.state!=="open")throw new ApiError("The approved pull request is no longer open.",409,"INVALID_STATE");
+  if(pull.draft){
+    const ready=await request<{data?:{markPullRequestReadyForReview?:{pullRequest?:{isDraft:boolean}}};errors?:Array<{message:string}>}>("/graphql",token,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({query:"mutation Ready($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }",variables:{id:pull.node_id}})});
+    if(ready.errors?.length||ready.data?.markPullRequestReadyForReview?.pullRequest?.isDraft!==false)throw new ApiError("GitHub did not accept the approved pull request for release.",502,"OPERATION_FAILED");
+    pull=await request(`/repos/${repo}/pulls/${input.pullRequestNumber}`,token);
+    if(pull.head.sha!==input.expectedHeadSha)throw new ApiError("The pull request changed while it was being prepared for release.",409,"INVALID_STATE");
+  }
+  if(pull.mergeable===false)throw new ApiError("GitHub reports merge conflicts. HD SEO will not bypass branch protection.",409,"CONFLICT");
+  const merged=await request<{sha:string;merged:boolean;message:string}>(`/repos/${repo}/pulls/${input.pullRequestNumber}/merge`,token,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({sha:input.expectedHeadSha,merge_method:"squash"})});
+  if(!merged.merged)throw new ApiError(merged.message||"GitHub did not merge the approved pull request.",409,"CONFLICT");
+  return{merged:true,sha:merged.sha,alreadyMerged:false};
+}

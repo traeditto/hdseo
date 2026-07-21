@@ -93,11 +93,49 @@ async function enforceApprovals(db:SupabaseClient,work:WorkItem){
 }
 
 async function waitForEvidence(db:SupabaseClient,work:WorkItem,reason:string){
-  const attempts=num(asObject(work.execution_context).supervisorAttempts)+1;
-  if(attempts>=8){await db.from("agent_work_items").update({status:"blocked",execution_context:{...asObject(work.execution_context),supervisorAttempts:attempts},final_outcome:{reason,code:"EVIDENCE_NOT_READY"},updated_at:now()}).eq("id",work.id);await event(db,work,"work.blocked","Agent work blocked",reason);return;}
-  await db.from("agent_work_items").update({status:"waiting_for_tools",execution_context:{...asObject(work.execution_context),supervisorAttempts:attempts,waitingReason:reason},updated_at:now()}).eq("id",work.id);
-  await db.from("agent_work_steps").update({status:"waiting",output:{reason},updated_at:now()}).eq("work_item_id",work.id).eq("status","ready");
+  const context=asObject(work.execution_context),attempts=num(context.supervisorAttempts)+1,previousReason=typeof context.waitingReason==="string"?context.waitingReason:null;
+  const waitingSince=previousReason===reason&&typeof context.waitingSince==="string"?context.waitingSince:now(),expired=Date.now()-new Date(waitingSince).getTime()>=6*60*60_000;
+  if(expired&&attempts>=8){await db.from("agent_work_items").update({status:"blocked",execution_context:{...context,supervisorAttempts:attempts,waitingReason:reason,waitingSince},final_outcome:{reason,code:"EVIDENCE_NOT_READY"},updated_at:now()}).eq("id",work.id);await event(db,work,"work.blocked","Agent work blocked",reason);return;}
+  await db.from("agent_work_items").update({status:"waiting_for_tools",execution_context:{...context,supervisorAttempts:attempts,waitingReason:reason,waitingSince},updated_at:now()}).eq("id",work.id);
+  await db.from("agent_work_steps").update({status:"waiting",output:{reason},updated_at:now()}).eq("work_item_id",work.id).in("status",["ready","running"]);
   await event(db,work,"evidence.waiting","Waiting for evidence",reason,{attempt:attempts});
+}
+
+async function blockForDependency(db:SupabaseClient,work:WorkItem,reason:string,dependencyStatus:string){
+  await db.from("agent_work_items").update({status:"blocked",final_outcome:{reason,code:"DEPENDENCY_FAILED",dependencyStatus},updated_at:now()}).eq("id",work.id);
+  await db.from("agent_work_steps").update({status:"failed",error_code:"DEPENDENCY_FAILED",error_message:reason,completed_at:now(),updated_at:now()}).eq("work_item_id",work.id).in("status",["ready","running","waiting"]);
+  await event(db,work,"dependency.blocked","Agent work blocked by a failed dependency",reason,{dependencyStatus});
+}
+
+function exactOutcomePackageId(work:WorkItem){
+  const packageId=work.evidence?.packageId;
+  if(typeof packageId==="string"&&packageId.trim())return packageId;
+  if(work.source_type==="outcome_loop_delivery")throw new ApiError("The managed outcome task is missing its exact approved package binding.",409,"INVALID_STATE");
+  return null;
+}
+
+async function waitForOutcomeImplementation(db:SupabaseClient,work:WorkItem){
+  if(work.source_type!=="outcome_loop_delivery"||!work.source_id)return true;
+  const dependency=await db.from("agent_work_items").select("id,status")
+    .eq("agency_id",work.agency_id).eq("project_id",work.project_id)
+    .eq("source_type",work.source_type).eq("source_id",work.source_id)
+    .eq("work_type","implementation.change").neq("id",work.id)
+    .order("created_at",{ascending:false}).limit(1).maybeSingle();
+  if(dependency.error)throw new ApiError("The QA Agent could not verify its exact implementation dependency.",500,"DATABASE_BINDING_FAILED");
+  if(!dependency.data){await waitForEvidence(db,work,"The QA Agent is waiting for its exact Implementation Agent assignment to be created.");return false;}
+  if(dependency.data.status==="succeeded")return true;
+  if(["blocked","failed","dead_letter","cancelled"].includes(dependency.data.status)){
+    await blockForDependency(db,work,"Independent QA stopped because the exact implementation did not complete successfully.",dependency.data.status);
+    return false;
+  }
+  await waitForEvidence(db,work,"The QA Agent is waiting for the exact approved implementation to finish publishing.");
+  return false;
+}
+
+async function pendingEvidenceJobs(db:SupabaseClient,work:WorkItem){
+  const pending=await db.from("background_jobs").select("id",{head:true,count:"exact"}).eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("queue","evidence").in("status",["queued","running","retry_scheduled"]);
+  if(pending.error)throw new ApiError("The agent could not verify pending evidence collection.",500,"DATABASE_BINDING_FAILED");
+  return pending.count??0;
 }
 
 async function finish(db:SupabaseClient,work:WorkItem,outcome:Record<string,unknown>,validation:Record<string,unknown>={status:"passed"}){
@@ -111,7 +149,7 @@ async function finish(db:SupabaseClient,work:WorkItem,outcome:Record<string,unkn
 
 async function executeWork(db:SupabaseClient,work:WorkItem){
   await db.from("agent_work_items").update({status:"running",started_at:now(),updated_at:now()}).eq("id",work.id);
-  await db.from("agent_work_steps").update({status:"running",started_at:now(),updated_at:now()}).eq("work_item_id",work.id).eq("status","ready");
+  await db.from("agent_work_steps").update({status:"running",started_at:now(),updated_at:now()}).eq("work_item_id",work.id).in("status",["ready","waiting"]);
   if(work.work_type==="onboarding.profile"){
     const [project,website,services,locations,integrations]=await Promise.all([db.from("seo_projects").select("name,domain,industry,primary_market,data_readiness_status").eq("id",work.project_id).single(),db.from("websites").select("site_url,cms_type,status,last_verified_at").eq("project_id",work.project_id).eq("is_primary",true).maybeSingle(),db.from("seo_services").select("name,priority,status").eq("project_id",work.project_id),db.from("seo_locations").select("name,priority,status").eq("project_id",work.project_id),db.from("integration_connections").select("provider,status,selected_resource,last_verified_at").eq("project_id",work.project_id)]);
     const outcome={summary:"Verified business and website profile saved for the agent team.",project:project.data,website:website.data,services:services.data??[],locations:locations.data??[],integrations:integrations.data??[]};
@@ -125,17 +163,18 @@ async function executeWork(db:SupabaseClient,work:WorkItem){
   }
   if(work.work_type==="research.discovery"){
     const [opportunities,keywords,competitors]=await Promise.all([db.from("seo_opportunities").select("id,action_type,opportunity_score,evidence,status").eq("project_id",work.project_id).order("opportunity_score",{ascending:false}).limit(50),db.from("seo_keywords").select("id",{head:true,count:"exact"}).eq("project_id",work.project_id),db.from("competitor_domains").select("domain,estimated_traffic,intersections").eq("project_id",work.project_id).eq("ignored",false).limit(25)]);
-    if(!opportunities.data?.length){await waitForEvidence(db,work,"The Research Agent is waiting for keyword discovery and ranking evidence.");return;}
+    if(!opportunities.data?.length){const pending=await pendingEvidenceJobs(db,work);if(pending){await waitForEvidence(db,work,`The Research Agent is waiting for ${pending} evidence collection job${pending===1?"":"s"} to finish.`);return;}await toolExecution(db,work,"opportunities.score","succeeded",{analyzed:keywords.count??0,selected:0,competitors:competitors.data?.length??0});await finish(db,work,{summary:"Research completed without inventing work: no evidence-backed opportunity currently meets the selection requirements.",topOpportunities:[],competitors:competitors.data??[],recommendation:"Refresh connected evidence or wait for the next managed cycle."},{status:"warning",evidenceCount:(keywords.count??0)+(competitors.data?.length??0),selected:0});return;}
     const top=opportunities.data.slice(0,10);await toolExecution(db,work,"opportunities.score","succeeded",{analyzed:keywords.count??0,selected:top.length,competitors:competitors.data?.length??0});await finish(db,work,{summary:`Prioritized ${top.length} high-value opportunities from ${keywords.count??0} keyword records.`,topOpportunities:top,competitors:competitors.data??[]},{status:"passed",evidenceCount:(keywords.count??0)+(competitors.data?.length??0)});return;
   }
   if(work.work_type==="strategy.roadmap"){
     if(work.source_type&&work.source_id){
       const research=await db.from("agent_work_items").select("id,status").eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("source_type",work.source_type).eq("source_id",work.source_id).eq("work_type","research.discovery").neq("id",work.id).order("created_at",{ascending:false}).limit(1).maybeSingle();
       if(research.error)throw new ApiError("The Strategy Agent could not verify its Research dependency.",500,"DATABASE_BINDING_FAILED");
-      if(research.data&&!["succeeded","cancelled"].includes(research.data.status)){await waitForEvidence(db,work,"The Strategy Agent is waiting for the Research Agent to finish prioritizing opportunities.");return;}
+      if(!research.data){await waitForEvidence(db,work,"The Strategy Agent is waiting for its Research Agent assignment to be created.");return;}
+      if(research.data.status!=="succeeded"){if(["blocked","failed","dead_letter","cancelled"].includes(research.data.status)){await blockForDependency(db,work,"The Strategy Agent stopped because its Research dependency did not complete successfully.",research.data.status);return;}await waitForEvidence(db,work,"The Strategy Agent is waiting for the Research Agent to finish prioritizing opportunities.");return;}
     }
     const opportunities=await db.from("seo_opportunities").select("id,action_type,opportunity_score,evidence,status").eq("project_id",work.project_id).order("opportunity_score",{ascending:false}).limit(30);
-    if(!opportunities.data?.length){await waitForEvidence(db,work,"The Strategy Agent is waiting for the Research Agent to prioritize opportunities.");return;}
+    if(!opportunities.data?.length){await toolExecution(db,work,"audit.read","succeeded",{opportunities:0});await finish(db,work,{summary:"Strategy review completed with no make-work plan because Research found no eligible evidence-backed opportunity.",plan:null,recommendation:"Wait for fresh evidence before allocating SEO budget."},{status:"warning",prioritized:0});return;}
     const client=await db.from("clients").select("organization_id,automation_config").eq("id",work.client_id).eq("agency_id",work.agency_id).single();if(!client.data?.organization_id)throw new ApiError("The Strategy Agent could not resolve the client organization.",409,"CONFLICT");const generatedBy=`strategy_agent:${work.id}`,existing=await db.from("growth_plans").select("id,version,status").eq("project_id",work.project_id).eq("generated_by",generatedBy).maybeSingle(),plan=existing.data??await generateGrowthPlan(db,{agencyId:work.agency_id,clientId:client.data.organization_id,projectId:work.project_id,userId:work.requested_by},{monthlyBudget:num(asObject(client.data.automation_config).monthlyBudget),generatedBy});await toolExecution(db,work,"growth.plan","succeeded",{planId:plan.id,status:plan.status??"awaiting_approval"});await finish(db,work,{summary:"Evidence-backed Local Growth Plan prepared across 30, 60, and 90 days. Execution remains approval-gated.",plan},{status:"passed",prioritized:Math.min(opportunities.data.length,20)});return;
   }
   if(work.work_type==="content.plan"){
@@ -147,10 +186,11 @@ async function executeWork(db:SupabaseClient,work:WorkItem){
     const [locations,services]=await Promise.all([db.from("seo_locations").select("name,priority").eq("project_id",work.project_id).eq("status","active"),db.from("seo_services").select("name,priority").eq("project_id",work.project_id).eq("status","active")]);if(!locations.data?.length){await waitForEvidence(db,work,"The Local SEO Agent needs at least one verified service area.");return;}const combinations=(locations.data??[]).flatMap(location=>(services.data??[]).slice(0,5).map(service=>({location:location.name,service:service.name}))).slice(0,25);await toolExecution(db,work,"strategy.plan","succeeded",{combinations:combinations.length});await finish(db,work,{summary:`Mapped ${combinations.length} local service opportunities.`,localOpportunities:combinations},{status:"passed",locationCount:locations.data.length});return;
   }
   if(work.work_type==="implementation.change"){
-    const packages=await db.from("implementation_packages").select("id,package_data,status,implementation_path,version,created_by,approved_by").eq("agency_id",work.agency_id).eq("project_id",work.project_id).order("created_at",{ascending:false}).limit(10),approved=packages.data?.find(item=>item.status==="client_approved");if(!approved){await waitForEvidence(db,work,"The Implementation Agent needs an exact client-approved implementation package.");return;}const connection=await db.from("cms_connections").select("id,cms_type,connection_mode,status").eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("status","active").in("cms_type",["wordpress","shopify","webflow"]).order("last_verified_at",{ascending:false}).limit(1).maybeSingle();if(!connection.data){await waitForEvidence(db,work,"The approved package has no verified direct CMS execution path. Repository work remains in the GitHub preview workflow.");return;}const actorId=work.requested_by??approved.approved_by??approved.created_by;if(!actorId)throw new ApiError("The approved package has no accountable publishing actor.",409,"CONFLICT");await toolExecution(db,work,"cms.draft","succeeded",{packageId:approved.id,provider:connection.data.cms_type});const execution=await beginToolExecution(db,work,"cms.publish");let publication:Record<string,unknown>&{id:string};try{publication=await publishCmsPackage(db,{packageId:approved.id,agencyId:work.agency_id,projectId:work.project_id,actorId,idempotencyKey:`agent-cms:${work.id}:${approved.id}:v${approved.version??1}`}) as Record<string,unknown>&{id:string};if(!execution.alreadySucceeded)await completeToolExecution(db,execution.id,"succeeded",{packageId:approved.id,publicationId:publication.id,provider:connection.data.cms_type});}catch(error){if(!execution.alreadySucceeded)await completeToolExecution(db,execution.id,"failed",{code:error instanceof ApiError?error.code:"OPERATION_FAILED",message:error instanceof Error?error.message:"CMS publishing failed."});throw error;}await finish(db,work,{summary:`The exact client-approved package was published to ${connection.data.cms_type} and is awaiting independent live QA.`,packageId:approved.id,publication},{status:"warning",publishing:"completed",verification:"pending"});return;
+    const packageId=exactOutcomePackageId(work);let packagesQuery=db.from("implementation_packages").select("id,package_data,status,implementation_path,version,created_by,approved_by").eq("agency_id",work.agency_id).eq("project_id",work.project_id);if(packageId)packagesQuery=packagesQuery.eq("id",packageId);const packages=await packagesQuery.order("created_at",{ascending:false}).limit(packageId?1:10),approved=packages.data?.find(item=>item.status==="client_approved");if(!approved){await waitForEvidence(db,work,"The Implementation Agent needs the exact client-approved implementation package assigned to this outcome.");return;}const connection=await db.from("cms_connections").select("id,cms_type,connection_mode,status").eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("status","active").in("cms_type",["wordpress","shopify","webflow"]).order("last_verified_at",{ascending:false}).limit(1).maybeSingle();if(!connection.data){await waitForEvidence(db,work,"The approved package has no verified direct CMS execution path. Repository work remains in the GitHub preview workflow.");return;}const actorId=work.requested_by??approved.approved_by??approved.created_by;if(!actorId)throw new ApiError("The approved package has no accountable publishing actor.",409,"CONFLICT");await toolExecution(db,work,"cms.draft","succeeded",{packageId:approved.id,provider:connection.data.cms_type});const execution=await beginToolExecution(db,work,"cms.publish"),publicationKey=`agent-cms:${work.id}:${approved.id}:v${approved.version??1}`;let publication:Record<string,unknown>&{id:string};try{if(execution.alreadySucceeded){const existing=await db.from("cms_publications").select("id,status,provider,provider_resource_id,target_url,published_at").eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("package_id",approved.id).eq("idempotency_key",publicationKey).eq("status","published").maybeSingle();if(existing.error||!existing.data)throw new ApiError("The prior CMS publish succeeded but its exact publication ledger needs reconciliation.",409,"INVALID_STATE");publication=existing.data as Record<string,unknown>&{id:string};}else{publication=await publishCmsPackage(db,{packageId:approved.id,agencyId:work.agency_id,projectId:work.project_id,actorId,idempotencyKey:publicationKey}) as Record<string,unknown>&{id:string};await completeToolExecution(db,execution.id,"succeeded",{packageId:approved.id,publicationId:publication.id,provider:connection.data.cms_type});}}catch(error){if(!execution.alreadySucceeded)await completeToolExecution(db,execution.id,"failed",{code:error instanceof ApiError?error.code:"OPERATION_FAILED",message:error instanceof Error?error.message:"CMS publishing failed."});throw error;}await finish(db,work,{summary:`The exact client-approved package was published to ${connection.data.cms_type} and is awaiting independent live QA.`,packageId:approved.id,publication},{status:"warning",publishing:"completed",verification:"pending"});return;
   }
   if(work.work_type==="qa.validate"){
-    const pending=await db.from("implementation_verifications").select("id,package_id,live_url,proof").eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("status","pending").order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(!await waitForOutcomeImplementation(db,work))return;
+    const packageId=exactOutcomePackageId(work);let pendingQuery=db.from("implementation_verifications").select("id,package_id,live_url,proof").eq("agency_id",work.agency_id).eq("project_id",work.project_id).eq("status","pending");if(packageId)pendingQuery=pendingQuery.eq("package_id",packageId);const pending=await pendingQuery.order("created_at",{ascending:false}).limit(1).maybeSingle();
     if(pending.data){
       const pkg=await db.from("implementation_packages").select("id,client_organization_id,package_data,created_by,approved_by").eq("id",pending.data.package_id).eq("agency_id",work.agency_id).eq("project_id",work.project_id).maybeSingle();if(!pkg.data)throw new ApiError("The pending implementation package is unavailable for QA.",409,"CONFLICT");
       const automated=await verifyLiveImplementation({liveUrl:pending.data.live_url,packageData:pkg.data.package_data});await toolExecution(db,work,"seo.validate",automated.passed?"succeeded":"failed",{packageId:pkg.data.id,failed:automated.failed,page:automated.page});
@@ -161,6 +201,7 @@ async function executeWork(db:SupabaseClient,work:WorkItem){
       await db.from("proof_of_work_events").insert({agency_id:work.agency_id,client_organization_id:pkg.data.client_organization_id,project_id:work.project_id,package_id:pkg.data.id,event_type:"live_verification_passed",title:"Independent live QA passed",description:"Required page, content, metadata, canonical, schema, internal-link, and indexing checks passed. Outcome monitoring is scheduled.",client_visible:true,actor_user_id:actorId,metadata:{monitoringPlanId:plan.data,page:automated.page,qaWorkItemId:work.id}});
       await finish(db,work,{summary:"Independent live implementation QA passed and outcome monitoring was scheduled.",packageId:pkg.data.id,monitoringPlanId:plan.data,checks:automated.checks},{status:"passed",failedRequiredChecks:0});return;
     }
+    if(work.source_type==="outcome_loop_delivery"){await waitForEvidence(db,work,"The QA Agent is waiting for the exact published package verification record.");return;}
     const deployment=await db.from("deployments").select("id,status,url,validation_summary,environment,created_at").eq("project_id",work.project_id).order("created_at",{ascending:false}).limit(1).maybeSingle();const checks=deployment.data?await db.from("deployment_checks").select("check_type,status,required,score,details").eq("deployment_id",deployment.data.id):{data:[]};if(!deployment.data){await waitForEvidence(db,work,"The QA Agent is waiting for a deployment or implementation to validate.");return;}const failed=(checks.data??[]).filter(check=>check.required&&check.status==="failed");await toolExecution(db,work,"seo.validate",failed.length?"failed":"succeeded",{deploymentId:deployment.data.id,failed:failed.length});await finish(db,work,{summary:failed.length?`${failed.length} required validation checks failed.`:"Deployment validation passed.",deployment:deployment.data,checks:checks.data??[]},{status:failed.length?"failed":"passed",failedRequiredChecks:failed.length});return;
   }
   if(work.work_type==="reporting.summary"){

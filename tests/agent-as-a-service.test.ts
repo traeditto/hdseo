@@ -1,7 +1,7 @@
 import {readFileSync} from "node:fs";
 import {join} from "node:path";
 import {describe,expect,it} from "vitest";
-import {agentServicePlans,defaultManagedTools,planEntitlements} from "../lib/agent-service/catalog";
+import {agentServicePlans,defaultManagedTools,planEntitlements,upgradeLegacyManagedTools} from "../lib/agent-service/catalog";
 import {calculateModelCost,capacityUnitEconomics,estimateMaximumModelCost} from "../lib/agent-service/economics";
 
 const read=(path:string)=>readFileSync(join(process.cwd(),path),"utf8");
@@ -25,19 +25,26 @@ describe("Agent-as-a-Service",()=>{
     expect(agentServicePlans.agency_scale.cycleCadenceHours).toBeLessThan(agentServicePlans.agency_core.cycleCadenceHours);
     expect(planEntitlements("unknown")).toEqual(agentServicePlans.starter);
     expect(defaultManagedTools).toContain("opportunities.score");
+    for(const tool of ["growth.plan","internal_links.graph","proof.read","content.refresh","creative.spec","proof.case_study","cms.publish"])expect(defaultManagedTools).toContain(tool);
     expect(defaultManagedTools).not.toContain("dns.write");
     expect(defaultManagedTools).not.toContain("legal.publish");
+    const legacy=["website.detect","website.crawl","google.search_console.read","google.analytics.read","google.business_profile.read","keywords.discover","competitors.analyze","opportunities.score","strategy.plan","cms.draft","github.read","lighthouse.run","seo.validate","schema.validate","sitemap.verify","robots.verify","report.generate","audit.read"];
+    expect(upgradeLegacyManagedTools(legacy)).toContain("growth.plan");
+    expect(upgradeLegacyManagedTools(["audit.read"])).toEqual(["audit.read"]);
   });
 
   it("runs only evidence-backed cycles and refuses make-work",()=>{
     const scheduler=read("lib/agent-service/scheduler.ts");
     expect(scheduler).toContain('.gte("opportunity_score",55)');
-    expect(scheduler).toContain('status:"no_action"');
+    expect(scheduler).toContain('status:opportunity.data?"running":"no_action"');
     expect(scheduler).toContain('recommendation:opportunity.data?null:"NO_ACTION"');
-    expect(scheduler).toContain("consume_agent_service_capacity");
-    expect(scheduler).toContain("const providerCost=0");
-    expect(scheduler).toContain("p_action_units:1");
-    expect(scheduler).toContain("refund_agent_service_capacity");
+    expect(scheduler).toContain("ensureDiscoveryCampaign");
+    expect(scheduler).toContain("reserveOutcome");
+    expect(scheduler).toContain("commitOutcome");
+    expect(scheduler).toContain("releaseOutcome");
+    expect(scheduler).toContain('billable:false');
+    expect(scheduler).toContain('spendingLimit:0');
+    expect(scheduler).not.toContain("consume_agent_service_capacity");
     expect(scheduler).toContain("approvalOwner:enrollment.approval_owner");
     expect(scheduler).toContain("reconcileActiveCycle");
   });
@@ -52,7 +59,8 @@ describe("Agent-as-a-Service",()=>{
 
   it("gives agencies a managed-client workspace and owners a simple Autopilot view",()=>{
     const panel=read("app/ui/agent-service-panel.tsx"),agency=read("app/ui/live-agency-dashboard.tsx"),client=read("app/ui/live-client-dashboard.tsx");
-    for(const text of ["HD SEO AUTOPILOT","WHITE-LABEL AGENT TEAM","No busywork","Plain-language approval inbox","ACTIONS LEFT","MAJOR PAGES LEFT","INTERNAL COST CAP LEFT"])expect(panel).toContain(text);
+    for(const text of ["HD SEO AUTOPILOT","WHITE-LABEL AGENT TEAM","No busywork","Plain-language approval inbox","AVAILABLE OUTCOMES","MAJOR PAGES LEFT","INTERNAL COST CAP LEFT"])expect(panel).toContain(text);
+    expect(panel).toContain("Reserved once; earned only after verified delivery");
     expect(agency).toContain('"Agent Service"');
     expect(client).toContain('["autopilot", "Autopilot"');
   });

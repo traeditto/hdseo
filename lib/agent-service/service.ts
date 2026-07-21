@@ -2,11 +2,12 @@ import "server-only";
 
 import type {SupabaseClient} from "@supabase/supabase-js";
 import {ApiError} from "@/lib/api/errors";
-import {agentServicePlans,defaultManagedTools,isAgentServicePlanKey,planEntitlements,type AgentApprovalOwner,type AgentServiceMode} from "@/lib/agent-service/catalog";
+import {agentServicePlans,defaultManagedTools,isAgentServicePlanKey,planEntitlements,upgradeLegacyManagedTools,type AgentApprovalOwner,type AgentServiceMode} from "@/lib/agent-service/catalog";
 import {agencyBillingPlans,isAgencyBillingPlanKey} from "@/lib/billing/agency-catalog";
 
 export type AgentServiceTenant={agencyId:string;clientId:string;projectId:string;userId:string};
 type EnrollmentInput={serviceMode:AgentServiceMode;planKey:string;approvalOwner:AgentApprovalOwner;operatorBrand:"hdseo"|"agency";billingOwner:"agency"|"client";allowedTools?:string[];resalePriceCents?:number};
+type OutcomeDecision={kind:"opportunity"|"proof"|"creative"|"release";id:string;outcomeRunId:string|null;title:string;summary:string;question:string;riskLevel:"low"|"medium"|"high";status:string;url:string|null;campaignJobId?:string;draft?:{title:unknown;metaDescription:unknown;h1:unknown;sections:unknown;faqs:unknown;qa:unknown};validation?:Record<string,unknown>};
 
 const now=()=>new Date().toISOString();
 
@@ -68,6 +69,28 @@ export async function setAgentServiceStatus(db:SupabaseClient,tenant:AgentServic
   return result.data;
 }
 
+export async function requestManagedAgentServiceCycle(db:SupabaseClient,tenant:AgentServiceTenant){
+  const current=await db.from("agent_service_enrollments")
+    .select("id,status,service_mode,allowed_tools")
+    .eq("agency_id",tenant.agencyId)
+    .eq("client_organization_id",tenant.clientId)
+    .eq("project_id",tenant.projectId)
+    .maybeSingle();
+  if(current.error)throw new ApiError("Managed agent capacity could not be verified.",503,"DATABASE_BINDING_FAILED");
+  if(!current.data)throw new ApiError("Choose an active Autopilot or agency managed-service plan before running the agent team.",402,"SUBSCRIPTION_REQUIRED");
+  if(current.data.service_mode!=="managed_agent")throw new ApiError("This plan includes Copilot controls. Upgrade to an Autopilot or managed agency plan to run the full agent team.",409,"PLAN_MISMATCH");
+  if(!["trialing","active"].includes(current.data.status))throw new ApiError("Managed agent service is paused or unavailable. Restore billing or resume the service before requesting another cycle.",409,"CONFLICT");
+
+  const allowedTools=upgradeLegacyManagedTools(current.data.allowed_tools??[]),toolsUpdated=allowedTools.length!==(current.data.allowed_tools??[]).length;
+  const update=await db.from("agent_service_enrollments").update({
+    next_cycle_at:now(),
+    ...(toolsUpdated?{allowed_tools:allowedTools}:{}),
+    updated_at:now(),
+  }).eq("id",current.data.id).eq("status",current.data.status).select("id").maybeSingle();
+  if(update.error||!update.data)throw new ApiError("The managed agent cycle could not be queued safely.",503,"DATABASE_BINDING_FAILED");
+  return{enrollmentId:current.data.id,allowedTools,toolsUpdated};
+}
+
 export async function changeAgentServicePlan(db:SupabaseClient,tenant:AgentServiceTenant,planKey:string){
   if(!isAgentServicePlanKey(planKey))throw new ApiError("This managed-service plan is not available.",400,"VALIDATION_ERROR");
   const current=await db.from("agent_service_enrollments").select("billing_owner,operator_brand,approval_owner,service_mode").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
@@ -99,19 +122,37 @@ export async function updateAgentServiceSettings(db:SupabaseClient,tenant:AgentS
 export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentServiceTenant,"userId">){
   const enrollment=await db.from("agent_service_enrollments").select("*").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
   if(enrollment.error)throw new ApiError("The managed agent service database is not ready. Apply migration 0026.",503,"DATABASE_BINDING_FAILED");
-  if(!enrollment.data)return{enrollment:null,cycles:[],usage:[],escalations:[],activeWork:[],approvals:[],summary:null};
-  const [cycles,usage,escalations,client]=await Promise.all([
+  if(!enrollment.data)return{tenant,enrollment:null,cycles:[],usage:[],escalations:[],activeWork:[],approvals:[],outcomeDecisions:[],outcomeRuns:[],summary:null};
+  const [cycles,usage,escalations,client,outcomeRuns,campaignDecisions,releaseDecisions]=await Promise.all([
     db.from("agent_service_cycles").select("*").eq("enrollment_id",enrollment.data.id).order("created_at",{ascending:false}).limit(30),
     db.from("agent_service_usage").select("*").eq("enrollment_id",enrollment.data.id).gte("occurred_at",enrollment.data.current_period_start).order("occurred_at",{ascending:false}).limit(100),
     db.from("agent_service_escalations").select("*").eq("enrollment_id",enrollment.data.id).order("created_at",{ascending:false}).limit(50),
     db.from("clients").select("id").eq("agency_id",tenant.agencyId).eq("organization_id",tenant.clientId).single(),
+    db.from("outcome_loop_runs").select("id,status,current_step,expected_value,delivery_kind,delivered_at,campaign_job_id,execution_id,monitoring_plan_id,failure_code,failure_message,created_at,updated_at").eq("enrollment_id",enrollment.data.id).order("created_at",{ascending:false}).limit(30),
+    db.from("seo_campaign_jobs").select("id,status,result,outcome_run_id,updated_at").eq("project_id",tenant.projectId).not("outcome_run_id","is",null).in("status",["awaiting_opportunity_review","awaiting_creative_evidence","awaiting_creative_review"]).order("updated_at",{ascending:false}).limit(20),
+    db.from("seo_executions").select("id,status,pull_request_url,preview_url,preview_deployment_id,validation_results,outcome_run_id,updated_at").eq("project_id",tenant.projectId).not("outcome_run_id","is",null).eq("status","preview_ready").order("updated_at",{ascending:false}).limit(20),
   ]);
   const [activeWork,approvals]=client.data?await Promise.all([
     db.from("agent_work_items").select("id,work_type,goal,assigned_agent_key,status,risk_level,spending_limit,spent_amount,final_outcome,updated_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).not("status","in","(succeeded,cancelled,failed,dead_letter)").order("priority",{ascending:false}).limit(30),
     db.from("agent_approvals").select("id,work_item_id,approval_type,title,summary,risk_level,status,requested_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).eq("status","awaiting").order("requested_at",{ascending:false}).limit(30),
   ]):[{data:[]},{data:[]}];
   const majorPagesUsed=(usage.data??[]).filter(item=>item.usage_type==="page_build").reduce((sum,item)=>sum+Number(item.quantity??0),0);
-  return{enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],summary:{actionsRemaining:Math.max(0,enrollment.data.monthly_action_limit-enrollment.data.actions_used)+Number(enrollment.data.purchased_action_balance??0),majorPagesRemaining:Math.max(0,Number(enrollment.data.monthly_major_page_limit??0)-majorPagesUsed),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
+  const creativeDraftIds=(campaignDecisions.data??[]).flatMap(item=>{
+    const result=item.result&&typeof item.result==="object"&&!Array.isArray(item.result)?item.result as Record<string,unknown>:{};
+    return typeof result.creativeDraftId==="string"?[result.creativeDraftId]:[];
+  });
+  const creativeDrafts=creativeDraftIds.length?await db.from("seo_creative_drafts").select("id,title,meta_description,h1,summary,sections,faqs,qa_results,status").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).in("id",creativeDraftIds):{data:[]};
+  const creativeById=new Map((creativeDrafts.data??[]).map(item=>[item.id,item]));
+  const decisions:OutcomeDecision[]=(campaignDecisions.data??[]).flatMap<OutcomeDecision>(item=>{
+    const result=item.result&&typeof item.result==="object"&&!Array.isArray(item.result)?item.result as Record<string,unknown>:{};
+    if(item.status==="awaiting_opportunity_review")return[{kind:"opportunity" as const,id:item.id,outcomeRunId:item.outcome_run_id,title:"Choose the next SEO investment",summary:String(result.plainSummary??"HD SEO found the strongest evidence-backed opportunity and is waiting before preparing the exact change."),question:String(result.approvalQuestion??"Should HD SEO prepare this change for a validated preview?"),riskLevel:"medium",status:item.status,url:null}];
+    if(item.status==="awaiting_creative_evidence")return[{kind:"proof" as const,id:item.id,outcomeRunId:item.outcome_run_id,title:"Add proof before HD SEO writes",summary:String(result.requiredAction??"HD SEO needs two different verified business proof items so the page contains real, defensible claims."),question:"Add or verify business proof, then retry this outcome. No outcome has been charged.",riskLevel:"low",status:item.status,url:null}];
+    const draftId=typeof result.creativeDraftId==="string"?result.creativeDraftId:null,draft=draftId?creativeById.get(draftId):null;
+    if(!draftId||!draft)return[];
+    return[{kind:"creative" as const,id:draftId,campaignJobId:item.id,outcomeRunId:item.outcome_run_id,title:"Review the exact page draft",summary:String(draft.summary??draft.title??"The generated draft passed deterministic evidence and quality checks."),question:"Approve this exact draft before HD SEO creates code or publishes anything?",riskLevel:"medium",status:item.status,url:null,draft:{title:draft.title,metaDescription:draft.meta_description,h1:draft.h1,sections:draft.sections,faqs:draft.faqs,qa:draft.qa_results}}];
+  });
+  decisions.push(...(releaseDecisions.data??[]).map<OutcomeDecision>(item=>{const validation=item.validation_results&&typeof item.validation_results==="object"&&!Array.isArray(item.validation_results)?item.validation_results as Record<string,unknown>:{};return{kind:"release",id:item.id,outcomeRunId:item.outcome_run_id,title:"Release the QA-passed preview",summary:"The exact approved change has a healthy preview. Releasing merges through protected GitHub rules; HD SEO then waits for production, validates it, and starts outcome monitoring.",question:"Release this validated preview to production?",riskLevel:"high",status:item.status,url:item.preview_url??item.pull_request_url??null,validation};}));
+  return{tenant,enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],outcomeDecisions:decisions,outcomeRuns:outcomeRuns.data??[],summary:{actionsRemaining:Math.max(0,enrollment.data.monthly_action_limit-enrollment.data.actions_used)+Number(enrollment.data.purchased_action_balance??0),reservedActions:(outcomeRuns.data??[]).filter(item=>["reserved","analyzing","awaiting_approval","implementing","preview","qa","publishing","monitoring"].includes(item.status)).length,completedOutcomes:(outcomeRuns.data??[]).filter(item=>item.status==="completed").length,majorPagesRemaining:Math.max(0,Number(enrollment.data.monthly_major_page_limit??0)-majorPagesUsed),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
 }
 
 export async function resolveAgentServiceEscalation(db:SupabaseClient,tenant:AgentServiceTenant,id:string,resolution:string){
