@@ -1,6 +1,6 @@
 import { describe,expect,it } from "vitest";
 import { selectImplementationPath } from "../lib/seo/implementation-path";
-import { buildManualPackage } from "../lib/seo/manual-package";
+import { buildManualPackage,naturalKeywordTitle } from "../lib/seo/manual-package";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -25,6 +25,15 @@ describe("manual implementation workflow",()=>{
     expect(result.seoPluginFields.rankMath.focusKeyword).toBe("roof repair jacksonville");
     expect(result.verifiedFacts).toEqual([{type:"license",label:"License",approvedWording:"State license ABC-123"}]);
     expect(JSON.stringify(result)).not.toContain("best roofing company");
+  });
+
+  it("turns raw provider queries into customer-ready approval language",()=>{
+    expect(naturalKeywordTitle("roofing companies in jax fl")).toBe("Roofing Company in Jacksonville, FL");
+    const result=buildManualPackage({path:"generic_cms",keyword:"roofing companies in jax fl",targetUrl:"https://example.com/roofing",actionType:"IMPROVE",h1:"Jacksonville roofing built for local homes",verifiedEvidence:[],missingEvidence:[]});
+    expect(result.title).toBe("Improve visibility for Roofing Company in Jacksonville, FL");
+    expect(result.metadata.h1).toBe("Jacksonville roofing built for local homes");
+    if(result.format!=="generic_cms")throw new Error("Expected a generic CMS package");
+    expect(result.contentBlocks).toEqual([{type:"metadata",content:"Update the SEO title and description. Keep the existing H1 and body copy unchanged."}]);
   });
 
   it("schedules the complete manual monitoring cadence only after passed verification",()=>{
