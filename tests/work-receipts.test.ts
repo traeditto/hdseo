@@ -24,6 +24,18 @@ describe("customer-visible accountable work receipts", () => {
     expect(route).toContain("const verified");
     expect(receipt).toContain("Approved means authorized—not completed");
     expect(receipt).toContain("No execution proof exists yet");
+    expect(route).toContain('failureCode === "CONNECTION_REQUIRED"');
+    expect(route).toContain("The protected worker should claim this within five minutes");
+    expect(receipt).toContain("No outcome is finally charged until a customer-visible delivery is independently verified");
+  });
+
+  it("repairs and displays the accountable approval timestamp", () => {
+    const migration = read("supabase/migrations/0041_approved_package_execution_handoff.sql");
+    const route = read("app/api/work-receipts/route.ts");
+    expect(migration).toContain("approved_by=case when p_decision='client_approved' then p_user_id");
+    expect(migration).toContain("approved_at=case when p_decision='client_approved' then v_decided_at");
+    expect(migration).toContain("latest_approval");
+    expect(route).toContain("pkg.approved_at ?? approvalEvent?.occurred_at");
   });
 
   it("shows the keyword plan, execution proof, creative readiness and cost receipt", () => {

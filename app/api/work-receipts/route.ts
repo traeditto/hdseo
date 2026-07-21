@@ -53,7 +53,7 @@ export async function GET(request: Request) {
       context.db
         .from("implementation_packages")
         .select(
-          "id,opportunity_id,action_draft_id,status,risk_level,implementation_path,hypothesis,current_state,proposed_state,package_data,acceptance_criteria,verification_checklist,approval_digest,approved_at,implemented_at,created_at,updated_at",
+          "id,opportunity_id,action_draft_id,status,risk_level,implementation_path,hypothesis,current_state,proposed_state,package_data,acceptance_criteria,verification_checklist,approval_digest,approved_by,approved_at,implemented_at,created_at,updated_at",
         ),
     )
       .eq("id", packageId)
@@ -110,7 +110,7 @@ export async function GET(request: Request) {
     const metric = data(metricResult as any) as any;
     const ranking = data(rankingResult as any) as any;
 
-    const [draftResult, runResult, verificationResult, proofResult, creativeResult, assetsResult, budgetResult] =
+    const [draftResult, runResult, cycleResult, verificationResult, proofResult, creativeResult, assetsResult, budgetResult] =
       await Promise.all([
         pkg.action_draft_id
           ? scope(
@@ -128,6 +128,17 @@ export async function GET(request: Request) {
             .from("outcome_loop_runs")
             .select(
               "id,status,current_step,expected_value,observed_value,delivery_kind,delivery_proof,delivered_at,billed_at,failure_code,failure_message,started_at,completed_at,created_at,updated_at",
+            ),
+        )
+          .eq("implementation_package_id", packageId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        scope(
+          context.db
+            .from("agent_service_cycles")
+            .select(
+              "id,status,stage,failure_code,failure_message,started_at,completed_at,updated_at",
             ),
         )
           .eq("implementation_package_id", packageId)
@@ -180,6 +191,7 @@ export async function GET(request: Request) {
       ]);
 
     const run = data(runResult as any) as any;
+    const cycle = data(cycleResult as any) as any;
     const executionResult = await scope(
       context.db
         .from("seo_executions")
@@ -287,7 +299,9 @@ export async function GET(request: Request) {
     const proofEvents = (data(proofResult as any) ?? []) as any[];
     const steps = (data(stepsResult as any) ?? []) as any[];
 
-    const approvalRecorded = Boolean(pkg.approved_at || pkg.approval_digest);
+    const approvalEvent = proofEvents.find((event) => event.event_type === "client_approved");
+    const approvedAt = pkg.approved_at ?? approvalEvent?.occurred_at ?? null;
+    const approvalRecorded = Boolean(approvedAt || pkg.approval_digest);
     const implementationStarted = Boolean(
       execution ||
         run?.status === "implementing" ||
@@ -305,6 +319,9 @@ export async function GET(request: Request) {
     const verified = Boolean(
       verification?.status === "passed" || run?.status === "completed",
     );
+    const blocked = [run?.status, cycle?.status].includes("blocked");
+    const failureCode = run?.failure_code ?? cycle?.failure_code ?? null;
+    const failureMessage = run?.failure_message ?? cycle?.failure_message ?? null;
     const stage = verified
       ? "verified"
       : published
@@ -356,7 +373,7 @@ export async function GET(request: Request) {
           stage,
           riskLevel: pkg.risk_level,
           implementationPath: pkg.implementation_path,
-          approvedAt: pkg.approved_at,
+          approvedAt,
           implementedAt: pkg.implemented_at,
           approvalBound: Boolean(pkg.approval_digest),
           proposedState: pkg.proposed_state,
@@ -390,7 +407,13 @@ export async function GET(request: Request) {
           hasStarted: implementationStarted,
           isPublished: published,
           isVerified: verified,
-          status: execution?.status ?? run?.status ?? pkg.status,
+          status: execution?.status ?? run?.status ?? cycle?.status ?? pkg.status,
+          blocked,
+          failureCode,
+          failureMessage,
+          pickupTarget: approvalRecorded && !implementationStarted && !blocked
+            ? "The protected worker should claim this within five minutes."
+            : null,
           branch: execution?.branch_name ?? null,
           pullRequestUrl: execution?.pull_request_url ?? null,
           previewUrl:
@@ -404,7 +427,15 @@ export async function GET(request: Request) {
               : null),
           validation: verification?.checks ?? execution?.validation_results ?? deployment?.validation_summary ?? null,
           verifiedAt: verification?.verified_at ?? run?.completed_at ?? null,
-          nextAction: verified
+          nextAction: failureCode === "CONNECTION_REQUIRED"
+            ? "Approval is safe, but HD SEO still needs a verified GitHub + Vercel, WordPress, Shopify, or Webflow publishing connection. No outcome capacity has been used."
+            : failureCode === "CHECKOUT_REQUIRED"
+              ? "Approval is safe, but the plan’s included outcome capacity is currently used. Add prepaid capacity or wait for renewal; no duplicate charge was created."
+              : failureCode === "ACTIVE_WORK"
+                ? "Another protected website workflow is finishing first. This approved change remains next in line and has not consumed outcome capacity."
+                : failureMessage
+                  ? failureMessage
+                  : verified
             ? "HD SEO is monitoring rankings, traffic, leads and value."
             : published
               ? "HD SEO is completing independent QA and starting measurement."
@@ -413,7 +444,7 @@ export async function GET(request: Request) {
                 : implementationStarted
                   ? "The approved change is being prepared and remains rollback protected."
                   : approvalRecorded
-                    ? "Approval is recorded. The agent will now prepare the exact change; nothing has been claimed as published yet."
+                    ? "Approval is recorded and tied to this exact package. HD SEO is claiming the protected implementation job; nothing has been claimed as published yet."
                     : "Review the proposed change before HD SEO continues.",
         },
         timeline,

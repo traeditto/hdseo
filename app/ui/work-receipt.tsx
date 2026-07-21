@@ -43,6 +43,10 @@ type Receipt = {
     liveUrl: string | null;
     validation: unknown;
     verifiedAt: string | null;
+    blocked: boolean;
+    failureCode: string | null;
+    failureMessage: string | null;
+    pickupTarget: string | null;
     nextAction: string;
   };
   timeline: TimelineItem[];
@@ -214,6 +218,8 @@ export function WorkReceipt({
               <strong>
                 {receipt.execution.isVerified
                   ? "Completed and independently verified"
+                  : receipt.execution.blocked
+                    ? "Approved, but one requirement still needs attention"
                   : receipt.execution.hasStarted
                     ? "The approved work is now in progress"
                     : "Approved means authorized—not completed"}
@@ -221,6 +227,13 @@ export function WorkReceipt({
               <p>{receipt.execution.nextAction}</p>
               <span>Approval recorded {date(receipt.package.approvedAt)}</span>
             </aside>
+            {receipt.execution.pickupTarget && (
+              <aside className="receipt-truth active">
+                <strong>What happens next</strong>
+                <p>{receipt.execution.pickupTarget} It will prepare a reviewable change, create a protected preview when the connection supports it, run QA, then follow the selected release approval policy.</p>
+                <span>No outcome is finally charged until a customer-visible delivery is independently verified.</span>
+              </aside>
+            )}
 
             <section className="receipt-section receipt-timeline">
               <div className="receipt-section-head">

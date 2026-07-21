@@ -3,7 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ChatGPTUser } from "@/app/chatgpt-auth";
-import { ApiError } from "@/lib/api/errors";
+import { ApiError, logEvent } from "@/lib/api/errors";
 import {
   getLiveAdminClient,
   resolveLiveIdentity,
@@ -47,7 +47,7 @@ import {
   seedOnboardingAgentTeam,
 } from "@/lib/agents/control-plane";
 import { requestManagedAgentServiceCycle } from "@/lib/agent-service/service";
-import { runManagedAgentCycle } from "@/lib/agent-service/scheduler";
+import {continueApprovedImplementationPackage, runManagedAgentCycle} from "@/lib/agent-service/scheduler";
 import { wakeManagedAgentService } from "@/lib/agent-service/wake";
 import {
   publishCmsPackage,
@@ -4316,7 +4316,7 @@ export async function rollbackPackageCmsPublication(
 export async function recordClientPackageDecision(
   email: string,
   input: { packageId: string; decision: string },
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   const db = admin();
   const userId = await resolveUserId(db, email);
   if (!userId) {
@@ -4360,7 +4360,15 @@ export async function recordClientPackageDecision(
   const approved=input.decision==="client_approved",approvalDigest=approved?implementationPackageDigest(pkg):null,approvedSnapshot=approved?implementationPackageSnapshot(pkg):{};
   const decided=await db.rpc("decide_implementation_package",{p_agency_id:pkg.agency_id,p_client_organization_id:pkg.client_organization_id,p_project_id:pkg.project_id,p_package_id:input.packageId,p_user_id:userId,p_decision:input.decision,p_note:"The client decision was recorded through the secure portal.",p_approval_digest:approvalDigest,p_approved_snapshot:approvedSnapshot});
   if(decided.error)throw new ApiError("This exact approval could not be committed or was already processed.",409,"CONFLICT");
-  await wakeManagedAgentService(db,{agencyId:pkg.agency_id,clientId:pkg.client_organization_id,projectId:pkg.project_id,reason:"approval_decided"});
+  let continuation:Record<string,unknown>={status:"not_requested"};
+  if(approved){
+    try{continuation=await continueApprovedImplementationPackage(db,{agencyId:pkg.agency_id,clientId:pkg.client_organization_id,projectId:pkg.project_id,packageId:input.packageId,requestedBy:userId}) as Record<string,unknown>;}
+    catch(error){
+      logEvent("approved_package_continuation_deferred",{agencyId:pkg.agency_id,projectId:pkg.project_id,packageId:input.packageId,status:"retry_scheduled",errorCode:error instanceof ApiError?error.code:"OPERATION_FAILED"});
+      await wakeManagedAgentService(db,{agencyId:pkg.agency_id,clientId:pkg.client_organization_id,projectId:pkg.project_id,reason:"approval_decided"});
+      continuation={status:"retry_scheduled"};
+    }
+  }else await wakeManagedAgentService(db,{agencyId:pkg.agency_id,clientId:pkg.client_organization_id,projectId:pkg.project_id,reason:"approval_decided"});
   await recordAudit(db, {
     agencyId: pkg.agency_id,
     actorUserId: userId,
@@ -4369,4 +4377,5 @@ export async function recordClientPackageDecision(
     resourceId: input.packageId,
     afterState: { decision: input.decision, clientRole: member.role, approvalDigest },
   });
+  return continuation;
 }

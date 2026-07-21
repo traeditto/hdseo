@@ -1,11 +1,12 @@
 import {z} from "zod";
 
-import {ApiError,jsonError} from "@/lib/api/errors";
+import {ApiError,jsonError,logEvent} from "@/lib/api/errors";
 import {parseJson} from "@/lib/api/request";
 import {requireClientApproval,resolveClientContext} from "@/lib/auth/context";
 import {implementationPackageDigest,implementationPackageSnapshot} from "@/lib/safety/package-approval";
 import {createSupabaseAdminClient} from "@/lib/supabase/admin";
 import {wakeManagedAgentService} from "@/lib/agent-service/wake";
+import {continueApprovedImplementationPackage} from "@/lib/agent-service/scheduler";
 
 const schema=z.object({clientId:z.string().uuid(),projectId:z.string().uuid(),packageId:z.string().uuid(),decision:z.enum(["approved","rejected","revision_requested"]),note:z.string().max(4000).optional()});
 
@@ -25,6 +26,14 @@ export async function POST(request:Request){try{
   const approved=input.decision==="approved",decision=approved?"client_approved":input.decision,approvalDigest=approved?implementationPackageDigest(pkg.data):null,approvedSnapshot=approved?implementationPackageSnapshot(pkg.data):{};
   const result=await db.rpc("decide_implementation_package",{p_agency_id:context.agency.id,p_client_organization_id:context.client.id,p_project_id:context.project.id,p_package_id:input.packageId,p_user_id:context.user.id,p_decision:decision,p_note:input.note??null,p_approval_digest:approvalDigest,p_approved_snapshot:approvedSnapshot});
   if(result.error)throw new ApiError("The exact client decision could not be committed. It may already have been decided.",409,"CONFLICT");
-  await wakeManagedAgentService(db,{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,reason:"approval_decided"});
-  return Response.json({ok:true,decision:input.decision,approvalDigest});
+  let continuation:Record<string,unknown>={status:"not_requested"};
+  if(approved){
+    try{continuation=await continueApprovedImplementationPackage(db,{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,packageId:input.packageId,requestedBy:context.user.id}) as Record<string,unknown>;}
+    catch(error){
+      logEvent("approved_package_continuation_deferred",{agencyId:context.agency.id,projectId:context.project.id,packageId:input.packageId,status:"retry_scheduled",errorCode:error instanceof ApiError?error.code:"OPERATION_FAILED"});
+      await wakeManagedAgentService(db,{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,reason:"approval_decided"});
+      continuation={status:"retry_scheduled"};
+    }
+  }else await wakeManagedAgentService(db,{agencyId:context.agency.id,clientId:context.client.id,projectId:context.project.id,reason:"approval_decided"});
+  return Response.json({ok:true,decision:input.decision,approvalDigest,continuation});
 }catch(error){return jsonError(error)}}

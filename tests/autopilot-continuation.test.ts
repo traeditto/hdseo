@@ -80,4 +80,27 @@ describe("Autopilot event-driven continuation", () => {
     expect(store).toContain('reason:"approval_decided"');
     expect(clientApi).toContain('reason:"approval_decided"');
   });
+
+  it("continues the exact approved package instead of reapplying the discovery threshold", () => {
+    const scheduler = read("lib/agent-service/scheduler.ts");
+    const store = read("lib/live/store.ts");
+    const clientApi = read("app/api/client/approvals/route.ts");
+    expect(scheduler).toContain("continueApprovedImplementationPackage");
+    expect(scheduler).toContain("approved-package:${pkg.id}:v${pkg.version??1}");
+    expect(scheduler).toContain('eq("status","client_approved")');
+    expect(scheduler).toContain("approvedPackageId:approved.pkg.id");
+    expect(scheduler).toContain('status:"implementation_queued"');
+    expect(store).toContain("continueApprovedImplementationPackage");
+    expect(clientApi).toContain("continueApprovedImplementationPackage");
+  });
+
+  it("fails closed without spending capacity when publishing access is not verified", () => {
+    const scheduler = read("lib/agent-service/scheduler.ts");
+    const connectionBlock = scheduler.indexOf('failure_code:"CONNECTION_REQUIRED"');
+    const reservation = scheduler.indexOf("const reservation=await reserveOutcome");
+    expect(connectionBlock).toBeGreaterThan(0);
+    expect(connectionBlock).toBeLessThan(reservation);
+    expect(scheduler).toContain("No outcome capacity has been used");
+    expect(scheduler).toContain('failure_code:"ACTIVE_WORK"');
+  });
 });
