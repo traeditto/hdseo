@@ -106,7 +106,6 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
       .from("github_installations")
       .select("id,installation_id,account_login,status")
       .eq("id", repository.github_installation_id)
-      .eq("agency_id", context.agency.id)
       .maybeSingle();
     if (result.data) {
       installation = {

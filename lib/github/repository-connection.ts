@@ -19,7 +19,7 @@ export async function saveRepositoryConnection(context:GitHubManagementContext,i
     github_repository_id:repository.id,owner:repository.owner.login,name:repository.name,full_name:repository.full_name,
     default_branch:repository.default_branch,visibility:repository.visibility??(repository.private?"private":"public"),status:"active",
     repository_execution_enabled:false,last_synced_at:now,updated_at:now,
-  },{onConflict:"github_installation_id,github_repository_id"}).select("id").single();
+  },{onConflict:"agency_id,github_installation_id,github_repository_id"}).select("id").single();
   if(saved.error||!saved.data)repositoryDatabaseError("Repository connection could not be stored.",saved.error,context,"repository.upsert");
   const legacy=await context.db.from("repository_connections").upsert({
     agency_id:context.agency.id,client_organization_id:context.client.id,project_id:context.project.id,provider:"github",

@@ -9,6 +9,7 @@ import { encryptSecret,decryptSecret } from "@/lib/security/encryption";
 import { env, githubCallbackUrl, appBaseUrl } from "@/lib/config/env";
 import { resolveGitHubManagementContext, resolveSignedGitHubContext } from "@/lib/github/integration-context";
 import { saveRepositoryConnection } from "@/lib/github/repository-connection";
+import { findAgencyInstallationRecord } from "@/lib/github/tenant-installation";
 
 const connectSchema = z.object({ agencyId:z.string().uuid(), clientId:z.string().uuid(), projectId:z.string().uuid(), installationId:z.coerce.number().int().positive(), repositoryId:z.coerce.number().int().positive() });
 
@@ -42,14 +43,16 @@ export async function GET(request: Request) {
     const userToken=decryptSecret(oauth.data.encrypted_access_token),userInstallations=await listUserInstallations(userToken);
     if(!userInstallations.some(item=>item.id===installationId))throw new ApiError("The signed-in GitHub user cannot access this installation.",403,"TENANT_DENIED");
     const [installation, repositories] = await Promise.all([getInstallation(installationId), listInstallationRepositories(installationId)]);
-    const existingInstallation=await db.from("github_installations").select("agency_id").eq("installation_id",installationId).maybeSingle();
-    if(existingInstallation.data&&existingInstallation.data.agency_id!==context.agency.id)throw new ApiError("This GitHub installation is already assigned to another HD SEO agency.",409,"CONFLICT");
-    const saved = await db.from("github_installations").upsert({
+    const existingInstallation=await db.from("github_installations").select("id,agency_id").eq("installation_id",installationId).maybeSingle();
+    const installationValues={
       agency_id:context.agency.id, installation_id:installation.id, account_id:installation.account.id, account_login:installation.account.login,
       account_type:installation.account.type, repository_selection:installation.repository_selection, permissions:installation.permissions,
       events:installation.events, status:installation.suspended_at?"suspended":"active", installed_by:context.user.id,
       suspended_at:installation.suspended_at??null, last_synced_at:new Date().toISOString(), updated_at:new Date().toISOString(),
-    },{onConflict:"installation_id"}).select("id").single();
+    };
+    const saved=existingInstallation.data
+      ? await db.from("github_installations").update({...installationValues,agency_id:existingInstallation.data.agency_id}).eq("id",existingInstallation.data.id).select("id").single()
+      : await db.from("github_installations").insert(installationValues).select("id").single();
     if (!saved.data) throw new ApiError("GitHub installation could not be stored.", 500, "OPERATION_FAILED");
     if(context.client&&context.project&&repositories.length===1){const repository=await saveRepositoryConnection(context,{installationRecordId:saved.data.id,installationId:installation.id,repository:repositories[0]});await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"github.repository.connected",resourceType:"repository",resourceId:repository.id,request,afterState:{fullName:repository.fullName,projectId:context.project.id,automatic:true}})}
     await db.from("integration_oauth_states").delete().eq("id",state.oauthStateId);
@@ -63,11 +66,11 @@ export async function POST(request: Request) {
     const input = await parseJson(request, connectSchema);
     const context = await resolveGitHubManagementContext(input);
     const db = requireAdminDb();
-    const installationRecord = await db.from("github_installations").select("id,installation_id,status").eq("agency_id",context.agency.id).eq("installation_id",input.installationId).single();
-    if (!installationRecord.data || installationRecord.data.status!=="active") throw new ApiError("Active GitHub installation not found.", 404, "NOT_FOUND");
+    const installationRecord = await findAgencyInstallationRecord(db,context.agency.id);
+    if (!installationRecord || installationRecord.installationId!==input.installationId || installationRecord.status!=="active") throw new ApiError("Active GitHub installation not found.", 404, "NOT_FOUND");
     const repositories = await listInstallationRepositories(input.installationId), repository = repositories.find(item=>item.id===input.repositoryId);
     if (!repository) throw new ApiError("The selected repository is not accessible to this installation.", 403, "TENANT_DENIED");
-    const saved=await saveRepositoryConnection(context,{installationRecordId:installationRecord.data.id,installationId:input.installationId,repository});
+    const saved=await saveRepositoryConnection(context,{installationRecordId:installationRecord.id,installationId:input.installationId,repository});
     await auditEvent({ agencyId:context.agency.id, actorUserId:context.user.id, action:"github.repository.connected", resourceType:"repository", resourceId:saved.id, request, afterState:{fullName:repository.full_name,projectId:input.projectId} });
     return Response.json({ok:true,repository:saved,executionEnabled:false});
   } catch (error) { return jsonError(error); }

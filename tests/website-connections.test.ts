@@ -65,5 +65,8 @@ describe("website connections",()=>{
     expect(portal).toContain("Connect GitHub repository");
     expect(portal).toContain("I don’t use GitHub—help me connect");
     expect(binding).toContain("upsertGitHubWebsite");
+    expect(binding).not.toContain("already assigned to another HD SEO agency");
+    expect(read("lib/github/repository-connection.ts")).toContain('onConflict:"agency_id,github_installation_id,github_repository_id"');
+    expect(read("supabase/migrations/0039_shared_github_installation_tenants.sql")).toContain("repositories_agency_installation_repository_uidx");
   });
 });
