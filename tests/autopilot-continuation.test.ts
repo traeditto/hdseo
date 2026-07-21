@@ -94,6 +94,15 @@ describe("Autopilot event-driven continuation", () => {
     expect(clientApi).toContain("continueApprovedImplementationPackage");
   });
 
+  it("advances an already-reserved outcome after approval instead of charging capacity twice", () => {
+    const scheduler = read("lib/agent-service/scheduler.ts");
+    expect(scheduler).toContain("continueApprovedActiveCampaign");
+    expect(scheduler).toContain("reusedReservedOutcome:true");
+    expect(scheduler).toContain('eq("outcome_run_id",run.id)');
+    expect(scheduler).toContain('current_stage:targetStage');
+    expect(scheduler).toContain('targetStage=path.kind==="repository"?"inspect_repository":"prepare"');
+  });
+
   it("fails closed without spending capacity when publishing access is not verified", () => {
     const scheduler = read("lib/agent-service/scheduler.ts");
     const connectionBlock = scheduler.indexOf('failure_code:"CONNECTION_REQUIRED"');

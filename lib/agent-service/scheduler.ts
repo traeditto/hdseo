@@ -17,7 +17,7 @@ type Enrollment={
 type Cycle={id:string;outcome_run_id:string|null;campaign_job_id:string|null;implementation_package_id?:string|null;work_item_ids:string[];selected_opportunity_id:string|null;status:string};
 type Work={id:string;work_type:string;status:string;final_outcome:Record<string,unknown>|null};
 type Run={id:string;status:string;campaign_job_id:string|null};
-type Campaign={id:string;status:string;current_stage:string;result:Record<string,unknown>;error_code:string|null;error_message:string|null};
+type Campaign={id:string;status:string;current_stage:string;input?:Record<string,unknown>;result:Record<string,unknown>;error_code:string|null;error_message:string|null};
 type ApprovedPackage={
   id:string;opportunity_id:string;version:number;implementation_path:string;status:string;
   approval_digest:string|null;approved_at:string|null;approved_by:string|null;updated_at:string;
@@ -235,7 +235,7 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
   const run=runResult.data as Run,userId=await accountableUser(db,enrollment,requestedBy);
   const campaignId=cycle.campaign_job_id??run.campaign_job_id;
   if(campaignId){
-    const campaignResult=await db.from("seo_campaign_jobs").select("id,status,current_stage,result,error_code,error_message").eq("id",campaignId).maybeSingle();
+    const campaignResult=await db.from("seo_campaign_jobs").select("id,status,current_stage,input,result,error_code,error_message").eq("id",campaignId).maybeSingle();
     if(!campaignResult.data){await releaseOutcome(db,{runId:run.id,reason:"The protected campaign record is unavailable.",status:"failed"});await releaseLease(db,enrollment);return true;}
     const campaign=campaignResult.data as Campaign;
     if(campaign.status==="completed")return completeCampaignOutcome(db,enrollment,cycle,run,campaign,userId);
@@ -244,6 +244,7 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
       await escalate(db,enrollment,cycle.id,"worker","Managed SEO outcome did not ship",campaign.error_message??"The protected workflow stopped before delivery; the reserved action was returned.");
       await releaseLease(db,enrollment);return true;
     }
+    if(campaign.status==="awaiting_manual_completion"&&await continueApprovedActiveCampaign(db,enrollment,cycle,run,campaign,userId))return true;
     if(campaign.status==="awaiting_manual_completion"&&await ensureDirectCmsExecution(db,enrollment,cycle,run,campaign,userId))return true;
     await recordCampaignState(db,cycle,run,campaign);await releaseLease(db,enrollment,1);return true;
   }
@@ -381,6 +382,54 @@ async function queueApprovedCampaign(db:SupabaseClient,input:{enrollment:Enrollm
   const proof=await db.from("proof_of_work_events").select("id").eq("package_id",pkg.id).eq("event_type","implementation_queued").limit(1).maybeSingle();
   if(!proof.data)await db.from("proof_of_work_events").insert({agency_id:enrollment.agency_id,client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,opportunity_id:pkg.opportunity_id,package_id:pkg.id,event_type:"implementation_queued",title:"Approved work entered the protected implementation queue",description:path.kind==="repository"?"HD SEO is inspecting the connected repository before it prepares an exact reviewable change.":`HD SEO queued the exact approved package for protected ${path.provider} publishing and independent QA.`,client_visible:true,actor_user_id:requestedBy,metadata:{outcomeRunId:runId,campaignJobId:campaignId,path:path.kind,provider:path.provider??null}});
   return{campaignId,status:targetStatus};
+}
+
+async function continueApprovedActiveCampaign(db:SupabaseClient,enrollment:Enrollment,cycle:Cycle,run:Run,campaign:Campaign,requestedBy:string){
+  const packageId=typeof campaign.result?.packageId==="string"?campaign.result.packageId:null;
+  if(!packageId)return false;
+  const packageResult=await db.from("implementation_packages")
+    .select("id,opportunity_id,version,implementation_path,status,approval_digest,approved_at,approved_by,updated_at")
+    .eq("id",packageId).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id)
+    .eq("project_id",enrollment.project_id).eq("status","client_approved").maybeSingle();
+  if(packageResult.error)throw new ApiError("The approved package attached to this Autopilot outcome could not be inspected.",503,"DATABASE_BINDING_FAILED");
+  if(!packageResult.data)return false;
+  const pkg=packageResult.data as ApprovedPackage,path=await approvedDeliveryPath(db,enrollment);
+  if(!path){
+    const message="Connect and verify GitHub + Vercel, WordPress, Shopify, or Webflow so HD SEO can implement this approved work. Reserved capacity will not become a completed outcome charge until delivery is independently verified.";
+    const blocked=await db.from("agent_service_cycles").update({status:"awaiting_approval",stage:"connection",implementation_package_id:pkg.id,failure_code:"CONNECTION_REQUIRED",failure_message:message,updated_at:now()}).eq("id",cycle.id).select("id").maybeSingle();
+    if(blocked.error||!blocked.data)throw new ApiError("The approved work connection blocker could not be recorded.",503,"DATABASE_BINDING_FAILED");
+    await Promise.all([
+      db.from("outcome_loop_runs").update({implementation_package_id:pkg.id,status:"awaiting_approval",current_step:"implementation",updated_at:now()}).eq("id",run.id),
+      setOutcomeStep(db,{runId:run.id,stepKey:"approval",status:"succeeded",output:{packageId:pkg.id,approvalDigest:pkg.approval_digest,approvedAt:pkg.approved_at}}),
+      setOutcomeStep(db,{runId:run.id,stepKey:"implementation",status:"waiting",output:{packageId:pkg.id,reason:"CONNECTION_REQUIRED"}}),
+    ]);
+    if((cycle as unknown as Record<string,unknown>).failure_code!=="CONNECTION_REQUIRED")await escalate(db,enrollment,cycle.id,"connection","Approved work needs a verified publishing connection",message,true);
+    await releaseLease(db,enrollment,1);return true;
+  }
+  const targetStatus=path.kind==="repository"?"queued":"awaiting_manual_completion",targetStage=path.kind==="repository"?"inspect_repository":"prepare";
+  const result={...object(campaign.result),packageId:pkg.id,opportunityId:pkg.opportunity_id,outcomeRunId:run.id,approvedPackage:true};
+  const campaignUpdate=await db.from("seo_campaign_jobs").update({
+    status:targetStatus,current_stage:targetStage,progress_percent:path.kind==="repository"?65:75,
+    input:{...object(campaign.input),automationMode:"EXECUTE_WITH_APPROVAL",managedOutcome:true,outcomeRunId:run.id,approvedPackageId:pkg.id},
+    result,next_attempt_at:now(),attempt_count:0,error_code:null,error_message:null,error_details:{},failed_at:null,
+    worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:now(),updated_at:now(),
+  }).eq("id",campaign.id).eq("outcome_run_id",run.id).select("id").maybeSingle();
+  if(campaignUpdate.error||!campaignUpdate.data)throw new ApiError("The already-reserved Autopilot outcome could not be advanced after approval.",503,"DATABASE_BINDING_FAILED");
+  await Promise.all([
+    db.from("outcome_loop_runs").update({implementation_package_id:pkg.id,campaign_job_id:campaign.id,status:"implementing",current_step:"implementation",updated_at:now()}).eq("id",run.id),
+    db.from("agent_service_cycles").update({implementation_package_id:pkg.id,campaign_job_id:campaign.id,status:"running",stage:"implementation",failure_code:null,failure_message:null,updated_at:now()}).eq("id",cycle.id),
+    setOutcomeStep(db,{runId:run.id,stepKey:"approval",status:"succeeded",output:{packageId:pkg.id,approvalDigest:pkg.approval_digest,approvedAt:pkg.approved_at}}),
+    setOutcomeStep(db,{runId:run.id,stepKey:"implementation",status:"queued",output:{campaignJobId:campaign.id,packageId:pkg.id,path:path.kind,provider:path.provider??null}}),
+  ]);
+  const proof=await db.from("proof_of_work_events").select("id").eq("package_id",pkg.id).eq("event_type","implementation_queued").limit(1).maybeSingle();
+  if(!proof.data)await db.from("proof_of_work_events").insert({agency_id:enrollment.agency_id,client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,opportunity_id:pkg.opportunity_id,package_id:pkg.id,event_type:"implementation_queued",title:"Approved work entered the protected implementation queue",description:path.kind==="repository"?"HD SEO is inspecting the connected repository before it prepares an exact reviewable change.":`HD SEO queued the exact approved package for protected ${path.provider} publishing and independent QA.`,client_visible:true,actor_user_id:requestedBy,metadata:{outcomeRunId:run.id,campaignJobId:campaign.id,path:path.kind,provider:path.provider??null,reusedReservedOutcome:true}});
+  const advanced={...campaign,input:{...object(campaign.input)},result,status:targetStatus,current_stage:targetStage};
+  if(path.kind==="cms"){
+    const direct=await ensureDirectCmsExecution(db,enrollment,{...cycle,implementation_package_id:pkg.id,campaign_job_id:campaign.id},run,advanced,requestedBy);
+    if(!direct)throw new ApiError("The verified CMS connection could not accept the approved package.",503,"DATABASE_BINDING_FAILED");
+    return true;
+  }
+  await releaseLease(db,enrollment,1);return true;
 }
 
 async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{triggerType?:"scheduled"|"manual"|"onboarding"|"recovery";requestedBy?:string|null;approvedPackageId?:string|null}={}){
