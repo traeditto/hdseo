@@ -27,6 +27,25 @@ describe("retail business-owner experience", () => {
     expect(compact(portal)).toContain("High-risk, legal, pricing, DNS and destructive work always pauses");
   });
 
+  it("makes missing publishing access impossible for a business owner to overlook", () => {
+    const portal = read("app/ui/live-client-dashboard.tsx");
+    const store = read("lib/live/store.ts");
+    const connections = read("lib/websites/connections.ts");
+    for (const copy of [
+      "NEEDS YOUR ATTENTION",
+      "Finish connecting your website",
+      "Analysis works; editing is not connected",
+      "Connect my website",
+      "PLATFORM DETECTION",
+      "I’m not sure—help me",
+    ]) expect(portal).toContain(copy);
+    expect(portal).toContain("retail_analyze_website");
+    expect(portal).toContain("publishingReady");
+    expect(store).toContain('connectionMode === "api"');
+    expect(store).toContain('connectionMode === "github_app"');
+    expect(connections).toContain('clientMembership.data?.role==="client_admin"');
+  });
+
   it("uses real checkout, billing portal and signed Stripe webhooks", () => {
     const checkout = read("app/api/billing/checkout/route.ts");
     const webhook = read("app/api/billing/webhook/route.ts");

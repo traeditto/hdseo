@@ -285,6 +285,11 @@ export type LiveClientWebsite = {
   cmsType: string;
   status: string;
   lastVerifiedAt: string | null;
+  connectionMode: string | null;
+  connectionStatus: string | null;
+  editorMode: string | null;
+  publishingReady: boolean;
+  publishingBlockers: string[];
 };
 
 export type LiveClientIntegration = {
@@ -1120,6 +1125,7 @@ export async function liveClientSnapshot(email: string) {
     trialEntitlementsRes,
     trialUsageRes,
     websitesRes,
+    cmsConnectionsRes,
     integrationsRes,
     agentWorkRes,
     searchRowsRes,
@@ -1148,6 +1154,11 @@ export async function liveClientSnapshot(email: string) {
       .select("id,project_id,site_url,cms_type,status,last_verified_at")
       .in("project_id", projectIds)
       .eq("is_primary", true),
+    db
+      .from("cms_connections")
+      .select("id,project_id,website_id,cms_type,editor_mode,connection_mode,status,last_verified_at,updated_at")
+      .in("project_id", projectIds)
+      .order("updated_at", { ascending: false }),
     db
       .from("integration_connections")
       .select("project_id,provider,status,last_synced_at")
@@ -1188,6 +1199,36 @@ export async function liveClientSnapshot(email: string) {
       .order("created_at", { ascending: false })
       .limit(100),
   ]);
+  const cmsConnectionByProject = new Map<string, DatabaseRow>();
+  for (const raw of cmsConnectionsRes.data ?? []) {
+    const row = raw as DatabaseRow;
+    const projectId = rowText(row, "project_id");
+    if (projectId && !cmsConnectionByProject.has(projectId)) {
+      cmsConnectionByProject.set(projectId, row);
+    }
+  }
+  const githubReadinessByProject = new Map<string, { ready: boolean; blockers: string[] }>();
+  await Promise.all(
+    [...cmsConnectionByProject.entries()].map(async ([projectId, connection]) => {
+      if (rowText(connection, "connection_mode") !== "github_app") return;
+      const readiness = await db.rpc("github_execution_readiness", {
+        target_agency: rowText(
+          projects.find((item) => rowText(item, "id") === projectId) ?? {},
+          "agency_id",
+        ),
+        target_project: projectId,
+      });
+      const value = asRecord(readiness.data);
+      githubReadinessByProject.set(projectId, {
+        ready: !readiness.error && value.ready === true,
+        blockers: Array.isArray(value.blockers)
+          ? value.blockers.filter((item): item is string => typeof item === "string")
+          : readiness.error
+            ? ["READINESS_CHECK_FAILED"]
+            : [],
+      });
+    }),
+  );
   const publishedPackageIds = (publicationsRes.data ?? [])
     .map((row) => row.source_id as string | null)
     .filter(Boolean) as string[];
@@ -1357,13 +1398,52 @@ export async function liveClientSnapshot(email: string) {
     }),
     websites: (websitesRes.data ?? []).map((raw) => {
       const row = raw as DatabaseRow;
+      const projectId = rowText(row, "project_id");
+      const connection = cmsConnectionByProject.get(projectId);
+      const connectionMode = connection
+        ? rowNullableText(connection, "connection_mode")
+        : null;
+      const connectionStatus = connection
+        ? rowNullableText(connection, "status")
+        : null;
+      const connectionVerified =
+        connectionStatus === "active" &&
+        connection?.last_verified_at != null;
+      const directPublishingReady =
+        connectionVerified &&
+        connectionMode === "api" &&
+        ["wordpress", "shopify", "webflow"].includes(
+          rowText(connection ?? {}, "cms_type"),
+        );
+      const githubReadiness = githubReadinessByProject.get(projectId);
+      const publishingReady =
+        directPublishingReady ||
+        (connectionVerified &&
+          connectionMode === "github_app" &&
+          githubReadiness?.ready === true);
+      const publishingBlockers = publishingReady
+        ? []
+        : connectionMode === "managed_migration" && connectionStatus === "pending"
+          ? ["SETUP_REQUEST_PENDING"]
+          : connectionMode === "github_app"
+            ? (githubReadiness?.blockers ?? ["GITHUB_SETUP_INCOMPLETE"])
+            : connectionMode === "api" && !connectionVerified
+              ? ["CONNECTION_NOT_VERIFIED"]
+              : ["PUBLISHING_ACCESS_REQUIRED"];
       return {
         id: rowText(row, "id"),
-        projectId: rowText(row, "project_id"),
+        projectId,
         siteUrl: rowText(row, "site_url"),
         cmsType: rowText(row, "cms_type", "unknown"),
         status: rowText(row, "status"),
         lastVerifiedAt: rowNullableText(row, "last_verified_at"),
+        connectionMode,
+        connectionStatus,
+        editorMode: connection
+          ? rowNullableText(connection, "editor_mode")
+          : null,
+        publishingReady,
+        publishingBlockers,
       };
     }),
     integrations: (integrationsRes.data ?? []).map((raw) => {
@@ -1712,7 +1792,7 @@ async function clientProjectContext(email: string, projectId: string) {
     throw new ApiError("Client access denied.", 403, "TENANT_DENIED");
   const project = await db
     .from("seo_projects")
-    .select("id,agency_id,client_organization_id,primary_market")
+    .select("id,agency_id,client_organization_id,primary_market,domain")
     .eq("id", projectId)
     .maybeSingle();
   if (!project.data)
@@ -1733,6 +1813,7 @@ async function clientProjectContext(email: string, projectId: string) {
     agencyId: project.data.agency_id as string,
     clientId: project.data.client_organization_id as string,
     projectId: project.data.id as string,
+    domain: project.data.domain as string,
     primaryMarket: (project.data.primary_market as string | null) ?? null,
   };
 }
@@ -2236,6 +2317,88 @@ export async function analyzeOnboardingWebsite(
   const { role } = await agencyContext(email);
   requireLivePermission(role, "clients.manage");
   return detectWebsitePlatform(domain);
+}
+
+export async function analyzeRetailWebsite(email: string, projectId: string) {
+  const context = await clientProjectContext(email, projectId);
+  if (context.role !== "client_admin") {
+    throw new ApiError(
+      "Only the business owner can change website access.",
+      403,
+      "ROLE_FORBIDDEN",
+    );
+  }
+  const analysis = await detectWebsitePlatform(context.domain);
+  const now = nowIso();
+  const website = await context.db
+    .from("websites")
+    .update({
+      site_url: analysis.siteUrl,
+      canonical_domain: analysis.canonicalDomain,
+      cms_type: analysis.platform,
+      status: analysis.reachable ? "active" : "connection_required",
+      last_verified_at: analysis.reachable ? now : null,
+      updated_at: now,
+    })
+    .eq("agency_id", context.agencyId)
+    .eq("client_organization_id", context.clientId)
+    .eq("project_id", projectId)
+    .eq("is_primary", true)
+    .select("id")
+    .maybeSingle();
+  if (website.error || !website.data) {
+    throw new ApiError(
+      "HD SEO detected the platform, but could not save the website result.",
+      500,
+      "DATABASE_BINDING_FAILED",
+    );
+  }
+  const connection = await context.db
+    .from("cms_connections")
+    .select("id,connection_mode")
+    .eq("agency_id", context.agencyId)
+    .eq("project_id", projectId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (connection.data?.connection_mode === "monitor_only") {
+    await context.db
+      .from("cms_connections")
+      .update({
+        cms_type: analysis.platform,
+        site_url: analysis.siteUrl,
+        status: analysis.reachable ? "active" : "connection_required",
+        last_verified_at: analysis.reachable ? now : null,
+        updated_at: now,
+      })
+      .eq("id", connection.data.id)
+      .eq("agency_id", context.agencyId);
+  }
+  await recordEvent(context.db, {
+    agencyId: context.agencyId,
+    clientOrganizationId: context.clientId,
+    projectId,
+    eventType: "website_platform_detected",
+    title: `${analysis.platformLabel} detected`,
+    description: `HD SEO inspected ${analysis.canonicalDomain} before recommending a connection method.`,
+    actorUserId: context.userId,
+    actorEmail: email,
+    clientVisible: true,
+  });
+  await recordAudit(context.db, {
+    agencyId: context.agencyId,
+    actorUserId: context.userId,
+    action: "retail.website.detected",
+    resourceType: "website",
+    resourceId: website.data.id,
+    afterState: {
+      projectId,
+      platform: analysis.platform,
+      confidence: analysis.confidence,
+      reachable: analysis.reachable,
+    },
+  });
+  return analysis;
 }
 
 export async function createClientOnboarding(

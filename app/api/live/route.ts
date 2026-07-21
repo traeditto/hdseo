@@ -10,6 +10,7 @@ import {
   advancePackage,
   agencyMembership,
   analyzeOnboardingWebsite,
+  analyzeRetailWebsite,
   createAgencyForUser,
   createClientOnboarding,
   createClientWithProject,
@@ -173,6 +174,10 @@ const schema = z.discriminatedUnion("action", [
     }),
   }),
   z.object({
+    action: z.literal("retail_analyze_website"),
+    projectId: z.string().uuid(),
+  }),
+  z.object({
     action: z.literal("retail_activate"),
     projectId: z.string().uuid(),
   }),
@@ -226,6 +231,7 @@ const schema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("connect_website"),
     projectId: z.string().uuid(),
+    portal: z.enum(["agency", "client"]).optional(),
     mode: z.enum(["wordpress", "shopify", "webflow", "manual", "monitoring", "managed"]),
     siteUrl: z.string().trim().min(3).max(500),
     username: z.string().trim().max(200).optional(),
@@ -311,7 +317,7 @@ export async function POST(request: Request) {
       await enforceRateLimit(actorScope, "client_decision", 30, 3600);
     } else if (input.action === "retail_create_business") {
       await enforceRateLimit(actorScope, "retail_business_creation", 3, 86400);
-    } else if (["retail_update_profile", "retail_activate", "client_support"].includes(input.action)) {
+    } else if (["retail_update_profile", "retail_activate", "retail_analyze_website", "client_support"].includes(input.action)) {
       await enforceRateLimit(actorScope, "retail_client_action", 30, 3600);
     } else if (["connect_website", "test_website", "disconnect_website"].includes(input.action)) {
       await enforceRateLimit(actorScope, "website_connection", 20, 3600);
@@ -354,6 +360,15 @@ export async function POST(request: Request) {
         idealCustomer: input.idealCustomer || undefined,
       });
       return Response.json({ ok: true, data: await liveClientSnapshot(user.email), message: "Your business and safety settings were saved." });
+    }
+    if (input.action === "retail_analyze_website") {
+      const analysis = await analyzeRetailWebsite(user.email, input.projectId);
+      return Response.json({
+        ok: true,
+        analysis,
+        data: await liveClientSnapshot(user.email),
+        message: `${analysis.platformLabel} detected. HD SEO is showing the matching connection path.`,
+      });
     }
     if (input.action === "retail_activate") {
       const launch = await activateRetailGrowth(user.email, input.projectId);
@@ -459,17 +474,18 @@ export async function POST(request: Request) {
         const connected = await connectWebsite(user.email, input);
         return Response.json({
           ok: true,
-          data: await liveAgencySnapshot(user.email),
+          data: connected.portal === "client" ? await liveClientSnapshot(user.email) : await liveAgencySnapshot(user.email),
           message: connected.status === "pending" ? "Managed onboarding request saved." : "Website connection verified and saved.",
         });
       }
       case "test_website": {
         const tested = await testWebsiteConnection(user.email, input.websiteId);
-        return Response.json({ ok: true, data: await liveAgencySnapshot(user.email), message: tested.message });
+        return Response.json({ ok: true, data: tested.portal === "client" ? await liveClientSnapshot(user.email) : await liveAgencySnapshot(user.email), message: tested.message });
       }
-      case "disconnect_website":
-        await disconnectWebsite(user.email, input.websiteId);
-        return Response.json({ ok: true, data: await liveAgencySnapshot(user.email), message: "Website connection disconnected and credentials removed." });
+      case "disconnect_website": {
+        const disconnected = await disconnectWebsite(user.email, input.websiteId);
+        return Response.json({ ok: true, data: disconnected.portal === "client" ? await liveClientSnapshot(user.email) : await liveAgencySnapshot(user.email), message: "Website connection disconnected and credentials removed." });
+      }
       case "publish_cms": {
         const publication=await publishPackageToCms(user.email,input.packageId);
         return Response.json({ok:true,data:await liveAgencySnapshot(user.email),publication,message:"The approved CMS change was published and queued for independent live verification."});

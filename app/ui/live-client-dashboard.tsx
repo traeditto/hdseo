@@ -89,6 +89,11 @@ type Website = {
   cmsType: string;
   status: string;
   lastVerifiedAt: string | null;
+  connectionMode: string | null;
+  connectionStatus: string | null;
+  editorMode: string | null;
+  publishingReady: boolean;
+  publishingBlockers: string[];
 };
 type Integration = {
   projectId: string;
@@ -700,6 +705,10 @@ export function LiveClientBusinessDashboard({
         item.provider === "google_search_console" && item.status === "active",
     ),
     website = company.websites[0];
+  const websitePublishingReady = website?.publishingReady === true;
+  const websiteSetupPending =
+    website?.connectionMode === "managed_migration" &&
+    website.connectionStatus === "pending";
 
   useEffect(() => {
     if (!project?.id || isFreeTrial) {
@@ -758,6 +767,15 @@ export function LiveClientBusinessDashboard({
         ? "Approved. HD SEO can continue."
         : "Your feedback was sent.",
     );
+  }
+
+  function openWebsiteSetup() {
+    setTab("business");
+    window.setTimeout(() => {
+      document
+        .getElementById("owner-website-setup")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   const nav: Array<[Tab, string, string]> = [
@@ -836,6 +854,9 @@ export function LiveClientBusinessDashboard({
               {key === "approvals" && approvals.length > 0 && (
                 <b>{approvals.length}</b>
               )}
+              {key === "business" && !isFreeTrial && !websitePublishingReady && (
+                <b className="owner-nav-alert" aria-label="Website setup needed">!</b>
+              )}
             </button>
           ))}
         </nav>
@@ -860,9 +881,11 @@ export function LiveClientBusinessDashboard({
             <strong>{nav.find(([key]) => key === tab)?.[1]}</strong>
           </div>
           <div>
-            <span className={approvals.length ? "attention" : ""}>
+            <span className={approvals.length || (!isFreeTrial && !websitePublishingReady) ? "attention" : ""}>
               {approvals.length
                 ? `${approvals.length} decision${approvals.length === 1 ? "" : "s"} waiting`
+                : !isFreeTrial && !websitePublishingReady
+                  ? "Website setup needed"
                 : "You’re all set"}
             </span>
             <button onClick={() => setTab("business")}>Ask HD SEO</button>
@@ -886,6 +909,31 @@ export function LiveClientBusinessDashboard({
           )}
           {tab === "home" && (
             <>
+              {!isFreeTrial && !websitePublishingReady && (
+                <section
+                  className={`owner-website-alert ${websiteSetupPending ? "pending" : ""}`}
+                  role="alert"
+                  aria-labelledby="website-setup-alert-title"
+                >
+                  <span aria-hidden="true">!</span>
+                  <div>
+                    <small>{websiteSetupPending ? "SETUP REQUESTED" : "NEEDS YOUR ATTENTION"}</small>
+                    <h2 id="website-setup-alert-title">
+                      {websiteSetupPending
+                        ? "HD SEO is preparing your website connection"
+                        : "Finish connecting your website"}
+                    </h2>
+                    <p>
+                      {websiteSetupPending
+                        ? "Your site can already be analyzed. We’ll keep this task visible until publishing access has been verified."
+                        : `HD SEO can analyze ${project?.domain ?? "your website"}, but it cannot publish approved improvements yet. We detected ${friendlyStatus(website?.cmsType ?? "unknown")} and will walk you through the matching one-time setup.`}
+                    </p>
+                  </div>
+                  <button type="button" onClick={openWebsiteSetup}>
+                    {websiteSetupPending ? "View setup status →" : "Connect my website →"}
+                  </button>
+                </section>
+              )}
               <section
                 className={`owner-status-hero ${!isFreeTrial && approvals.length ? "attention" : ""}`}
               >
@@ -1059,13 +1107,15 @@ export function LiveClientBusinessDashboard({
                   <small>CONNECTIONS</small>
                   <h2>Give HD SEO enough evidence to make better decisions</h2>
                 </div>
-                <span className={website?.status === "active" ? "ready" : ""}>
-                  <i>{website?.status === "active" ? "✓" : "1"}</i>
-                  <b>Website</b>
+                <span className={websitePublishingReady ? "ready" : ""}>
+                  <i>{websitePublishingReady ? "✓" : "1"}</i>
+                  <b>Website publishing</b>
                   <small>
-                    {website?.status === "active"
-                      ? `${friendlyStatus(website.cmsType)} detected`
-                      : "Needs attention"}
+                    {websitePublishingReady
+                      ? `${friendlyStatus(website?.cmsType)} connected`
+                      : websiteSetupPending
+                        ? "Setup request is being reviewed"
+                        : "Analysis works; editing is not connected"}
                   </small>
                 </span>
                 <span className={gsc ? "ready" : ""}>
@@ -1081,6 +1131,11 @@ export function LiveClientBusinessDashboard({
                   >
                     Connect Google →
                   </a>
+                )}
+                {!websitePublishingReady && (
+                  <button className="owner-connection-cta" type="button" onClick={openWebsiteSetup}>
+                    Finish website setup →
+                  </button>
                 )}
               </section>
             </>
@@ -1436,6 +1491,7 @@ export function LiveClientBusinessDashboard({
               }}
               project={project}
               busy={busyId !== null}
+              canManage={selectedAccess?.role === "client_admin"}
               onAction={act}
             />
           )}
@@ -1445,10 +1501,244 @@ export function LiveClientBusinessDashboard({
   );
 }
 
+type OwnerConnectionChoice = "wordpress" | "shopify" | "webflow" | "guided";
+
+function OwnerWebsiteSetup({
+  project,
+  website,
+  busy,
+  canManage,
+  onAction,
+}: {
+  project: Project;
+  website: Website | undefined;
+  busy: boolean;
+  canManage: boolean;
+  onAction: (body: Record<string, unknown>, success?: string) => Promise<void>;
+}) {
+  const detected = website?.cmsType ?? "unknown";
+  const recommendedChoice: OwnerConnectionChoice = [
+    "wordpress",
+    "shopify",
+    "webflow",
+  ].includes(detected)
+    ? (detected as OwnerConnectionChoice)
+    : "guided";
+  const [choice, setChoice] = useState<OwnerConnectionChoice>(recommendedChoice);
+  const [showAlternatives, setShowAlternatives] = useState(false);
+  const selectedChoice = showAlternatives ? choice : recommendedChoice;
+  const setupPending =
+    website?.connectionMode === "managed_migration" &&
+    website.connectionStatus === "pending";
+
+  function connect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const guided = selectedChoice === "guided";
+    void onAction(
+      {
+        action: "connect_website",
+        projectId: project.id,
+        portal: "client",
+        mode: guided ? "managed" : selectedChoice,
+        siteUrl:
+          String(form.get("siteUrl") ?? "") ||
+          website?.siteUrl ||
+          `https://${project.domain}`,
+        username: String(form.get("username") ?? "") || undefined,
+        applicationPassword:
+          String(form.get("applicationPassword") ?? "") || undefined,
+        accessToken: String(form.get("accessToken") ?? "") || undefined,
+        siteId: String(form.get("siteId") ?? "") || undefined,
+        notes: guided
+          ? `Business owner requested guided setup after HD SEO detected ${friendlyStatus(detected)}. The owner should not be expected to choose repository, hosting, or CMS credentials without assistance.`
+          : undefined,
+      },
+      guided
+        ? "Your guided website setup request was saved."
+        : "Website publishing access was verified.",
+    );
+  }
+
+  return (
+    <section
+      className={`owner-website-setup ${website?.publishingReady ? "ready" : setupPending ? "pending" : "attention"}`}
+      id="owner-website-setup"
+    >
+      <header>
+        <div>
+          <small>WEBSITE SETUP</small>
+          <h2>
+            {website?.publishingReady
+              ? "Your website is fully connected"
+              : setupPending
+                ? "Your guided setup is in progress"
+                : "Connect once, then HD SEO can do the work"}
+          </h2>
+          <p>
+            {website?.publishingReady
+              ? "HD SEO can prepare approved changes, publish through the verified connection, validate the result, and keep rollback protection."
+              : "HD SEO has already inspected the public website. The remaining step gives it a safe, verified way to publish only the work you authorize."}
+          </p>
+        </div>
+        <span>{website?.publishingReady ? "CONNECTED" : setupPending ? "IN REVIEW" : "ACTION NEEDED"}</span>
+      </header>
+
+      <div className="owner-setup-steps">
+        <article className="done">
+          <i>1</i>
+          <div>
+            <small>PLATFORM DETECTION</small>
+            <strong>{friendlyStatus(detected)} detected</strong>
+            <p>HD SEO inspected {project.domain}; you did not have to guess how the site was built.</p>
+          </div>
+          {canManage && !website?.publishingReady && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void onAction(
+                  { action: "retail_analyze_website", projectId: project.id },
+                  "Website platform checked again.",
+                )
+              }
+            >
+              Check again
+            </button>
+          )}
+        </article>
+        <article className={website?.publishingReady || setupPending ? "done" : "current"}>
+          <i>2</i>
+          <div>
+            <small>SECURE ACCESS</small>
+            <strong>
+              {website?.publishingReady
+                ? "Publishing access verified"
+                : setupPending
+                  ? "HD SEO is reviewing the safest connection"
+                  : "Follow the recommended connection below"}
+            </strong>
+            <p>Credentials are verified on the server, encrypted, and never shown back in the browser.</p>
+          </div>
+        </article>
+        <article className={website?.publishingReady ? "done" : ""}>
+          <i>3</i>
+          <div>
+            <small>SAFETY TEST</small>
+            <strong>{website?.publishingReady ? "Publishing and rollback ready" : "HD SEO verifies the connection"}</strong>
+            <p>No website change publishes from this setup screen. Approval and validation rules still apply.</p>
+          </div>
+        </article>
+      </div>
+
+      {!website?.publishingReady && !setupPending && canManage && (
+        <form className="owner-website-connect-form" onSubmit={connect}>
+          <div className="owner-connection-recommendation">
+            <small>RECOMMENDED FOR YOUR SITE</small>
+            <strong>
+              {recommendedChoice === "guided"
+                ? "Let HD SEO guide the connection"
+                : `Connect ${friendlyStatus(recommendedChoice)}`}
+            </strong>
+            <p>
+              {recommendedChoice === "guided"
+                ? `${friendlyStatus(detected)} sites may use a developer, repository, or platform-specific setup. Tell us you need help and HD SEO will keep the technical choices out of your way.`
+                : `HD SEO found the ${friendlyStatus(recommendedChoice)} signals on your website and selected the matching secure connection.`}
+            </p>
+            <button
+              type="button"
+              className={selectedChoice === recommendedChoice ? "selected" : ""}
+              onClick={() => setChoice(recommendedChoice)}
+            >
+              {recommendedChoice === "guided" ? "Use guided setup" : `Use ${friendlyStatus(recommendedChoice)}`}
+            </button>
+          </div>
+
+          {selectedChoice === "wordpress" && (
+            <div className="owner-credential-fields">
+              <label>
+                WordPress username
+                <input name="username" autoComplete="username" required />
+              </label>
+              <label>
+                WordPress Application Password
+                <input name="applicationPassword" type="password" autoComplete="new-password" required />
+                <em>In WordPress: Users → Profile → Application Passwords. Do not enter your normal password.</em>
+              </label>
+            </div>
+          )}
+          {selectedChoice === "shopify" && (
+            <div className="owner-credential-fields">
+              <label>
+                Permanent Shopify store address
+                <input name="siteUrl" type="url" placeholder="https://store-name.myshopify.com" required />
+                <em>This is the myshopify.com address, even if customers visit a different domain.</em>
+              </label>
+              <label>
+                Shopify Admin API access token
+                <input name="accessToken" type="password" autoComplete="new-password" placeholder="shpat_…" required />
+                <em>If you do not have this, choose guided setup and HD SEO will explain exactly where to find it.</em>
+              </label>
+            </div>
+          )}
+          {selectedChoice === "webflow" && (
+            <div className="owner-credential-fields">
+              <label>
+                Webflow site ID
+                <input name="siteId" required />
+              </label>
+              <label>
+                Webflow API token
+                <input name="accessToken" type="password" autoComplete="new-password" required />
+              </label>
+            </div>
+          )}
+
+          <details
+            className="owner-setup-alternatives"
+            open={showAlternatives}
+            onToggle={(event) => setShowAlternatives(event.currentTarget.open)}
+          >
+            <summary>That platform does not look right</summary>
+            <p>Choose a different option only if you know the detected platform is wrong.</p>
+            <div>
+              {(["wordpress", "shopify", "webflow", "guided"] as OwnerConnectionChoice[]).map((option) => (
+                <button
+                  type="button"
+                  className={selectedChoice === option ? "selected" : ""}
+                  key={option}
+                  onClick={() => setChoice(option)}
+                >
+                  {option === "guided" ? "I’m not sure—help me" : friendlyStatus(option)}
+                </button>
+              ))}
+            </div>
+          </details>
+
+          <button className="owner-setup-submit" disabled={busy}>
+            {busy
+              ? "Checking securely…"
+              : selectedChoice === "guided"
+                ? "Guide me through website setup →"
+                : `Verify and connect ${friendlyStatus(selectedChoice)} →`}
+          </button>
+        </form>
+      )}
+
+      {!canManage && !website?.publishingReady && (
+        <div className="owner-setup-viewer-note">
+          The business owner must complete this one-time connection.
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BusinessSettings({
   data,
   project,
   busy,
+  canManage,
   onAction,
 }: {
   data: {
@@ -1461,6 +1751,7 @@ function BusinessSettings({
   };
   project: Project;
   busy: boolean;
+  canManage: boolean;
   onAction: (body: Record<string, unknown>, success?: string) => Promise<void>;
 }) {
   const profile = data.profile;
@@ -1551,6 +1842,13 @@ function BusinessSettings({
           geography and customer value.
         </p>
       </section>
+      <OwnerWebsiteSetup
+        project={project}
+        website={data.website}
+        busy={busy}
+        canManage={canManage}
+        onAction={onAction}
+      />
       <div className="owner-settings-grid">
         <form className="owner-settings-card" onSubmit={save}>
           <header>
@@ -1710,17 +2008,22 @@ function BusinessSettings({
               <h2>Evidence and publishing</h2>
             </header>
             <div className="owner-connection-row">
-              <i className={data.website?.status === "active" ? "ready" : ""}>
-                {data.website?.status === "active" ? "✓" : "!"}
+              <i className={data.website?.publishingReady ? "ready" : ""}>
+                {data.website?.publishingReady ? "✓" : "!"}
               </i>
               <div>
-                <strong>Website</strong>
+                <strong>Website publishing</strong>
                 <span>
-                  {data.website
-                    ? `${friendlyStatus(data.website.cmsType)} · ${friendlyStatus(data.website.status)}`
-                    : "Not connected"}
+                  {data.website?.publishingReady
+                    ? `${friendlyStatus(data.website.cmsType)} · Connected and verified`
+                    : data.website?.connectionMode === "managed_migration" && data.website.connectionStatus === "pending"
+                      ? "Guided setup requested"
+                      : `Analysis only${data.website ? ` · ${friendlyStatus(data.website.cmsType)} detected` : ""}`}
                 </span>
               </div>
+              {!data.website?.publishingReady && (
+                <a href="#owner-website-setup">Finish setup</a>
+              )}
             </div>
             <div className="owner-connection-row">
               <i className={data.gsc ? "ready" : ""}>{data.gsc ? "✓" : "!"}</i>

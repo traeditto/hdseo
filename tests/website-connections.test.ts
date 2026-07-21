@@ -21,6 +21,8 @@ describe("website connections",()=>{
     expect(service).toContain("https://api.webflow.com/v2/sites/");
     expect(service).toContain("encryptSecret");
     for(const mode of ["monitor_only","managed_migration","manual"])expect(service).toContain(mode);
+    expect(service).toContain('clientMembership.data?.role==="client_admin"');
+    expect(service).toContain("Only an agency connection manager or the business owner");
   });
 
   it("never exposes encrypted website secrets in the agency snapshot",()=>{
@@ -28,6 +30,15 @@ describe("website connections",()=>{
     expect(store).toContain('.from("cms_connections")');
     const select=store.match(/\.from\("cms_connections"\)[\s\S]{0,300}?\.select\(([^;]+?)\)/)?.[1]??"";
     expect(select).not.toContain("encrypted_secret_reference");
+  });
+
+  it("keeps public monitoring separate from verified publishing readiness",()=>{
+    const store=read("lib/live/store.ts"),portal=read("app/ui/live-client-dashboard.tsx");
+    expect(store).toContain("publishingReady");
+    expect(store).toContain("PUBLISHING_ACCESS_REQUIRED");
+    expect(store).toContain("github_execution_readiness");
+    expect(portal).toContain("Website publishing");
+    expect(portal).toContain("Analysis only");
   });
 
   it("provides a complete non-technical onboarding UI",()=>{
