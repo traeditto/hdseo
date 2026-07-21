@@ -95,3 +95,21 @@ end $$;
 
 revoke all on function public.decide_implementation_package(uuid,uuid,uuid,uuid,uuid,text,text,text,jsonb) from public,anon,authenticated;
 grant execute on function public.decide_implementation_package(uuid,uuid,uuid,uuid,uuid,text,text,text,jsonb) to service_role;
+
+-- Wake approvals that were already stranded before the event-driven handoff was
+-- deployed. This is tenant-scoped, idempotent, and does not reserve capacity.
+update public.agent_service_enrollments e set
+  next_cycle_at=least(e.next_cycle_at,now()),
+  updated_at=now()
+where e.service_mode='managed_agent' and e.status in ('trialing','active')
+  and exists(
+    select 1 from public.implementation_packages p
+    where p.agency_id=e.agency_id
+      and p.client_organization_id=e.client_organization_id
+      and p.project_id=e.project_id
+      and p.status='client_approved'
+      and not exists(
+        select 1 from public.agent_service_cycles c
+        where c.implementation_package_id=p.id
+      )
+  );

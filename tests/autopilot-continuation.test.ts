@@ -103,4 +103,11 @@ describe("Autopilot event-driven continuation", () => {
     expect(scheduler).toContain("No outcome capacity has been used");
     expect(scheduler).toContain('failure_code:"ACTIVE_WORK"');
   });
+
+  it("wakes approvals that were already stranded before the handoff shipped", () => {
+    const migration = read("supabase/migrations/0041_approved_package_execution_handoff.sql");
+    expect(migration).toContain("next_cycle_at=least(e.next_cycle_at,now())");
+    expect(migration).toContain("p.status='client_approved'");
+    expect(migration).toContain("c.implementation_package_id=p.id");
+  });
 });
