@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import { AgentServicePanel } from "@/app/ui/agent-service-panel";
 import { DeploymentSetupWizard } from "@/app/ui/deployment-setup-wizard";
+import { WorkReceipt } from "@/app/ui/work-receipt";
 import {FOUNDING_BETA_OFFER_KEY,retailBillingPlans} from "@/lib/billing/catalog";
 
 type User = { displayName: string; email: string };
@@ -632,6 +633,7 @@ export function LiveClientBusinessDashboard({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [managedDecisionCount, setManagedDecisionCount] = useState(0);
   const [deploymentSetupProject, setDeploymentSetupProject] = useState<Project | null>(null);
+  const [receiptPackageId, setReceiptPackageId] = useState<string | null>(null);
   const [selectedClientId, setSelectedClientId] = useState(
     initialData.clients[0]?.client.id ?? "",
   );
@@ -779,12 +781,13 @@ export function LiveClientBusinessDashboard({
     }
   }
   async function decide(packageId: string, decision: string) {
-    await act(
+    const result = await act(
       { action: "package_decision", packageId, decision },
       decision === "client_approved"
         ? "Approved. HD SEO can continue."
         : "Your feedback was sent.",
     );
+    if (result && decision === "client_approved") setReceiptPackageId(packageId);
   }
 
   function openWebsiteSetup() {
@@ -1334,6 +1337,12 @@ export function LiveClientBusinessDashboard({
                         {JSON.stringify(item.packageData ?? {}, null, 2)}
                       </pre>
                     </details>
+                    <button
+                      className="owner-receipt-link"
+                      onClick={() => setReceiptPackageId(item.id)}
+                    >
+                      See keyword plan, creative needs and proof →
+                    </button>
                     {canApprove && (
                       <footer>
                         <button
@@ -1393,8 +1402,17 @@ export function LiveClientBusinessDashboard({
                     .filter((item) => !awaitingStatuses.has(item.status))
                     .map((item) => (
                       <article key={item.id}>
-                        <strong>{item.title}</strong>
-                        <span>{friendlyStatus(item.status)}</span>
+                        <div>
+                          <strong>{item.title}</strong>
+                          <small>
+                            {item.status === "client_approved"
+                              ? "Authorized; open the receipt to see whether execution has started."
+                              : friendlyStatus(item.status)}
+                          </small>
+                        </div>
+                        <button onClick={() => setReceiptPackageId(item.id)}>
+                          View work receipt
+                        </button>
                       </article>
                     ))}
                 </section>
@@ -1528,6 +1546,13 @@ export function LiveClientBusinessDashboard({
           if (refresh) window.location.reload();
         }}
         onOpenPackages={() => setTab("approvals")}
+      />
+    )}
+    {receiptPackageId && project && (
+      <WorkReceipt
+        projectId={project.id}
+        packageId={receiptPackageId}
+        onClose={() => setReceiptPackageId(null)}
       />
     )}
     </>
@@ -2112,13 +2137,18 @@ function BusinessSettings({
               />
             </label>
             <label>
-              Monthly limit
+              Optional external SEO spend ceiling
               <input
                 name="monthlyBudget"
                 type="number"
                 min="0"
                 defaultValue={profile?.monthlyBudget ?? 99}
               />
+              <em>
+                Your plan already covers included agent work, implementation,
+                QA and monitoring. This separate ceiling is only for itemized
+                third-party costs you approve; $0 is allowed.
+              </em>
             </label>
           </div>
           <fieldset>

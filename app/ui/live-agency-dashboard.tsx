@@ -10,6 +10,7 @@ import { AgencyClientCommandCenter } from "@/app/ui/agency-client-command-center
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import { AgentServicePanel } from "@/app/ui/agent-service-panel";
 import { AgencyBillingPanel } from "@/app/ui/agency-billing-panel";
+import { WorkReceipt } from "@/app/ui/work-receipt";
 import {
   assessKeywordServiceArea,
   buildServiceAreaPolicy,
@@ -192,6 +193,7 @@ export function LiveAgencyDashboard({
     ),
     [selectedClientId, setSelectedClientId] = useState<string | null>(null),
     [dialog, setDialog] = useState<string | null>(null),
+    [receiptPackageId, setReceiptPackageId] = useState<string | null>(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
   const clientNames = Object.fromEntries(
@@ -817,6 +819,9 @@ export function LiveAgencyDashboard({
                         <button onClick={() => setDialog(`details:${item.id}`)}>
                           View details
                         </button>
+                        <button onClick={() => setReceiptPackageId(item.id)}>
+                          Work receipt
+                        </button>
                       </div>
                     </article>
                   ))
@@ -1211,6 +1216,9 @@ export function LiveAgencyDashboard({
                       <button onClick={() => setDialog(`details:${item.id}`)}>
                         View package
                       </button>
+                      <button onClick={() => setReceiptPackageId(item.id)}>
+                        Work receipt
+                      </button>
                     </div>
                   </article>
                 ))
@@ -1270,6 +1278,16 @@ export function LiveAgencyDashboard({
           message={message}
         />
       )}
+      {receiptPackageId && (() => {
+        const selectedPackage = data.packages.find((item) => item.id === receiptPackageId);
+        return selectedPackage ? (
+          <WorkReceipt
+            projectId={selectedPackage.projectId}
+            packageId={selectedPackage.id}
+            onClose={() => setReceiptPackageId(null)}
+          />
+        ) : null;
+      })()}
     </main>
   );
 }
