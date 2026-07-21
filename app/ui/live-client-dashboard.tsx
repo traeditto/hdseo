@@ -10,6 +10,7 @@ type User = { displayName: string; email: string };
 type Client = { id: string; name: string; domain: string; status: string };
 type Project = {
   id: string;
+  agencyId: string;
   clientId: string;
   name: string;
   domain: string;
@@ -1530,17 +1531,40 @@ function OwnerWebsiteSetup({
   const setupPending =
     website?.connectionMode === "managed_migration" &&
     website.connectionStatus === "pending";
+  const repositoryConnected =
+    website?.connectionMode === "github_app" &&
+    website.connectionStatus === "active";
+  const repositoryBased = detected === "vercel" || repositoryConnected;
+  const githubReturnUrl = "/portal/client?github=connected#owner-website-setup";
+  const githubHref = `/api/github/install?agencyId=${encodeURIComponent(project.agencyId)}&clientId=${encodeURIComponent(project.clientId)}&projectId=${encodeURIComponent(project.id)}&returnUrl=${encodeURIComponent(githubReturnUrl)}`;
+
+  function requestConnectionHelp() {
+    void onAction(
+      {
+        action: "client_support",
+        projectId: project.id,
+        category: "connection_help",
+        subject: `Help me connect ${project.domain}`,
+        message: `I need HD SEO to finish the publishing connection for ${project.domain}. HD SEO detected ${friendlyStatus(detected)}. I do not want to choose technical credentials or deployment settings without guidance.`,
+      },
+      "Website connection help was requested. You can still use the connection choices on this page.",
+    );
+  }
 
   function connect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const guided = selectedChoice === "guided";
+    if (guided) {
+      requestConnectionHelp();
+      return;
+    }
     void onAction(
       {
         action: "connect_website",
         projectId: project.id,
         portal: "client",
-        mode: guided ? "managed" : selectedChoice,
+        mode: selectedChoice,
         siteUrl:
           String(form.get("siteUrl") ?? "") ||
           website?.siteUrl ||
@@ -1550,13 +1574,9 @@ function OwnerWebsiteSetup({
           String(form.get("applicationPassword") ?? "") || undefined,
         accessToken: String(form.get("accessToken") ?? "") || undefined,
         siteId: String(form.get("siteId") ?? "") || undefined,
-        notes: guided
-          ? `Business owner requested guided setup after HD SEO detected ${friendlyStatus(detected)}. The owner should not be expected to choose repository, hosting, or CMS credentials without assistance.`
-          : undefined,
+        notes: undefined,
       },
-      guided
-        ? "Your guided website setup request was saved."
-        : "Website publishing access was verified.",
+      "Website publishing access was verified.",
     );
   }
 
@@ -1571,8 +1591,10 @@ function OwnerWebsiteSetup({
           <h2>
             {website?.publishingReady
               ? "Your website is fully connected"
+              : repositoryConnected
+                ? "Your repository is connected—finish the safety setup"
               : setupPending
-                ? "Your guided setup is in progress"
+                ? "Choose how HD SEO should connect your website"
                 : "Connect once, then HD SEO can do the work"}
           </h2>
           <p>
@@ -1581,7 +1603,7 @@ function OwnerWebsiteSetup({
               : "HD SEO has already inspected the public website. The remaining step gives it a safe, verified way to publish only the work you authorize."}
           </p>
         </div>
-        <span>{website?.publishingReady ? "CONNECTED" : setupPending ? "IN REVIEW" : "ACTION NEEDED"}</span>
+        <span>{website?.publishingReady ? "CONNECTED" : "ACTION NEEDED"}</span>
       </header>
 
       <div className="owner-setup-steps">
@@ -1607,15 +1629,15 @@ function OwnerWebsiteSetup({
             </button>
           )}
         </article>
-        <article className={website?.publishingReady || setupPending ? "done" : "current"}>
+        <article className={website?.publishingReady || repositoryConnected ? "done" : "current"}>
           <i>2</i>
           <div>
             <small>SECURE ACCESS</small>
             <strong>
               {website?.publishingReady
                 ? "Publishing access verified"
-                : setupPending
-                  ? "HD SEO is reviewing the safest connection"
+                : repositoryConnected
+                  ? "Website repository authorized"
                   : "Follow the recommended connection below"}
             </strong>
             <p>Credentials are verified on the server, encrypted, and never shown back in the browser.</p>
@@ -1631,7 +1653,48 @@ function OwnerWebsiteSetup({
         </article>
       </div>
 
-      {!website?.publishingReady && !setupPending && canManage && (
+      {!website?.publishingReady && repositoryBased && canManage && (
+        <div className="owner-repository-connect">
+          {setupPending && (
+            <div className="owner-pending-note">
+              <strong>Your help request is saved, but you do not have to wait.</strong>
+              <span>Connect the repository now, or ask HD SEO to coordinate the remaining setup with your developer.</span>
+            </div>
+          )}
+          <div>
+            <small>{repositoryConnected ? "REPOSITORY AUTHORIZED" : "RECOMMENDED FOR THIS VERCEL SITE"}</small>
+            <h3>{repositoryConnected ? "GitHub access is connected" : "Connect the website’s code repository"}</h3>
+            <p>
+              {repositoryConnected
+                ? "HD SEO has permission to prepare changes for this website. The remaining safety checks keep it from publishing until preview, approval, and rollback protection are ready."
+                : "Most Vercel websites deploy from GitHub. GitHub will ask which repository HD SEO may use, then return you here. HD SEO never receives your GitHub password."}
+            </p>
+            {!repositoryConnected && (
+              <ol>
+                <li>Sign in to GitHub.</li>
+                <li>Select only this website’s repository.</li>
+                <li>Return here so HD SEO can verify the connection.</li>
+              </ol>
+            )}
+          </div>
+          <div className="owner-repository-actions">
+            <a className="owner-setup-submit" href={githubHref}>
+              {repositoryConnected ? "Review or change repository →" : "Connect GitHub repository →"}
+            </a>
+            <button type="button" disabled={busy} onClick={requestConnectionHelp}>
+              {repositoryConnected ? "Have HD SEO finish Vercel setup" : "I don’t use GitHub—help me connect"}
+            </button>
+          </div>
+          {repositoryConnected && website.publishingBlockers.length > 0 && (
+            <div className="owner-publishing-blockers">
+              <strong>Still protected</strong>
+              <span>{website.publishingBlockers.map(friendlyStatus).join(" · ")}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!website?.publishingReady && !repositoryBased && canManage && (
         <form className="owner-website-connect-form" onSubmit={connect}>
           <div className="owner-connection-recommendation">
             <small>RECOMMENDED FOR YOUR SITE</small>
@@ -1642,7 +1705,7 @@ function OwnerWebsiteSetup({
             </strong>
             <p>
               {recommendedChoice === "guided"
-                ? `${friendlyStatus(detected)} sites may use a developer, repository, or platform-specific setup. Tell us you need help and HD SEO will keep the technical choices out of your way.`
+                ? `${friendlyStatus(detected)} sites may require an owner or developer handoff. Ask for help without locking this screen; you can change the connection method at any time.`
                 : `HD SEO found the ${friendlyStatus(recommendedChoice)} signals on your website and selected the matching secure connection.`}
             </p>
             <button
@@ -1650,7 +1713,7 @@ function OwnerWebsiteSetup({
               className={selectedChoice === recommendedChoice ? "selected" : ""}
               onClick={() => setChoice(recommendedChoice)}
             >
-              {recommendedChoice === "guided" ? "Use guided setup" : `Use ${friendlyStatus(recommendedChoice)}`}
+              {recommendedChoice === "guided" ? "Ask HD SEO for help" : `Use ${friendlyStatus(recommendedChoice)}`}
             </button>
           </div>
 
@@ -1719,7 +1782,7 @@ function OwnerWebsiteSetup({
             {busy
               ? "Checking securely…"
               : selectedChoice === "guided"
-                ? "Guide me through website setup →"
+                ? "Ask HD SEO to guide this connection →"
                 : `Verify and connect ${friendlyStatus(selectedChoice)} →`}
           </button>
         </form>

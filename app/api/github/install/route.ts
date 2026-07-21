@@ -11,7 +11,7 @@ const querySchema = z.object({ agencyId:z.string().uuid(), clientId:z.string().u
 function safeReturnUrl(value:string|undefined){
   const base=new URL(appBaseUrl()),fallback=new URL("/admin/settings/github?connected=1",base);
   if(!value)return fallback.toString();
-  try{const url=new URL(value,base);return url.origin===base.origin&&["/admin/settings/github","/portal/agency"].includes(url.pathname)?url.toString():fallback.toString();}
+  try{const url=new URL(value,base);return url.origin===base.origin&&["/admin/settings/github","/portal/agency","/portal/client"].includes(url.pathname)?url.toString():fallback.toString();}
   catch{return fallback.toString();}
 }
 

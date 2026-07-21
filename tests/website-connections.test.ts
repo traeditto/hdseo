@@ -52,12 +52,17 @@ describe("website connections",()=>{
     expect(dashboard).toContain("WebsiteConnections");
   });
 
-  it("preserves the agency workspace return path through GitHub installation",()=>{
-    const install=read("app/api/github/install/route.ts"),callback=read("app/api/github/callback/route.ts"),binding=read("lib/github/installation-binding.ts");
+  it("preserves tenant-safe agency and business-owner return paths through GitHub installation",()=>{
+    const install=read("app/api/github/install/route.ts"),callback=read("app/api/github/callback/route.ts"),binding=read("lib/github/installation-binding.ts"),context=read("lib/github/integration-context.ts"),portal=read("app/ui/live-client-dashboard.tsx");
     expect(install).toContain('"/portal/agency"');
+    expect(install).toContain('"/portal/client"');
     expect(install).toContain("existingInstallationId");
     expect(install).toContain("verify_and_bind");
     expect(callback).toContain('"/portal/agency"');
+    expect(callback).toContain('"/portal/client"');
+    expect(context).toContain('clientMembership.data?.role !== "client_admin"');
+    expect(portal).toContain("Connect GitHub repository");
+    expect(portal).toContain("I don’t use GitHub—help me connect");
     expect(binding).toContain("upsertGitHubWebsite");
   });
 });

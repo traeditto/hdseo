@@ -16,7 +16,7 @@ export type GitHubManagementContext = {
   client?: { id: string; name: string };
   project?: { id: string; name: string; domain: string };
   platformAdmin: boolean;
-  role: AgencyRole | "platform_admin";
+  role: AgencyRole | "platform_admin" | "client_admin";
 };
 
 async function platformAdmin(db: SupabaseClient, userId: string) {
@@ -36,14 +36,8 @@ async function authorizeAgency(
   const agencyResult = await db.from("agencies").select("id,name,slug").eq("id", input.agencyId).eq("status", "active").single();
   if (!agencyResult.data) throw new ApiError("Agency access denied.", 403, "TENANT_DENIED");
 
-  let role: AgencyRole | "platform_admin" = "platform_admin";
-  if (!input.platformAdmin) {
-    const membership = await db.from("agency_members").select("role").eq("agency_id", input.agencyId).eq("user_id", input.userId).eq("status", "active").maybeSingle();
-    role = membership.data?.role as AgencyRole;
-    if (!role || !hasPermission(role, "integrations.manage")) throw new ApiError("Insufficient agency permission.", 403, "ROLE_FORBIDDEN");
-  }
-
-  const context: GitHubManagementContext = { db, user:{id:input.userId,email:input.email}, agency:agencyResult.data, platformAdmin:input.platformAdmin, role };
+  let projectContext: GitHubManagementContext["project"];
+  let clientContext: GitHubManagementContext["client"];
   if (input.projectId || input.clientId) {
     let projectQuery = db.from("seo_projects").select("id,name,domain,client_organization_id,client_organizations(id,name)").eq("agency_id", input.agencyId).eq("status", "active");
     if (input.projectId) projectQuery = projectQuery.eq("id", input.projectId);
@@ -51,9 +45,44 @@ async function authorizeAgency(
     const project = (await projectQuery.limit(1)).data?.[0];
     const client = Array.isArray(project?.client_organizations) ? project.client_organizations[0] : project?.client_organizations;
     if (!project || !client) throw new ApiError("Project access denied.", 403, "TENANT_DENIED");
-    context.project = {id:project.id,name:project.name,domain:project.domain};
-    context.client = client;
+    projectContext = {id:project.id,name:project.name,domain:project.domain};
+    clientContext = client;
   }
+
+  let role: GitHubManagementContext["role"] = "platform_admin";
+  if (!input.platformAdmin) {
+    const membership = await db.from("agency_members").select("role").eq("agency_id", input.agencyId).eq("user_id", input.userId).eq("status", "active").maybeSingle();
+    const agencyRole = membership.data?.role as AgencyRole | undefined;
+    if (agencyRole && hasPermission(agencyRole, "integrations.manage")) {
+      role = agencyRole;
+    } else {
+      if (!clientContext || !projectContext) {
+        throw new ApiError("Insufficient agency permission.", 403, "ROLE_FORBIDDEN");
+      }
+      const clientMembership = await db
+        .from("client_members")
+        .select("role")
+        .eq("agency_id", input.agencyId)
+        .eq("client_organization_id", clientContext.id)
+        .eq("user_id", input.userId)
+        .eq("status", "active")
+        .maybeSingle();
+      if (clientMembership.data?.role !== "client_admin") {
+        throw new ApiError("Only the business owner can connect this website repository.", 403, "ROLE_FORBIDDEN");
+      }
+      role = "client_admin";
+    }
+  }
+
+  const context: GitHubManagementContext = {
+    db,
+    user:{id:input.userId,email:input.email},
+    agency:agencyResult.data,
+    platformAdmin:input.platformAdmin,
+    role,
+    ...(projectContext ? { project: projectContext } : {}),
+    ...(clientContext ? { client: clientContext } : {}),
+  };
   return context;
 }
 

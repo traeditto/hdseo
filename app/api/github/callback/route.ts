@@ -6,7 +6,7 @@ import { resolveSignedGitHubContext } from "@/lib/github/integration-context";
 import { integrationStatePurpose,verifyIntegrationState } from "@/lib/security/signed-state";
 import { GET as legacyConnectCallback } from "@/app/api/github/connect/route";
 
-function safeReturnUrl(value:string|undefined){const fallback=new URL("/admin/settings/github?connected=1",`${appBaseUrl()}/`);if(!value)return fallback;try{const url=new URL(value,fallback);return url.origin===fallback.origin&&["/admin/settings/github","/portal/agency"].includes(url.pathname)?url:fallback;}catch{return fallback;}}
+function safeReturnUrl(value:string|undefined){const fallback=new URL("/admin/settings/github?connected=1",`${appBaseUrl()}/`);if(!value)return fallback;try{const url=new URL(value,fallback);return url.origin===fallback.origin&&["/admin/settings/github","/portal/agency","/portal/client"].includes(url.pathname)?url:fallback;}catch{return fallback;}}
 
 type CallbackStage="state"|"context"|"installation"|"oauth"|"authorization"|"binding"|"response";
 const stageFailure:Record<CallbackStage,{code:ApiErrorCode;message:string}>={
