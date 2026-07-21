@@ -7,6 +7,7 @@ import { planEntitlements } from "@/lib/agent-service/catalog";
 import { agentCapacityAddOn } from "@/lib/agent-service/catalog";
 import {FOUNDING_BETA_OFFER_KEY,isFoundingBetaOffer,isRetailBillingPlanKey,retailBillingPlans} from "@/lib/billing/catalog";
 import {agencyBillingPlans,isAgencyBillingPlanKey} from "@/lib/billing/agency-catalog";
+import {applyRetailWorkspaceBillingState} from "@/lib/billing/retail-workspace";
 import {claimWebhookEvent,completeWebhookEvent,failWebhookEvent} from "@/lib/webhooks/inbox";
 
 type StripeObject = { id: string; status?: string; payment_status?: string; amount_total?: number; currency?: string; customer?: string; subscription?: string; cancel_at_period_end?: boolean; current_period_end?: number; metadata?: Record<string,string> };
@@ -86,6 +87,7 @@ export async function POST(request: Request) {
         if(client.error||!client.data)throw new ApiError("The paid business entitlement could not resolve its client record.",503,"DATABASE_BINDING_FAILED");
         const entitlement=planEntitlements(planKey),serviceMode=planKey==="pro"||planKey==="autopilot_plus"?"managed_agent":"copilot",enrollment=await db.from("agent_service_enrollments").upsert({agency_id:project.data.agency_id,client_organization_id:project.data.client_organization_id,client_id:client.data.id,project_id:projectId,service_mode:serviceMode,operator_brand:"hdseo",approval_owner:"client",billing_owner:"client",plan_key:planKey,status:"active",monthly_action_limit:entitlement.monthlyActionLimit,monthly_major_page_limit:entitlement.monthlyMajorPageLimit,monthly_provider_budget:entitlement.monthlyProviderBudget,monthly_human_review_minutes:entitlement.humanReviewMinutes,cycle_cadence_hours:entitlement.cycleCadenceHours,next_cycle_at:new Date().toISOString(),stripe_customer_id:object.customer,stripe_subscription_id:object.subscription,subscription_id:savedSubscription.data.id,updated_at:new Date().toISOString()},{onConflict:"project_id"});
         if(enrollment.error)throw new ApiError("The paid service entitlement could not be activated. Apply migration 0034.",503,"DATABASE_BINDING_FAILED");
+        await applyRetailWorkspaceBillingState(db,{agencyId:project.data.agency_id,projectId,status:"active"});
       }
     } else if ((event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") && object.id) {
       const status = event.type === "customer.subscription.deleted" ? "canceled" : object.status === "active" || object.status === "trialing" ? object.status : object.status === "past_due" ? "past_due" : "paused";
@@ -96,8 +98,10 @@ export async function POST(request: Request) {
         await db.from("agency_subscriptions").update({plan_key:planKey,status,price_cents:plan.priceCents,included_client_limit:plan.includedClients,included_scale_client_limit:plan.includedScaleClients,cancel_at_period_end:object.cancel_at_period_end??false,current_period_end:object.current_period_end?new Date(object.current_period_end*1000).toISOString():null,updated_at:new Date().toISOString()}).eq("stripe_subscription_id",object.id);
         await applyAgencySubscriptionState(db,agencyId,status);
       }else{
+        const retailSubscription=await db.from("client_subscriptions").select("agency_id,project_id").eq("stripe_subscription_id",object.id).maybeSingle();
         await db.from("client_subscriptions").update({ status, cancel_at_period_end: object.cancel_at_period_end ?? false, current_period_end: object.current_period_end ? new Date(object.current_period_end*1000).toISOString() : null, updated_at: new Date().toISOString() }).eq("stripe_subscription_id", object.id);
         await db.from("agent_service_enrollments").update({status,next_cycle_at:status==="active"||status==="trialing"?new Date().toISOString():undefined,pause_reason:status==="active"||status==="trialing"?null:"Billing is not active",updated_at:new Date().toISOString()}).eq("stripe_subscription_id",object.id);
+        if(retailSubscription.data)await applyRetailWorkspaceBillingState(db,{agencyId:retailSubscription.data.agency_id,projectId:retailSubscription.data.project_id,status});
       }
     }
       await completeWebhookEvent(db,{eventId:inbox.eventId,status:handled?"processed":"ignored"});

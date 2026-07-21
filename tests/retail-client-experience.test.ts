@@ -51,6 +51,7 @@ describe("retail business-owner experience", () => {
     const webhook = read("app/api/billing/webhook/route.ts");
     const catalog = read("lib/billing/catalog.ts");
     const portal = read("app/ui/live-client-dashboard.tsx");
+    const workspaceState = read("lib/billing/retail-workspace.ts");
     expect(checkout).toContain("/v1/checkout/sessions");
     expect(checkout).toContain("resolveClientContext");
     expect(webhook).toContain("timingSafeEqual");
@@ -67,6 +68,10 @@ describe("retail business-owner experience", () => {
     expect(catalog).toContain('label: "Growth Copilot"');
     expect(catalog).toContain('label: "Autopilot"');
     expect(catalog).toContain('label: "Autopilot Plus"');
+    expect(webhook).toContain("applyRetailWorkspaceBillingState");
+    expect(workspaceState).toContain('agency.data.plan !== "retail"');
+    expect(workspaceState).toContain('stripe_subscription_id');
+    expect(workspaceState).toContain('status: "active"');
   });
 
   it("opens the client portal for verified first-run retail accounts without exposing tenant data", () => {

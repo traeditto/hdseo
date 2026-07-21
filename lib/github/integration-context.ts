@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ApiError } from "@/lib/api/errors";
 import { hasPermission, type AgencyRole } from "@/lib/auth/permissions";
+import { reconcilePaidRetailWorkspace } from "@/lib/billing/retail-workspace";
 import { getLiveAdminClient, resolveLiveIdentity } from "@/lib/live/identity";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { IntegrationState } from "@/lib/security/signed-state";
@@ -39,10 +40,6 @@ async function authorizeAgency(
     .eq("id", input.agencyId)
     .maybeSingle();
   if (!agencyResult.data) throw new ApiError("Agency access denied.", 403, "TENANT_DENIED");
-  if (!["trial", "active"].includes(agencyResult.data.status)) {
-    throw new ApiError("This workspace is not currently allowed to connect integrations.", 403, "TENANT_DENIED");
-  }
-
   let projectContext: GitHubManagementContext["project"];
   let clientContext: GitHubManagementContext["client"];
   if (input.projectId || input.clientId) {
@@ -54,6 +51,18 @@ async function authorizeAgency(
     if (!project || !client) throw new ApiError("Project access denied.", 403, "TENANT_DENIED");
     projectContext = {id:project.id,name:project.name,domain:project.domain};
     clientContext = client;
+  }
+
+  let workspaceStatus = agencyResult.data.status;
+  if (workspaceStatus === "trial" && projectContext) {
+    workspaceStatus =
+      (await reconcilePaidRetailWorkspace(db, {
+        agencyId: input.agencyId,
+        projectId: projectContext.id,
+      })) ?? workspaceStatus;
+  }
+  if (!["trial", "active"].includes(workspaceStatus)) {
+    throw new ApiError("This workspace is not currently allowed to connect integrations.", 403, "TENANT_DENIED");
   }
 
   let role: GitHubManagementContext["role"] = "platform_admin";
