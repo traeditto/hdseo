@@ -17,7 +17,29 @@ export const pageSlug=(targetUrl:string|null|undefined,keyword:string)=>{try{con
 
 function metadataCandidate(keyword:string,creative?:ApprovedCreative|null){return{title:(creative?.title||titleCase(keyword)).slice(0,65),description:(creative?.meta_description||`Learn what matters when evaluating ${keyword}, with clear next steps based on the services available in your market.`).slice(0,170),h1:creative?.h1||titleCase(keyword)};}
 
-export function proposeMetadataChange(file:RepositoryFile,keyword:string,creative?:ApprovedCreative|null){
+const pageModule=/(?:^|\/)(?:page|index)\.(?:ts|tsx|js|jsx|mjs|html)$/i;
+const contentModule=/(?:^|\/)(?:content|site-data|page-data|pages-data|seo-data|seo-content)(?:\.|\/)/i;
+const escaped=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+
+function objectRange(source:string,open:number){let depth=0,quote="",escapedCharacter=false;for(let index=open;index<source.length;index+=1){const character=source[index];if(quote){if(escapedCharacter)escapedCharacter=false;else if(character==="\\")escapedCharacter=true;else if(character===quote)quote="";continue}if(character==='"'||character==="'"||character==='`'){quote=character;continue}if(character==="{")depth+=1;else if(character==="}"&&--depth===0)return{start:open,end:index+1}}return null;}
+
+function proposeStructuredRecordChange(file:RepositoryFile,slug:string,keyword:string,creative:ApprovedCreative){
+  if(!contentModule.test(file.path))return null;
+  const key=new RegExp(`(?:^|\\n)\\s*(?:["']${escaped(slug)}["']|${escaped(slug)})\\s*:\\s*\\{`,`m`).exec(file.content),open=key?file.content.indexOf("{",key.index):-1,range=open>=0?objectRange(file.content,open):null;
+  if(!range)return null;
+  const record=file.content.slice(range.start,range.end),candidate=metadataCandidate(keyword,creative);
+  let changed=record;const fields:string[]=[];
+  const replacements:Array<[RegExp,string,string]>=[[/\bseoTitle\s*:\s*["'][^"']*["']/,`seoTitle: ${JSON.stringify(candidate.title)}`,"SEO title"],[/\bprimaryKeyword\s*:\s*["'][^"']*["']/,`primaryKeyword: ${JSON.stringify(keyword)}`,"primary keyword"]];
+  for(const [pattern,replacement,label] of replacements){if(!pattern.test(changed))continue;changed=changed.replace(pattern,replacement);fields.push(label)}
+  if(!fields.length||changed===record)return null;
+  const proposed=file.content.slice(0,range.start)+changed+file.content.slice(range.end);
+  return{filePath:file.path,originalSha:file.sha,originalContent:file.content,proposedContent:proposed,diff:`--- a/${file.path}\n+++ b/${file.path}\n@@ ${slug} SEO record @@\n- Existing ${fields.join(", ")}\n+ ${candidate.title} | ${keyword}`,reason:`Update only the ${slug} page's ${fields.join(" and ")} from the approved creative and verified query evidence.`};
+}
+
+export function proposeMetadataChange(file:RepositoryFile,keyword:string,creative?:ApprovedCreative|null,targetSlug?:string){
+  if(!creative)return null;
+  if(targetSlug){const structured=proposeStructuredRecordChange(file,targetSlug,keyword,creative);if(structured)return structured;}
+  if(!pageModule.test(file.path)||/(?:^|\/)(?:api|admin|dashboard|seo-admin)(?:\/|$)/i.test(file.path))return null;
   const candidate=metadataCandidate(keyword,creative),titlePatterns=[/(title:\s*\{\s*absolute:\s*)"([^"]+)"/,/(title:\s*)"([^"]+)"/];
   let proposed=file.content,changed=false;const reason:string[]=[];
   for(const pattern of titlePatterns){const match=proposed.match(pattern);if(!match)continue;const brand=match[2].includes("|")?` | ${match[2].split("|").slice(1).join("|").trim()}`:"",replacement=`${match[1]}${JSON.stringify(`${candidate.title}${brand}`.slice(0,65))}`;proposed=proposed.replace(pattern,replacement);changed=true;reason.push("title");break;}

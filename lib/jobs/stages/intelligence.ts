@@ -146,20 +146,15 @@ export async function prepareStage(db:SupabaseClient,job:CampaignJob){
   // for exact copy, release, material business proof, or a protected mutation.
   if(managedOutcome){
     if(decision.path==="repository"){
-      if(opportunity.data.action_type==="BUILD"||opportunity.data.action_type==="CONTENT"){
-        const creative=await prepareCampaignCreativeHandoff(db,{agencyId:job.agency_id,clientId:job.client_organization_id,projectId:job.project_id,userId:job.requested_by},opportunityId);
-        const creativeResult={...nextResult,creativeSpecId:creative.specId,...("draftId" in creative?{creativeDraftId:creative.draftId}:{}),creativeState:creative.state,requiredAction:"reason" in creative?creative.reason:creative.state==="review_required"?"Review and approve the exact QA-passed draft.":null};
-        if(creative.state==="approved"){
-          const withResult={...job,result:creativeResult};
-          await db.from("seo_campaign_jobs").update({result:creativeResult}).eq("id",job.id);
-          return advance(db,withResult,"inspect_repository",{creativeState:creative.state,creativeDraftId:"draftId" in creative?creative.draftId:null});
-        }
-        const waitingStatus=creative.state==="evidence_required"?"awaiting_creative_evidence":"awaiting_creative_review";
-        return pause(db,{...job,result:creativeResult},waitingStatus,creativeResult);
+      const creative=await prepareCampaignCreativeHandoff(db,{agencyId:job.agency_id,clientId:job.client_organization_id,projectId:job.project_id,userId:job.requested_by},opportunityId);
+      const creativeResult={...nextResult,creativeSpecId:creative.specId,...("draftId" in creative?{creativeDraftId:creative.draftId}:{}),creativeState:creative.state,requiredAction:"reason" in creative?creative.reason:creative.state==="review_required"?"Review and approve the exact QA-passed draft.":null};
+      if(creative.state==="approved"){
+        const withResult={...job,result:creativeResult};
+        await db.from("seo_campaign_jobs").update({result:creativeResult}).eq("id",job.id);
+        return advance(db,withResult,"inspect_repository",{creativeState:creative.state,creativeDraftId:"draftId" in creative?creative.draftId:null});
       }
-      const withResult={...job,result:nextResult};
-      await db.from("seo_campaign_jobs").update({result:nextResult}).eq("id",job.id);
-      return advance(db,withResult,"inspect_repository",{automaticallyPrepared:true});
+      const waitingStatus=creative.state==="evidence_required"?"awaiting_creative_evidence":"awaiting_creative_review";
+      return pause(db,{...job,result:creativeResult},waitingStatus,creativeResult);
     }
 
     const enrollment=await db.from("agent_service_enrollments").select("approval_owner").eq("agency_id",job.agency_id).eq("client_organization_id",job.client_organization_id).eq("project_id",job.project_id).eq("service_mode","managed_agent").in("status",["trialing","active"]).maybeSingle();

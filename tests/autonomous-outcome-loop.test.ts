@@ -25,4 +25,12 @@ describe("autonomous outcome loop",()=>{
     const edit=proposeMetadataChange({path:"app/page.tsx",sha:"abc",content:'export const metadata = { title: "Old title", description: "Old description" };'},"roof repair",creative);
     expect(edit?.proposedContent).toContain("Evidence-backed roof repair guidance.");
   });
+  it("refuses unrelated application routes and targets slug-specific SEO records",()=>{
+    const creative={title:"Roofing Company in Jacksonville, FL",meta_description:"Trusted residential roofing for Jacksonville homeowners.",h1:"Jacksonville Roofing Company",summary:"Local roofing help.",sections:[],faqs:[],schema_markup:{}};
+    expect(proposeMetadataChange({path:"app/api/seo/campaigns/route.ts",sha:"api",content:'const event={title: "Campaign created"};'},"roofing companies in jax fl",creative,"roofing")).toBeNull();
+    const edit=proposeMetadataChange({path:"lib/site-data.ts",sha:"data",content:'export const seo={\n roofing: { seoTitle: "Residential Roofing", primaryKeyword: "residential roofing", canonicalPath: "/roofing" },\n};'},"roofing companies in jax fl",creative,"roofing");
+    expect(edit?.filePath).toBe("lib/site-data.ts");
+    expect(edit?.proposedContent).toContain('seoTitle: "Roofing Company in Jacksonville, FL"');
+    expect(edit?.proposedContent).toContain('primaryKeyword: "roofing companies in jax fl"');
+  });
 });

@@ -64,6 +64,25 @@ export function promoteVercelDeployment(credentials: VercelCredentials, projectI
   return vercelRequest<void>(`/v10/projects/${encodeURIComponent(projectId)}/promote/${encodeURIComponent(deploymentId)}`, credentials, { method: "POST" });
 }
 
+export interface VercelProtectionBypass {
+  createdAt: number;
+  createdBy: string;
+  scope: "automation-bypass" | "integration-automation-bypass";
+  isEnvVar?: boolean;
+  note?: string;
+}
+
+export function createVercelAutomationBypass(credentials: VercelCredentials, projectId: string) {
+  return vercelRequest<{ protectionBypass?: Record<string, VercelProtectionBypass> }>(
+    `/v1/projects/${encodeURIComponent(projectId)}/protection-bypass`,
+    credentials,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ generate: { note: "HD SEO protected preview QA" } }),
+    },
+  );
+}
+
 export async function exchangeVercelCode(code: string, clientId: string, clientSecret: string) {
   const response = await fetch(`${API}/v2/oauth/access_token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: "https://hdseo.vercel.app/api/vercel/connect" }), cache: "no-store" });
   if (!response.ok) throw new ApiError("Vercel authorization could not be completed.", 502, "OPERATION_FAILED");

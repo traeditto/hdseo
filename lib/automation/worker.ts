@@ -5,6 +5,7 @@ import { requireAdminDb } from "./control-plane";
 import { loadVercelCredentials } from "@/lib/vercel/credentials";
 import { createVercelDeployment,getVercelDeployment,getVercelDeploymentEvents,rollbackVercelProject } from "@/lib/vercel/client";
 import { validateDeploymentUrl } from "./validator";
+import { ensureVercelAutomationBypass } from "@/lib/vercel/protection-bypass";
 import { compareSeoDrift,deploymentSnapshotFromChecks } from "@/lib/seo/drift";
 import {claimStoredMutationIntent,requestMutationIntent,settleMutationIntent,type MutationAction} from "@/lib/safety/mutation-gateway";
 
@@ -23,14 +24,16 @@ async function pollDeployment(job:BackgroundJob){if(!job.deployment_id)throw new
 
 async function validateDeployment(job:BackgroundJob){
   if(!job.deployment_id)throw new ApiError("Validation job is incomplete.",500,"OPERATION_FAILED");
-  const{db,deployment}=await deploymentContext(job.deployment_id);
+  const{db,deployment,project}=await deploymentContext(job.deployment_id);
   if(!deployment.url)throw new ApiError("Deployment URL is not available.",503,"OPERATION_FAILED");
   const previous=await db.from("deployments").select("id").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
   const baselineChecks=previous.data?await db.from("deployment_checks").select("check_type,score,details").eq("deployment_id",previous.data.id):{data:[]};
   const baseline=previous.data?deploymentSnapshotFromChecks(baselineChecks.data??[]):null;
   await db.from("deployments").update({status:"validating",updated_at:new Date().toISOString()}).eq("id",deployment.id);
   await setRun(job.automation_run_id,"running","deployment.validate");
-  const started=new Date().toISOString(),checks=await validateDeploymentUrl(deployment.url),current=deploymentSnapshotFromChecks(checks),drift=compareSeoDrift(baseline,current);
+  const credentials=await loadVercelCredentials(project.connection_id,job.agency_id),bypass=await ensureVercelAutomationBypass({credentials,projectId:project.vercel_project_id,environmentConfig:project.environment_config});
+  if(bypass.created){const savedConfig=await db.from("vercel_projects").update({environment_config:bypass.environmentConfig,updated_at:new Date().toISOString()}).eq("id",project.id).eq("agency_id",job.agency_id);if(savedConfig.error)throw new ApiError("The protected preview credential could not be stored safely.",500,"DATABASE_BINDING_FAILED");}
+  const started=new Date().toISOString(),checks=await validateDeploymentUrl(deployment.url,{protectionBypassSecret:bypass.secret}),current=deploymentSnapshotFromChecks(checks),drift=compareSeoDrift(baseline,current);
   checks.push({checkType:"drift",status:drift.status,required:drift.required,details:{baselineDeploymentId:previous.data?.id??null,findings:drift.findings,baseline:drift.baseline,current:drift.current}});
   for(const check of checks){const saved=await db.from("deployment_checks").upsert({deployment_id:deployment.id,check_type:check.checkType,status:check.status,required:check.required,score:check.score??null,details:check.details,started_at:started,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()},{onConflict:"deployment_id,check_type"});if(saved.error)throw new ApiError(`The ${check.checkType} validation result could not be persisted.`,500,"DATABASE_BINDING_FAILED");}
   const failed=checks.filter(check=>check.required&&check.status==="failed"),summary={passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId:previous.data?.id??null};

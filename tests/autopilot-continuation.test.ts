@@ -114,6 +114,16 @@ describe("Autopilot event-driven continuation", () => {
     expect(panel).toContain("Request revision");
   });
 
+  it("requires approved creative and targets only the intended public page", () => {
+    const intelligence = read("lib/jobs/stages/intelligence.ts");
+    const execution = read("lib/jobs/stages/execution.ts");
+    const validation = read("lib/execution/validation.ts");
+    expect(intelligence).toContain("prepareCampaignCreativeHandoff");
+    expect(execution).toContain("app/[slug]/page.tsx");
+    expect(execution).toContain("will not modify unrelated application code");
+    expect(validation).toContain("protected application or administrative code is not an SEO page target");
+  });
+
   it("authorizes a business owner to review only their own generated execution", () => {
     const route = read("app/api/executions/[executionId]/review/route.ts");
     expect(route).toContain("requireLiveAgencyProject");

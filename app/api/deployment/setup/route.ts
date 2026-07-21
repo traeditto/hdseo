@@ -7,6 +7,7 @@ import { getInstallation, listInstallationRepositories } from "@/lib/github/app-
 import { parseJson } from "@/lib/api/request";
 import { getVercelProject, vercelRequest } from "@/lib/vercel/client";
 import { loadVercelCredentials } from "@/lib/vercel/credentials";
+import { ensureVercelAutomationBypass } from "@/lib/vercel/protection-bypass";
 
 const scopeSchema = z.object({
   agencyId: z.string().uuid(),
@@ -70,7 +71,7 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
       db
         .from("vercel_projects")
         .select(
-          "id,connection_id,repository_id,vercel_project_id,name,production_branch,production_domains,status,last_synced_at",
+          "id,connection_id,repository_id,vercel_project_id,name,production_branch,production_domains,environment_config,status,last_synced_at",
         )
         .eq("agency_id", context.agencyId)
         .eq("project_id", context.project.id)
@@ -175,6 +176,7 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
             name: vercelProject.name,
             productionBranch: vercelProject.production_branch,
             productionDomains: vercelProject.production_domains ?? [],
+            environmentConfig: vercelProject.environment_config ?? {},
             lastSyncedAt: vercelProject.last_synced_at,
           }
         : null,
@@ -268,6 +270,21 @@ export async function POST(request: Request) {
 
     const verifiedAt = new Date().toISOString();
     if (input.action === "verify_safety_baseline") {
+      const bypass = await ensureVercelAutomationBypass({
+        credentials,
+        projectId: state.vercelProject.providerId,
+        environmentConfig: state.vercelProject.environmentConfig,
+      });
+      if (bypass.created) {
+        const savedBypass = await db
+          .from("vercel_projects")
+          .update({ environment_config: bypass.environmentConfig, updated_at: verifiedAt })
+          .eq("id", state.vercelProject.id)
+          .eq("agency_id", context.agencyId);
+        if (savedBypass.error) {
+          throw new ApiError("The protected preview credential could not be stored safely.", 500, "DATABASE_BINDING_FAILED");
+        }
+      }
       const saved = await db
         .from("seo_projects")
         .update({ manual_workflow_verified_at: verifiedAt, updated_at: verifiedAt })
@@ -310,6 +327,7 @@ export async function POST(request: Request) {
           account: vercelAccount.user.username ?? vercelAccount.user.id,
           project: providerProject.name,
           accessible: true,
+          protectedPreviewValidation: input.action === "verify_safety_baseline",
         },
         automationReady: input.action === "verify_safety_baseline" ? false : state.checks.complete,
         testedAt: verifiedAt,

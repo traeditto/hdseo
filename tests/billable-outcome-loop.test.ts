@@ -101,7 +101,8 @@ describe("billable managed outcome loop",()=>{
     expect(route).toContain("preview_deployment_id");
     expect(route).toContain("deployment.data.git_sha");
     for(const check of ["health","lighthouse","seo","links","schema","sitemap","robots","indexing_readiness","drift"])expect(route).toContain(`${check}:new Set(`);
-    expect(route).toContain('lighthouse:new Set(["passed","warning"])');
+    expect(route).toContain('lighthouse:new Set(["passed","warning","skipped"])');
+    expect(route).toContain("Protected preview credentials are never sent to external PageSpeed services");
     expect(route).toContain('schema:new Set(["passed","warning"])');
     expect(route).toContain('drift:new Set(["passed","warning","skipped"])');
     expect(route).toContain("missing.length");
