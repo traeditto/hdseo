@@ -1,4 +1,5 @@
 import { env } from "@/lib/config/env";
+import { guardWorkerCron } from "@/lib/cron/runtime";
 import { processCampaignBatch } from "@/lib/jobs/runner";
 import { processOneMonitoringCheckpoint } from "@/lib/jobs/monitoring-worker";
 import { processEvidenceBatch } from "@/lib/evidence/worker";
@@ -7,7 +8,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { scheduleDueEvidence } from "@/lib/evidence/scheduler";
 
 export async function GET(request:Request){
-  if(!env.CRON_SECRET||request.headers.get("authorization")!==`Bearer ${env.CRON_SECRET}`)return Response.json({ok:false},{status:401});
+  const guarded=guardWorkerCron(request);if(guarded)return guarded;
   const workerId=`seo-cron:${process.env.VERCEL_REGION??"local"}`;
   await recordSystemHeartbeat({component:"scheduler:seo",status:"healthy",workerId,metadata:{phase:"started"}});
   try{

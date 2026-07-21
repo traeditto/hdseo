@@ -57,6 +57,16 @@ describe("Agent-as-a-Service",()=>{
     expect(vercel).toContain("/api/cron/agent-service");
   });
 
+  it("allows only the canonical production runtime to claim shared queues",()=>{
+    const guard=read("lib/cron/runtime.ts"),env=read("lib/config/env.ts");
+    expect(env).toContain("HDSEO_WORKER_RUNTIME");
+    expect(guard).toContain('env.HDSEO_WORKER_RUNTIME !== "canonical"');
+    expect(guard).toContain("NON_CANONICAL_WORKER_RUNTIME");
+    for(const route of ["seo","automation","agent-service"]){
+      expect(read(`app/api/cron/${route}/route.ts`)).toContain("guardWorkerCron");
+    }
+  });
+
   it("gives agencies a managed-client workspace and owners a simple Autopilot view",()=>{
     const panel=read("app/ui/agent-service-panel.tsx"),agency=read("app/ui/live-agency-dashboard.tsx"),client=read("app/ui/live-client-dashboard.tsx");
     for(const text of ["HD SEO AUTOPILOT","WHITE-LABEL AGENT TEAM","No busywork","Plain-language approval inbox","AVAILABLE OUTCOMES","MAJOR PAGES LEFT","INTERNAL COST CAP LEFT"])expect(panel).toContain(text);

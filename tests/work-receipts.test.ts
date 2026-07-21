@@ -29,6 +29,15 @@ describe("customer-visible accountable work receipts", () => {
     expect(receipt).toContain("No outcome is finally charged until a customer-visible delivery is independently verified");
   });
 
+  it("refreshes active receipts automatically without requiring SEO or queue knowledge", () => {
+    const receipt = read("app/ui/work-receipt.tsx");
+    expect(receipt).toContain("window.setInterval");
+    expect(receipt).toContain("10_000");
+    expect(receipt).toContain('document.visibilityState === "visible"');
+    expect(receipt).toContain('window.addEventListener("focus"');
+    expect(receipt).toContain('cache: "no-store"');
+  });
+
   it("repairs and displays the accountable approval timestamp", () => {
     const migration = read("supabase/migrations/0041_approved_package_execution_handoff.sql");
     const route = read("app/api/work-receipts/route.ts");

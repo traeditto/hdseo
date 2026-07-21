@@ -1,11 +1,12 @@
 import { env } from "@/lib/config/env";
+import { guardWorkerCron } from "@/lib/cron/runtime";
 import { processDeploymentBatch } from "@/lib/automation/worker";
 import { processAgentBatch } from "@/lib/agents/supervisor";
 import { recordSystemHeartbeat } from "@/lib/readiness/heartbeat";
 import { syncOutcomeProviders } from "@/lib/outcomes/worker";
 
 export async function GET(request:Request){
-  if(!env.CRON_SECRET||request.headers.get("authorization")!==`Bearer ${env.CRON_SECRET}`)return Response.json({ok:false},{status:401});
+  const guarded=guardWorkerCron(request);if(guarded)return guarded;
   const workerId=`automation-cron:${process.env.VERCEL_REGION??"local"}`;
   await recordSystemHeartbeat({component:"scheduler:automation",status:"healthy",workerId,metadata:{phase:"started"}});
   try{

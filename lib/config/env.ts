@@ -46,6 +46,7 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().email().optional().or(z.literal("")),
   CRON_SECRET: z.string().min(16).optional().or(z.literal("")),
+  HDSEO_WORKER_RUNTIME: z.enum(["canonical", "disabled"]).optional(),
   APP_ENCRYPTION_KEY: z.string().min(32).optional().or(z.literal("")),
   NEXT_PUBLIC_APP_URL: optionalUrl,
   APP_URL: optionalUrl,

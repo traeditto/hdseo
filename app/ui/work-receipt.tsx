@@ -131,26 +131,42 @@ export function WorkReceipt({
     setReceipt(result.receipt);
   }
 
+  // The receipt is a live operational view. Polling removes the need for a
+  // business owner to understand queues, cron schedules, or browser refreshes.
   useEffect(() => {
     let active = true;
-    fetch(
-      `/api/work-receipts?projectId=${encodeURIComponent(projectId)}&packageId=${encodeURIComponent(packageId)}`,
-      { cache: "no-store" },
-    )
-      .then(async (response) => ({ response, result: await response.json() }))
-      .then(({ response, result }) => {
-        if (!active) return;
-        if (!response.ok) {
-          setError(result.error?.message ?? "The work receipt could not be loaded.");
-          return;
-        }
-        setReceipt(result.receipt);
-      })
-      .catch(() => {
-        if (active) setError("The work receipt could not be loaded.");
-      });
+    const refresh = () =>
+      fetch(
+        `/api/work-receipts?projectId=${encodeURIComponent(projectId)}&packageId=${encodeURIComponent(packageId)}`,
+        { cache: "no-store" },
+      )
+        .then(async (response) => ({ response, result: await response.json() }))
+        .then(({ response, result }) => {
+          if (!active) return;
+          if (!response.ok) {
+            setError(result.error?.message ?? "The work receipt could not be loaded.");
+            return;
+          }
+          setError("");
+          setReceipt(result.receipt);
+        })
+        .catch(() => {
+          if (active) setError("The work receipt could not be loaded.");
+        });
+    void refresh();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 10_000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
     return () => {
       active = false;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
     };
   }, [projectId, packageId]);
 
