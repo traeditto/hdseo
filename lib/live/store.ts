@@ -290,6 +290,13 @@ export type LiveClientWebsite = {
   editorMode: string | null;
   publishingReady: boolean;
   publishingBlockers: string[];
+  connectionInvite: {
+    status: string;
+    recipientEmail: string | null;
+    expiresAt: string;
+    firstOpenedAt: string | null;
+    completedAt: string | null;
+  } | null;
 };
 
 export type LiveClientIntegration = {
@@ -1131,6 +1138,7 @@ export async function liveClientSnapshot(email: string) {
     searchRowsRes,
     leadsRes,
     supportRes,
+    connectionInvitesRes,
   ] = await Promise.all([
     db
       .from("client_portal_publications")
@@ -1198,7 +1206,18 @@ export async function liveClientSnapshot(email: string) {
       .in("project_id", projectIds)
       .order("created_at", { ascending: false })
       .limit(100),
+    db
+      .from("website_connection_invites")
+      .select("project_id,recipient_email,status,expires_at,first_opened_at,completed_at,created_at")
+      .in("project_id", projectIds)
+      .order("created_at", { ascending: false }),
   ]);
+  const connectionInviteByProject = new Map<string, DatabaseRow>();
+  for (const raw of connectionInvitesRes.data ?? []) {
+    const row = raw as DatabaseRow;
+    const projectId = rowText(row, "project_id");
+    if (projectId && !connectionInviteByProject.has(projectId)) connectionInviteByProject.set(projectId, row);
+  }
   const cmsConnectionByProject = new Map<string, DatabaseRow>();
   for (const raw of cmsConnectionsRes.data ?? []) {
     const row = raw as DatabaseRow;
@@ -1430,6 +1449,7 @@ export async function liveClientSnapshot(email: string) {
             : connectionMode === "api" && !connectionVerified
               ? ["CONNECTION_NOT_VERIFIED"]
               : ["PUBLISHING_ACCESS_REQUIRED"];
+      const invite = connectionInviteByProject.get(projectId);
       return {
         id: rowText(row, "id"),
         projectId,
@@ -1444,6 +1464,13 @@ export async function liveClientSnapshot(email: string) {
           : null,
         publishingReady,
         publishingBlockers,
+        connectionInvite: invite ? {
+          status: rowText(invite, "status"),
+          recipientEmail: rowNullableText(invite, "recipient_email"),
+          expiresAt: toIso(invite.expires_at),
+          firstOpenedAt: rowNullableText(invite, "first_opened_at"),
+          completedAt: rowNullableText(invite, "completed_at"),
+        } : null,
       };
     }),
     integrations: (integrationsRes.data ?? []).map((raw) => {

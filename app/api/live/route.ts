@@ -39,6 +39,7 @@ import {
   disconnectWebsite,
   testWebsiteConnection,
 } from "@/lib/websites/connections";
+import { createWebsiteConnectionInvite } from "@/lib/websites/connection-invites";
 
 const schema = z.discriminatedUnion("action", [
   z.object({
@@ -250,6 +251,11 @@ const schema = z.discriminatedUnion("action", [
     websiteId: z.string().uuid(),
     confirm: z.literal(true),
   }),
+  z.object({
+    action: z.literal("create_website_connection_invite"),
+    projectId: z.string().uuid(),
+    recipientEmail: z.string().email().optional().or(z.literal("")),
+  }),
 ]);
 
 async function identity() {
@@ -319,7 +325,7 @@ export async function POST(request: Request) {
       await enforceRateLimit(actorScope, "retail_business_creation", 3, 86400);
     } else if (["retail_update_profile", "retail_activate", "retail_analyze_website", "client_support"].includes(input.action)) {
       await enforceRateLimit(actorScope, "retail_client_action", 30, 3600);
-    } else if (["connect_website", "test_website", "disconnect_website"].includes(input.action)) {
+    } else if (["connect_website", "test_website", "disconnect_website", "create_website_connection_invite"].includes(input.action)) {
       await enforceRateLimit(actorScope, "website_connection", 20, 3600);
     } else if (["publish_cms", "rollback_cms"].includes(input.action)) {
       await enforceRateLimit(actorScope, "cms_write", 10, 3600);
@@ -377,6 +383,19 @@ export async function POST(request: Request) {
     if (input.action === "client_support") {
       const requestId = await createClientSupportRequest(user.email, input);
       return Response.json({ ok: true, requestId, data: await liveClientSnapshot(user.email), message: "Your question was sent with the correct business context." });
+    }
+    if (input.action === "create_website_connection_invite") {
+      const handoff = await createWebsiteConnectionInvite(user.email, { projectId: input.projectId, recipientEmail: input.recipientEmail || undefined });
+      return Response.json({
+        ok: true,
+        handoff,
+        data: await liveClientSnapshot(user.email),
+        message: handoff.delivery === "sent"
+          ? "The secure website setup link was emailed and copied below."
+          : handoff.delivery === "failed"
+            ? "The secure link was created, but email delivery failed. Copy and send it manually."
+            : "The secure website setup link is ready to copy and send.",
+      });
     }
 
     switch (input.action) {

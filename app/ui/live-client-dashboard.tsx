@@ -95,6 +95,13 @@ type Website = {
   editorMode: string | null;
   publishingReady: boolean;
   publishingBlockers: string[];
+  connectionInvite: {
+    status: string;
+    recipientEmail: string | null;
+    expiresAt: string;
+    firstOpenedAt: string | null;
+    completedAt: string | null;
+  } | null;
 };
 type Integration = {
   projectId: string;
@@ -195,6 +202,12 @@ const friendlyStatus = (status: string) =>
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
+type PostActionResult = {
+  data: ClientData;
+  message?: string;
+  handoff?: { id: string; url: string; expiresAt: string; delivery: "sent" | "manual" | "failed" };
+};
+
 async function postAction(body: Record<string, unknown>) {
   const response = await fetch("/api/live", {
     method: "POST",
@@ -206,7 +219,7 @@ async function postAction(body: Record<string, unknown>) {
     throw new Error(
       result.error?.message ?? "HD SEO could not complete that action.",
     );
-  return result as { data: ClientData; message?: string };
+  return result as PostActionResult;
 }
 
 function Brand() {
@@ -744,19 +757,21 @@ export function LiveClientBusinessDashboard({
       />
     );
 
-  async function act(body: Record<string, unknown>, success?: string) {
+  async function act(body: Record<string, unknown>, success?: string): Promise<PostActionResult | null> {
     setBusyId(String(body.packageId ?? body.action));
     setMessage("");
     try {
       const result = await postAction(body);
       setData(result.data);
       setMessage(result.message ?? success ?? "Saved.");
+      return result;
     } catch (error) {
       setMessage(
         error instanceof Error
           ? error.message
           : "The action could not be completed.",
       );
+      return null;
     } finally {
       setBusyId(null);
     }
@@ -1515,7 +1530,7 @@ function OwnerWebsiteSetup({
   website: Website | undefined;
   busy: boolean;
   canManage: boolean;
-  onAction: (body: Record<string, unknown>, success?: string) => Promise<void>;
+  onAction: (body: Record<string, unknown>, success?: string) => Promise<PostActionResult | null>;
 }) {
   const detected = website?.cmsType ?? "unknown";
   const recommendedChoice: OwnerConnectionChoice = [
@@ -1527,6 +1542,10 @@ function OwnerWebsiteSetup({
     : "guided";
   const [choice, setChoice] = useState<OwnerConnectionChoice>(recommendedChoice);
   const [showAlternatives, setShowAlternatives] = useState(false);
+  const [showHandoff, setShowHandoff] = useState(false);
+  const [handoffEmail, setHandoffEmail] = useState(website?.connectionInvite?.recipientEmail ?? "");
+  const [handoff, setHandoff] = useState<PostActionResult["handoff"]>();
+  const [handoffMessage, setHandoffMessage] = useState("");
   const selectedChoice = showAlternatives ? choice : recommendedChoice;
   const setupPending =
     website?.connectionMode === "managed_migration" &&
@@ -1578,6 +1597,24 @@ function OwnerWebsiteSetup({
       },
       "Website publishing access was verified.",
     );
+  }
+
+  async function createHandoff(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setHandoffMessage("");
+    const result = await onAction({
+      action: "create_website_connection_invite",
+      projectId: project.id,
+      recipientEmail: handoffEmail.trim() || undefined,
+    });
+    if (!result?.handoff) return;
+    setHandoff(result.handoff);
+    try {
+      await navigator.clipboard.writeText(result.handoff.url);
+      setHandoffMessage(result.handoff.delivery === "sent" ? "Email sent. The secure link was also copied." : "Secure link copied. Send it to the person who manages your website.");
+    } catch {
+      setHandoffMessage("The secure link is ready. Copy it below and send it to your website contact.");
+    }
   }
 
   return (
@@ -1788,6 +1825,55 @@ function OwnerWebsiteSetup({
         </form>
       )}
 
+      {!website?.publishingReady && canManage && (
+        <section className="owner-builder-handoff">
+          <div>
+            <small>DON’T HAVE WEBSITE ACCESS?</small>
+            <h3>Send setup to the person who built your website</h3>
+            <p>They get a secure, seven-day link that can only connect {project.domain}. They cannot see your billing, leads, rankings, approvals, or HD SEO account.</p>
+            {website?.connectionInvite && !handoff && (
+              <span className={`handoff-status ${website.connectionInvite.status}`}>
+                Last link: {friendlyStatus(website.connectionInvite.status)}
+                {website.connectionInvite.firstOpenedAt ? " · Opened" : " · Not opened yet"}
+              </span>
+            )}
+          </div>
+          {!showHandoff && !handoff ? (
+            <button type="button" onClick={() => setShowHandoff(true)}>Send a secure setup link →</button>
+          ) : (
+            <form onSubmit={createHandoff}>
+              {!handoff && (
+                <label>
+                  Website contact’s email <em>(optional)</em>
+                  <input value={handoffEmail} onChange={(event) => setHandoffEmail(event.target.value)} type="email" placeholder="developer@example.com" />
+                </label>
+              )}
+              {handoff && (
+                <label>
+                  Secure setup link
+                  <input value={handoff.url} readOnly onFocus={(event) => event.currentTarget.select()} />
+                </label>
+              )}
+              <div>
+                {handoff ? (
+                  <>
+                    <button type="button" onClick={() => void navigator.clipboard.writeText(handoff.url)}>Copy link</button>
+                    <a href={`mailto:${encodeURIComponent(handoffEmail)}?subject=${encodeURIComponent(`Website access needed for ${project.domain}`)}&body=${encodeURIComponent(`Please use this secure HD SEO link to connect the website you manage. It only grants setup access for ${project.domain} and expires in seven days:\n\n${handoff.url}`)}`}>Open email</a>
+                    <button type="button" onClick={() => { setHandoff(undefined); setShowHandoff(false); }}>Done</button>
+                  </>
+                ) : (
+                  <>
+                    <button type="submit" disabled={busy}>{busy ? "Creating link…" : handoffEmail ? "Email and copy link" : "Create and copy link"}</button>
+                    <button type="button" onClick={() => setShowHandoff(false)}>Cancel</button>
+                  </>
+                )}
+              </div>
+              {handoffMessage && <p role="status">{handoffMessage}</p>}
+            </form>
+          )}
+        </section>
+      )}
+
       {!canManage && !website?.publishingReady && (
         <div className="owner-setup-viewer-note">
           The business owner must complete this one-time connection.
@@ -1815,7 +1901,7 @@ function BusinessSettings({
   project: Project;
   busy: boolean;
   canManage: boolean;
-  onAction: (body: Record<string, unknown>, success?: string) => Promise<void>;
+  onAction: (body: Record<string, unknown>, success?: string) => Promise<PostActionResult | null>;
 }) {
   const profile = data.profile;
   const [marketScope, setMarketScope] = useState<"service_area" | "nationwide">(

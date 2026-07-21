@@ -122,3 +122,17 @@ export async function resolveSignedGitHubContext(state: IntegrationState) {
   if (!profile.data?.email) throw new ApiError("GitHub authorization user is unavailable.", 403, "TENANT_DENIED");
   return authorizeAgency(db, {userId:state.userId,email:profile.data.email,agencyId:state.agencyId,platformAdmin:await platformAdmin(db,state.userId),clientId:state.clientId,projectId:state.projectId});
 }
+
+export async function resolveDelegatedGitHubContext(input: { agencyId: string; clientId: string; projectId: string; userId: string }) {
+  const db = getLiveAdminClient();
+  const profile = await db.from("profiles").select("email").eq("id", input.userId).single();
+  if (!profile.data?.email) throw new ApiError("The website owner authorization is unavailable.", 403, "TENANT_DENIED");
+  return authorizeAgency(db, {
+    userId: input.userId,
+    email: profile.data.email,
+    agencyId: input.agencyId,
+    platformAdmin: await platformAdmin(db, input.userId),
+    clientId: input.clientId,
+    projectId: input.projectId,
+  });
+}

@@ -5,8 +5,9 @@ import { bindGitHubInstallation } from "@/lib/github/installation-binding";
 import { resolveSignedGitHubContext } from "@/lib/github/integration-context";
 import { integrationStatePurpose,verifyIntegrationState } from "@/lib/security/signed-state";
 import { GET as legacyConnectCallback } from "@/app/api/github/connect/route";
+import { recordWebsiteInviteGitHubResult } from "@/lib/websites/connection-invites";
 
-function safeReturnUrl(value:string|undefined){const fallback=new URL("/admin/settings/github?connected=1",`${appBaseUrl()}/`);if(!value)return fallback;try{const url=new URL(value,fallback);return url.origin===fallback.origin&&["/admin/settings/github","/portal/agency","/portal/client"].includes(url.pathname)?url:fallback;}catch{return fallback;}}
+function safeReturnUrl(value:string|undefined){const fallback=new URL("/admin/settings/github?connected=1",`${appBaseUrl()}/`);if(!value)return fallback;try{const url=new URL(value,fallback),allowed=["/admin/settings/github","/portal/agency","/portal/client"].includes(url.pathname)||url.pathname.startsWith("/connect/website/");return url.origin===fallback.origin&&allowed?url:fallback;}catch{return fallback;}}
 
 type CallbackStage="state"|"context"|"installation"|"oauth"|"authorization"|"binding"|"response";
 const stageFailure:Record<CallbackStage,{code:ApiErrorCode;message:string}>={
@@ -40,8 +41,11 @@ export async function GET(request:Request){
     const userInstallations=await listUserInstallations(tokenResult.access_token);
     if(!userInstallations.some(item=>item.id===installationId))throw new ApiError("The signed-in GitHub user cannot manage this installation.",403,"TENANT_DENIED");
     stage="binding";
-    await bindGitHubInstallation({context,installationId,setupAction:state.setupAction??"install",request});
+    const binding=await bindGitHubInstallation({context,installationId,setupAction:state.setupAction??"install",request});
+    if(state.handoffId)await recordWebsiteInviteGitHubResult({inviteId:state.handoffId,agencyId:context.agency.id,projectId:context.project?.id,installationId,repositorySaved:binding.repositorySaved});
     stage="response";
-    return new Response(null,{status:303,headers:{Location:safeReturnUrl(state.returnUrl).toString(),"Set-Cookie":`hd_github_agency=${encodeURIComponent(context.agency.id)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`}});
+    const headers=new Headers({Location:safeReturnUrl(state.returnUrl).toString()});
+    if(!state.handoffId)headers.set("Set-Cookie",`hd_github_agency=${encodeURIComponent(context.agency.id)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);
+    return new Response(null,{status:303,headers});
   }catch(error){return jsonError(callbackError(error,stage));}
 }

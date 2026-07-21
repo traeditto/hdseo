@@ -69,4 +69,18 @@ describe("website connections",()=>{
     expect(read("lib/github/repository-connection.ts")).toContain('onConflict:"agency_id,github_installation_id,github_repository_id"');
     expect(read("supabase/migrations/0039_shared_github_installation_tenants.sql")).toContain("repositories_agency_installation_repository_uidx");
   });
+
+  it("lets a non-technical owner delegate only website setup to a trusted builder",()=>{
+    const portal=read("app/ui/live-client-dashboard.tsx"),handoff=read("lib/websites/connection-invites.ts"),page=read("app/ui/website-connection-handoff.tsx"),migration=read("supabase/migrations/0040_website_connection_handoffs.sql");
+    expect(portal).toContain("Send setup to the person who built your website");
+    expect(portal).toContain("create_website_connection_invite");
+    expect(handoff).toContain('randomBytes(32)');
+    expect(handoff).toContain('createHash("sha256")');
+    expect(handoff).not.toContain("token_hash: token,");
+    expect(page).toContain("No billing or client data");
+    expect(page).toContain("needsRepositorySelection");
+    expect(migration).toContain("website_connection_invites");
+    expect(migration).toContain("expires_at");
+    expect(migration).toContain("has_client_access");
+  });
 });

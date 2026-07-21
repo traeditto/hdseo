@@ -25,7 +25,7 @@ export async function GET(request:Request){
     if(installation.app_id!=null&&Number(installation.app_id)!==Number(env.GITHUB_APP_ID))throw new ApiError("The returned installation does not belong to the configured HD SEO GitHub App.",403,"INSTALLATION_LOOKUP_FAILED");
     if(!env.GITHUB_CLIENT_ID||!env.GITHUB_CLIENT_SECRET)throw new ApiError("GitHub user verification is not configured.",503,"NOT_CONFIGURED");
     stage="redirect";
-    const bindState=createIntegrationState({purpose:"github_bind",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,returnUrl:state.returnUrl,userId:context.user.id,installationId,setupAction:parsed.data.setup_action});
+    const bindState=createIntegrationState({purpose:"github_bind",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,returnUrl:state.returnUrl,userId:context.user.id,installationId,setupAction:parsed.data.setup_action,handoffId:state.handoffId});
     const authorizeUrl=new URL("https://github.com/login/oauth/authorize");authorizeUrl.searchParams.set("client_id",env.GITHUB_CLIENT_ID);authorizeUrl.searchParams.set("redirect_uri",githubCallbackUrl());authorizeUrl.searchParams.set("state",bindState);authorizeUrl.searchParams.set("allow_signup","false");
     console.info("[github.setup] installation verified",{jwtWorks:true,installationFound:true,installationId,accountLogin:installation.account.login,agencyId:context.agency.id,projectId:context.project?.id??null});
     return Response.redirect(authorizeUrl,303);

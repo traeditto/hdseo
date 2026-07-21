@@ -13,6 +13,7 @@ export interface IntegrationState {
   oauthStateId?: string;
   installationId?: number;
   setupAction?: string;
+  handoffId?: string;
   nonce: string;
   expiresAt: number;
 }
