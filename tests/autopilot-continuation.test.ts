@@ -114,6 +114,14 @@ describe("Autopilot event-driven continuation", () => {
     expect(panel).toContain("Request revision");
   });
 
+  it("authorizes a business owner to review only their own generated execution", () => {
+    const route = read("app/api/executions/[executionId]/review/route.ts");
+    expect(route).toContain("requireLiveAgencyProject");
+    expect(route).toContain('permission:"execution.approve"');
+    expect(route).toContain("context.agencyId!==input.agencyId||context.clientId!==input.clientId");
+    expect(route).not.toContain("resolveTenantContext");
+  });
+
   it("fails closed without spending capacity when publishing access is not verified", () => {
     const scheduler = read("lib/agent-service/scheduler.ts");
     const connectionBlock = scheduler.indexOf('failure_code:"CONNECTION_REQUIRED"');
