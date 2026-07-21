@@ -103,6 +103,17 @@ describe("Autopilot event-driven continuation", () => {
     expect(scheduler).toContain('targetStage=path.kind==="repository"?"inspect_repository":"prepare"');
   });
 
+  it("surfaces the generated repository diff as the next plain-language approval", () => {
+    const service = read("lib/agent-service/service.ts");
+    const panel = read("app/ui/agent-service-panel.tsx");
+    expect(service).toContain('.eq("status","awaiting_review")');
+    expect(service).toContain('kind:"execution"');
+    expect(service).toContain("Review the exact website change");
+    expect(panel).toContain('`/api/executions/${item.id}/review`');
+    expect(panel).toContain("Approve exact change");
+    expect(panel).toContain("Request revision");
+  });
+
   it("fails closed without spending capacity when publishing access is not verified", () => {
     const scheduler = read("lib/agent-service/scheduler.ts");
     const connectionBlock = scheduler.indexOf('failure_code:"CONNECTION_REQUIRED"');
