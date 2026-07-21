@@ -15,7 +15,7 @@ async function publishForClientReview(db:SupabaseClient,input:{agencyId:string;c
     agency_id:input.agencyId,client_organization_id:input.clientId,project_id:input.projectId,
     record_type:"implementation_package",source_id:input.packageId,
     title:`SEO improvement: ${String(packageData.keyword??"approved opportunity")}`,
-    summary:"HD SEO prepared the exact safe change automatically. Review what customers will see, then approve or request changes.",
+    summary:"HD SEO prepared a reviewable change package automatically. Review what customers will see, then approve it or request changes.",
     status:"awaiting_client",payload:{implementationPath:pkg.data.implementation_path,riskLevel:pkg.data.risk_level,hypothesis:pkg.data.hypothesis,metadata,acceptanceCriteria:pkg.data.acceptance_criteria,requiredEvidence:pkg.data.required_evidence},
     published_by:input.createdBy,published_at:new Date().toISOString(),revoked_at:null,
   },{onConflict:"project_id,record_type,source_id"});

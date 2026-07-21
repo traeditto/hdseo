@@ -258,13 +258,68 @@ function containsPhrase(text: string, phrase: string) {
 }
 
 function areaPhrases(area: ServiceArea) {
+  const values = [area.name, area.city, area.county, area.state, area.postalCode]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map(normalizeGeography);
   return [
     ...new Set(
-      [area.name, area.city, area.county, area.state, area.postalCode]
-        .filter((value): value is string => Boolean(value?.trim()))
-        .map(normalizeGeography),
+      values.flatMap((value) => {
+        const withoutRegionSuffix = value
+          .replace(/\s+(?:area|metro|metropolitan area|region|market)$/, "")
+          .trim();
+        const aliases =
+          withoutRegionSuffix === "jacksonville"
+            ? ["jax"]
+            : withoutRegionSuffix === "new york"
+              ? ["nyc"]
+              : withoutRegionSuffix === "los angeles"
+                ? ["la"]
+                : [];
+        return [
+          value,
+          ...(withoutRegionSuffix && withoutRegionSuffix !== value
+            ? [withoutRegionSuffix]
+            : []),
+          ...aliases,
+        ];
+      }),
     ),
   ];
+}
+
+const serviceStopWords = new Set([
+  "and",
+  "service",
+  "services",
+  "company",
+  "companies",
+  "contractor",
+  "contractors",
+  "installation",
+  "install",
+  "installer",
+  "installers",
+  "repair",
+  "repairs",
+  "replacement",
+  "replacements",
+]);
+const serviceRoot = (token: string) =>
+  ["roofing", "roofer", "roofers", "roofs"].includes(token)
+    ? "roof"
+    : token === "gutters"
+      ? "gutter"
+      : token.replace(/s$/, "");
+const serviceTokens = (value: string) =>
+  normalizeGeography(value)
+    .split(" ")
+    .map(serviceRoot)
+    .filter((token) => token && !serviceStopWords.has(token));
+function matchesService(keyword: string, service: string) {
+  if (containsPhrase(keyword, service)) return true;
+  const keywordTokens = new Set(serviceTokens(keyword));
+  const required = serviceTokens(service);
+  return required.length > 0 && required.some((token) => keywordTokens.has(token));
 }
 
 function specificMarket(value?: string | null) {
@@ -338,9 +393,9 @@ export function assessKeywordServiceArea(
   const matchedArea = policy.serviceAreas.find((area) =>
     areaPhrases(area).some((phrase) => containsPhrase(normalized, phrase)),
   );
-  const matchedService = policy.services.find((service) =>
-    containsPhrase(normalized, service.name),
-  );
+  const matchedService =
+    policy.services.find((service) => containsPhrase(normalized, service.name)) ??
+    policy.services.find((service) => matchesService(normalized, service.name));
 
   if (!policy.local) {
     return {

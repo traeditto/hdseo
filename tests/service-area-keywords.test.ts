@@ -114,4 +114,65 @@ describe("service-area keyword enforcement", () => {
       "roof repair tampa",
     );
   });
+
+  it("understands service-area labels, local aliases, and service word families", () => {
+    const liveStylePolicy = buildServiceAreaPolicy({
+      primaryMarket: "Jacksonville area",
+      serviceAreas: [
+        {
+          id: "jacksonville-area",
+          name: "Jacksonville area",
+          city: "Jacksonville area",
+          priority: 97,
+        },
+      ],
+      services: [
+        { id: "replacement", name: "Roof Replacement", priority: 95 },
+        { id: "repair", name: "roof repair", priority: 90 },
+      ],
+    });
+
+    expect(
+      assessKeywordServiceArea("roofing companies in jax fl", liveStylePolicy),
+    ).toMatchObject({
+      allowed: true,
+      locationId: "jacksonville-area",
+      serviceId: "replacement",
+    });
+    expect(
+      assessKeywordServiceArea("roofing companies jacksonville", liveStylePolicy),
+    ).toMatchObject({
+      allowed: true,
+      locationId: "jacksonville-area",
+      serviceId: "replacement",
+    });
+  });
+
+  it("rejects malformed provider queries before scoring", () => {
+    const item = (keyword: string) => ({
+      keyword_data: {
+        keyword,
+        keyword_info: { search_volume: 500, cpc: 20 },
+        keyword_properties: { keyword_difficulty: 30 },
+        search_intent_info: { main_intent: "commercial" },
+      },
+    });
+    const candidates = discoverKeywordCandidates(
+      [
+        {
+          items: [
+            item("roof roofing company"),
+            item("flat roof roofing companies"),
+            item("roof repair jacksonville"),
+          ],
+        },
+      ],
+      1500,
+      10,
+      policy,
+    );
+    expect(candidates.map((candidate) => candidate.keyword)).toEqual([
+      "roof repair jacksonville",
+    ]);
+  });
 });

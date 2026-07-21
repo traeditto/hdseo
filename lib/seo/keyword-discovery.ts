@@ -3,6 +3,7 @@ import {
   assessKeywordServiceArea,
   type ServiceAreaPolicy,
 } from "./service-area";
+import { keywordQualityIssues } from "./keyword-quality";
 
 type ProviderRecord = Record<string, unknown>;
 
@@ -131,6 +132,7 @@ export function discoverKeywordCandidates(
     if (
       keyword.length < 2 ||
       keyword.length > 200 ||
+      keywordQualityIssues(keyword).length > 0 ||
       (currentRank != null && (currentRank < 1 || currentRank > 100)) ||
       searchVolume <= 0
     ) {

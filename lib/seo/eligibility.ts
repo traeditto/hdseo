@@ -4,6 +4,7 @@ export interface EligibilityInput {
   projectId: string; keyword: string; targetUrl?: string | null; result: OpportunityResult;
   pageConflict?: boolean; activeDuplicate?: boolean; cooldownUntil?: string | null; evidenceRequired?: string[];
   serviceCapacity?: boolean; locationAllowed?: boolean; minimumConfidence?: number; now?: Date;
+  disqualifiers?: string[];
 }
 
 export function opportunityKey(projectId: string, keyword: string, targetUrl: string | null | undefined, actionType: string) {
@@ -18,6 +19,7 @@ export function evaluateEligibility(input: EligibilityInput) {
   if ((input.evidenceRequired ?? []).length) reasons.push("REQUIRED_EVIDENCE_MISSING");
   if (input.serviceCapacity === false) reasons.push("SERVICE_CAPACITY_UNAVAILABLE");
   if (input.locationAllowed === false) reasons.push("LOCATION_EXCLUDED");
+  reasons.push(...(input.disqualifiers??[]));
   if (input.result.confidenceScore < (input.minimumConfidence ?? 55)) reasons.push("CONFIDENCE_BELOW_THRESHOLD");
   return { eligible: reasons.length === 0, reasons, key: opportunityKey(input.projectId, input.keyword, input.targetUrl, input.result.actionType) };
 }

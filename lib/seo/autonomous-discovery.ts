@@ -84,6 +84,41 @@ async function existingKeywordIds(db: SupabaseClient, projectId: string) {
   );
 }
 
+async function refreshExistingKeywordScopes(
+  db: SupabaseClient,
+  ids: Map<string, string>,
+  candidates: Array<{
+    normalizedKeyword: string;
+    serviceId: string | null;
+    locationId: string | null;
+    priority: number;
+    rankingUrl: string | null;
+  }>,
+) {
+  const updates = candidates.flatMap((candidate) => {
+    const id = ids.get(candidate.normalizedKeyword);
+    if (!id) return [];
+    return [
+      db
+        .from("seo_keywords")
+        .update({
+          service_id: candidate.serviceId,
+          location_id: candidate.locationId,
+          priority: candidate.priority,
+          status: "active",
+          ...(candidate.rankingUrl
+            ? { target_url: candidate.rankingUrl }
+            : {}),
+        })
+        .eq("id", id),
+    ];
+  });
+  if (!updates.length) return;
+  const results = await Promise.all(updates);
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw failed.error;
+}
+
 async function persistProviderCandidates(
   db: SupabaseClient,
   tenant: DiscoveryTenant,
@@ -91,6 +126,17 @@ async function persistProviderCandidates(
   targetMarket: string,
 ) {
   const ids = await existingKeywordIds(db, tenant.projectId);
+  await refreshExistingKeywordScopes(
+    db,
+    ids,
+    candidates.map((candidate) => ({
+      normalizedKeyword: candidate.normalizedKeyword,
+      serviceId: candidate.serviceId,
+      locationId: candidate.locationId,
+      priority: candidate.opportunityScore,
+      rankingUrl: candidate.rankingUrl,
+    })),
+  );
   const missing = candidates
     .filter((candidate) => !ids.has(candidate.normalizedKeyword))
     .map((candidate) => ({
@@ -200,6 +246,17 @@ export async function importSearchConsoleDiscovery(
   if (!candidates.length) return { source: "google_search_console", keywords: 0, metrics: 0, rankings: 0 };
 
   const ids = await existingKeywordIds(db, tenant.projectId);
+  await refreshExistingKeywordScopes(
+    db,
+    ids,
+    candidates.map((candidate) => ({
+      normalizedKeyword: candidate.normalizedKeyword,
+      serviceId: candidate.assessment.serviceId,
+      locationId: candidate.assessment.locationId,
+      priority: candidate.priority,
+      rankingUrl: candidate.rankingUrl,
+    })),
+  );
   const missing = candidates
     .filter((candidate) => !ids.has(candidate.normalizedKeyword))
     .map((candidate) => ({
