@@ -6,6 +6,7 @@ import {
   buildServiceAreaPolicy,
   type ServiceAreaPolicy,
 } from "./service-area";
+import { keywordQualityIssues } from "./keyword-quality";
 
 export async function loadProjectServiceAreaPolicy(
   db: SupabaseClient,
@@ -85,4 +86,99 @@ export async function quarantineOutOfAreaKeywords(
     .in("status", ["open", "approved"]);
   if (opportunityWrite.error) throw opportunityWrite.error;
   return excludedIds.length;
+}
+
+export async function reconcileProjectKeywordScopes(
+  db: SupabaseClient,
+  projectId: string,
+  policy: ServiceAreaPolicy,
+) {
+  const existing = await db
+    .from("seo_keywords")
+    .select("id,keyword")
+    .eq("project_id", projectId)
+    .eq("status", "active")
+    .limit(2_000);
+  if (existing.error) throw existing.error;
+
+  const qualityExcluded: string[] = [];
+  const areaExcluded: string[] = [];
+  const scopeGroups = new Map<
+    string,
+    { serviceId: string | null; locationId: string | null; ids: string[] }
+  >();
+
+  for (const row of existing.data ?? []) {
+    if (keywordQualityIssues(row.keyword).length) {
+      qualityExcluded.push(row.id);
+      continue;
+    }
+    const assessment = assessKeywordServiceArea(row.keyword, policy);
+    if (!assessment.allowed) {
+      areaExcluded.push(row.id);
+      continue;
+    }
+    const key = `${assessment.serviceId ?? "none"}|${assessment.locationId ?? "none"}`;
+    const group = scopeGroups.get(key) ?? {
+      serviceId: assessment.serviceId,
+      locationId: assessment.locationId,
+      ids: [],
+    };
+    group.ids.push(row.id);
+    scopeGroups.set(key, group);
+  }
+
+  const now = new Date().toISOString();
+  const writes = [
+    ...[...scopeGroups.values()].map((group) =>
+      db
+        .from("seo_keywords")
+        .update({
+          service_id: group.serviceId,
+          location_id: group.locationId,
+          updated_at: now,
+        })
+        .in("id", group.ids),
+    ),
+    ...(qualityExcluded.length
+      ? [
+          db
+            .from("seo_keywords")
+            .update({ status: "excluded_quality", updated_at: now })
+            .in("id", qualityExcluded),
+        ]
+      : []),
+    ...(areaExcluded.length
+      ? [
+          db
+            .from("seo_keywords")
+            .update({ status: "excluded_service_area", updated_at: now })
+            .in("id", areaExcluded),
+        ]
+      : []),
+  ];
+  const results = await Promise.all(writes);
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw failed.error;
+
+  const excludedIds = [...qualityExcluded, ...areaExcluded];
+  if (excludedIds.length) {
+    const opportunities = await db
+      .from("seo_opportunities")
+      .update({ status: "dismissed", updated_at: now })
+      .eq("project_id", projectId)
+      .in("keyword_id", excludedIds)
+      .in("status", ["open", "approved"]);
+    if (opportunities.error) throw opportunities.error;
+  }
+
+  return {
+    reviewed: existing.data?.length ?? 0,
+    qualityExcluded: qualityExcluded.length,
+    areaExcluded: areaExcluded.length,
+    scoped: [...scopeGroups.values()].reduce(
+      (total, group) => total + group.ids.length,
+      0,
+    ),
+  };
 }

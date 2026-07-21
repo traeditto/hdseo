@@ -20,7 +20,7 @@ import {
 import { assessKeywordServiceArea } from "./service-area";
 import {
   loadProjectServiceAreaPolicy,
-  quarantineOutOfAreaKeywords,
+  reconcileProjectKeywordScopes,
 } from "./service-area-server";
 
 export interface DiscoveryTenant {
@@ -227,7 +227,7 @@ export async function importSearchConsoleDiscovery(
   limit = 100,
 ) {
   const policy = await loadProjectServiceAreaPolicy(db, tenant.projectId);
-  await quarantineOutOfAreaKeywords(db, tenant.projectId, policy);
+  await reconcileProjectKeywordScopes(db, tenant.projectId, policy);
   const result = await db
     .from("search_console_rows")
     .select("query,page_url,clicks,impressions,ctr,average_position")
@@ -356,7 +356,7 @@ export async function runAuthorizedDomainDiscovery(
     input.projectId,
     input.targetMarket,
   );
-  await quarantineOutOfAreaKeywords(db, input.projectId, policy);
+  await reconcileProjectKeywordScopes(db, input.projectId, policy);
   const effectiveInput = { ...input, targetMarket: policy.targetMarket };
   const scope = domainDiscoveryScope(effectiveInput);
   const estimatedCost = estimatedDomainDiscoveryCost(input.limit);
