@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { ApiError } from "@/lib/api/errors";
+import { ApiError, logServerError } from "@/lib/api/errors";
 import { agentRegistry,workTemplates,type AgentWorkType } from "@/lib/agents/registry";
 import {actionDigest} from "@/lib/safety/action-digest";
 
@@ -40,7 +40,20 @@ export async function enqueueAgentWorkItem(db:SupabaseClient,tenant:AgentTenant,
     p_required_approvals:approvals,p_priority:input.priority??template.priority,p_idempotency_key:input.idempotencyKey,p_requested_by:tenant.userId,
     p_source_type:input.sourceType??null,p_source_id:input.sourceId??null,
   });
-  if(result.error||!result.data)throw new ApiError("The agent work item could not be queued. Apply migration 0017 and retry.",500,"DATABASE_BINDING_FAILED");
+  if(result.error||!result.data){
+    const databaseMessage=result.error?.message??"enqueue_agent_work_item returned no data";
+    const referenceId=logServerError("agent_work_item_enqueue_failed",new Error(databaseMessage),{
+      agencyId:tenant.agencyId,clientId:tenant.clientId,projectId:tenant.projectId,
+      operation:input.workType,errorCode:result.error?.code??"EMPTY_RPC_RESULT",
+    });
+    const migrationMissing=result.error?.code==="PGRST202"||result.error?.code==="42883";
+    throw new ApiError(
+      migrationMissing
+        ? "The agent workspace database update is not installed. Support has been notified."
+        : "Your agent team could not be started. No additional charge was made; please retry or contact support with the reference number.",
+      503,"DATABASE_BINDING_FAILED",referenceId,
+    );
+  }
   return result.data as {workItemId:string;backgroundJobId?:string;duplicate:boolean};
 }
 

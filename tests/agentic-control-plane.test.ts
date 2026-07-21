@@ -46,4 +46,16 @@ describe("agent-first operating environment",()=>{
     for(const workType of ["onboarding.profile","technical.audit","research.discovery","strategy.roadmap","reporting.summary"])expect(controlPlane).toContain(workType);
     expect(cron).toContain("processAgentBatch");
   });
+
+  it("authorizes retail business owners without granting agency membership",()=>{
+    const sql=read("supabase/migrations/0037_retail_agent_enqueue_authorization.sql");
+    expect(sql).toContain("public.client_members");
+    expect(sql).toContain("client_organization_id=v_organization_id");
+    expect(sql).toContain("role in ('client_admin','client_approver')");
+    expect(sql).toContain("REQUESTER_NOT_AUTHORIZED");
+    expect(sql).toContain("PROJECT_NOT_FOUND");
+    expect(sql).toContain("TOOL_NOT_AUTHORIZED");
+    expect(sql).toContain("to service_role");
+    expect(sql).toContain("from public,anon,authenticated");
+  });
 });
