@@ -15,10 +15,11 @@ type ApiPayload={error?:{message?:string};service?:Snapshot;url?:string};
 const friendly=(value:string)=>value.replaceAll("_"," ").replace(/\b\w/g,letter=>letter.toUpperCase());
 const money=(value:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value);
 
-export function AgentServicePanel({projects,role="agency",canManage=true,canApprove=canManage}:{projects:Project[];role?:"agency"|"client";canManage?:boolean;canApprove?:boolean}){
+export function AgentServicePanel({projects,role="agency",canManage=true,canApprove=canManage,decisionsOnly=false,onDecisionCount}:{projects:Project[];role?:"agency"|"client";canManage?:boolean;canApprove?:boolean;decisionsOnly?:boolean;onDecisionCount?:(count:number)=>void}){
   const [projectId,setProjectId]=useState(projects[0]?.id??""),[data,setData]=useState<Snapshot|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState("");
   const effectiveProjectId=projects.some(project=>project.id===projectId)?projectId:(projects[0]?.id??"");
   useEffect(()=>{if(!effectiveProjectId)return;let active=true;fetch(`/api/agent-service/status?projectId=${encodeURIComponent(effectiveProjectId)}`).then(async response=>({response,payload:await response.json() as ApiPayload})).then(({response,payload})=>{if(!active)return;if(!response.ok)throw new Error(payload.error?.message??"Managed SEO status could not be loaded.");setData(payload.service??null);}).catch(error=>{if(active)setMessage(error instanceof Error?error.message:"Managed SEO status could not be loaded.");});return()=>{active=false;};},[effectiveProjectId]);
+  useEffect(()=>{if(data)onDecisionCount?.((data.approvals?.length??0)+(data.outcomeDecisions?.length??0));},[data,onDecisionCount]);
   async function action(path:string,body:Record<string,unknown>={}){setBusy(true);setMessage("");try{const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({projectId:effectiveProjectId,...body})}),payload=await response.json() as ApiPayload;if(!response.ok)throw new Error(payload.error?.message??"The request could not be completed.");if(payload.url){window.location.assign(payload.url);return;}setData(payload.service??null);setMessage("Saved. The supervisor will use this setting on the next safe cycle.");}catch(error){setMessage(error instanceof Error?error.message:"The request could not be completed.");}finally{setBusy(false);}}
   async function decideOutcome(item:OutcomeDecision,decision:"proceed"|"reject"|"approve"|"release"){
     if(!data?.tenant)return;
@@ -39,6 +40,17 @@ export function AgentServicePanel({projects,role="agency",canManage=true,canAppr
   }
   if(!projects.length)return <section className="agent-service-empty"><h2>Add a client project first</h2><p>Managed agents need a tenant-scoped project, business profile, and website before they can operate.</p></section>;
   const enrollment=data?.enrollment,cycle=data?.cycles?.[0],current=projects.find(project=>project.id===effectiveProjectId);
+  if(decisionsOnly){
+    if(!data)return message?<div className="agent-service-message">{message}</div>:null;
+    if(!(data.approvals.length||data.outcomeDecisions.length))return null;
+    return <section className="agent-service-panel client decisions-only">
+      {message&&<div className="agent-service-message">{message}</div>}
+      <div className="agent-service-grid"><section><header><small>AUTOPILOT DECISIONS</small><h2>Prepared by HD SEO</h2></header>
+        {data.outcomeDecisions.map(item=><article className="agent-service-approval" key={`${item.kind}:${item.id}`}><div><strong>{item.title}</strong><p>{item.summary}</p><p>{item.question}</p>{item.draft&&<details><summary>Review exact draft</summary><p><b>Title:</b> {item.draft.title}</p><p><b>Meta description:</b> {item.draft.metaDescription}</p><p><b>H1:</b> {item.draft.h1}</p><pre>{JSON.stringify({sections:item.draft.sections,faqs:item.draft.faqs,qa:item.draft.qa},null,2)}</pre></details>}<small>{friendly(item.riskLevel)} risk</small>{item.url&&<a href={item.url} target="_blank" rel="noreferrer">Open validated preview ↗</a>}</div>{canApprove&&<nav>{item.kind==="opportunity"&&<button disabled={busy} onClick={()=>void decideOutcome(item,"reject")}>Decline</button>}<button disabled={busy} onClick={()=>void decideOutcome(item,item.kind==="release"?"release":item.kind==="creative"?"approve":item.kind==="proof"?"proceed":"proceed")}>{item.kind==="release"?"Release to production":item.kind==="creative"?"Approve exact draft":item.kind==="proof"?"Add business proof":"Continue safely"}</button></nav>}</article>)}
+        {data.approvals.map(item=><article className="agent-service-approval" key={item.id}><div><strong>{item.title}</strong><p>{item.summary}</p><small>{friendly(item.risk_level)} risk</small></div>{canApprove&&<nav><button disabled={busy} onClick={()=>void action("/api/agent-service/decide",{approvalId:item.id,decision:"rejected",note:"Declined from the business-owner approval inbox"})}>Decline</button><button disabled={busy} onClick={()=>void action("/api/agent-service/decide",{approvalId:item.id,decision:"approved",note:"Approved from the business-owner approval inbox"})}>Approve</button></nav>}</article>)}
+      </section></div>
+    </section>;
+  }
   return <section className={`agent-service-panel ${role}`}>
     <header className="agent-service-heading"><div><small>{role==="client"?"HD SEO AUTOPILOT":"WHITE-LABEL AGENT TEAM"}</small><h1>{role==="client"?"Your SEO team, always working safely.":"Managed agent service"}</h1><p>{role==="client"?"HD SEO researches, prioritizes, prepares and validates work. You only step in when a decision needs you.":"Enroll each client in a bounded, metered service with explicit tools, approval ownership and resale controls."}</p></div>{projects.length>1&&<select value={effectiveProjectId} onChange={event=>setProjectId(event.target.value)}>{projects.map(project=><option key={project.id} value={project.id}>{project.domain} · {project.name}</option>)}</select>}</header>
     {message&&<div className="agent-service-message">{message}</div>}

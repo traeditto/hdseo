@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import { AgentServicePanel } from "@/app/ui/agent-service-panel";
 import {FOUNDING_BETA_OFFER_KEY,retailBillingPlans} from "@/lib/billing/catalog";
@@ -610,6 +610,7 @@ export function LiveClientBusinessDashboard({
   const [tab, setTab] = useState<Tab>("home");
   const [message, setMessage] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [managedDecisionCount, setManagedDecisionCount] = useState(0);
   const [selectedClientId, setSelectedClientId] = useState(
     initialData.clients[0]?.client.id ?? "",
   );
@@ -700,6 +701,27 @@ export function LiveClientBusinessDashboard({
     ),
     website = company.websites[0];
 
+  useEffect(() => {
+    if (!project?.id || isFreeTrial) {
+      return;
+    }
+    let active = true;
+    fetch(`/api/agent-service/status?projectId=${encodeURIComponent(project.id)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Managed decisions could not be loaded.");
+        return response.json() as Promise<{service?:{approvals?:unknown[];outcomeDecisions?:unknown[]}}>;
+      })
+      .then((payload) => {
+        if (active) setManagedDecisionCount((payload.service?.approvals?.length ?? 0) + (payload.service?.outcomeDecisions?.length ?? 0));
+      })
+      .catch(() => {
+        if (active) setManagedDecisionCount(0);
+      });
+    return () => { active = false; };
+  }, [project?.id, isFreeTrial]);
+
+  const effectiveManagedDecisionCount = !project?.id || isFreeTrial ? 0 : managedDecisionCount;
+
   if (!data.clients.length)
     return (
       <RetailOnboarding
@@ -742,7 +764,7 @@ export function LiveClientBusinessDashboard({
     ["home", "Home", "⌂"],
     ["autopilot", "Autopilot", "✦"],
     ["plan", "My Plan", "◫"],
-    ["approvals", "Approvals", String(approvals.length)],
+    ["approvals", "Approvals", String(approvals.length+effectiveManagedDecisionCount)],
     ["results", "Results", "↗"],
     ["business", "My Business", "◎"],
   ];
@@ -754,7 +776,7 @@ export function LiveClientBusinessDashboard({
       : trialCrawlFinished
         ? "Your free website crawl is complete"
         : "Your free website crawl is in progress"
-    : approvals.length
+    : approvals.length+effectiveManagedDecisionCount>0
     ? "We need one quick decision"
     : evidenceBlocked
       ? "Research needs a safe restart"
@@ -771,7 +793,7 @@ export function LiveClientBusinessDashboard({
       : trialCrawlFinished
         ? "Explore your results and the full workspace. Ongoing crawling, paid data, agents, and publishing stay off until you choose a plan."
         : "The crawl is queued safely. You can explore every product area while the worker collects public website evidence."
-    : approvals.length
+    : approvals.length+effectiveManagedDecisionCount>0
     ? "Approving or requesting changes keeps the highest-value work moving."
     : evidenceBlocked
       ? "The first keyword evidence run did not start correctly. Restarting will collect it before the strategy is built."
@@ -882,7 +904,7 @@ export function LiveClientBusinessDashboard({
                   ) : (
                     <button onClick={() => setTab("results")}>Explore the results workspace →</button>
                   )
-                ) : approvals.length ? (
+                ) : approvals.length + effectiveManagedDecisionCount > 0 ? (
                   <button onClick={() => setTab("approvals")}>
                     Review the decision →
                   </button>
@@ -1205,6 +1227,7 @@ export function LiveClientBusinessDashboard({
                 </p>
               </section>
               {isFreeTrial && <TrialPreviewNotice area="the approval inbox" />}
+              {!isFreeTrial && project && <AgentServicePanel projects={[project]} role="client" canManage={false} canApprove={canApprove} decisionsOnly onDecisionCount={setManagedDecisionCount} />}
               <section className="owner-approval-stack">
                 {approvals.map((item) => (
                   <article key={item.id}>
@@ -1273,7 +1296,7 @@ export function LiveClientBusinessDashboard({
                     )}
                   </article>
                 ))}
-                {!approvals.length && (
+                {!approvals.length && effectiveManagedDecisionCount===0 && (
                   <div className="owner-all-clear">
                     <i>✓</i>
                     <h2>Nothing is waiting on you</h2>

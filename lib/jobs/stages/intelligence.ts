@@ -18,6 +18,8 @@ import { env, hasDataForSeoConfig } from "@/lib/config/env";
 import { evidenceFreshness,queueStaleEvidence } from "@/lib/evidence/freshness";
 import { resolveLabsLocation } from "@/lib/providers/dataforseo/locations";
 import { valueOpportunity, type EconomicAssumptions } from "@/lib/seo/opportunity-value";
+import { createManualPackage } from "@/lib/manual/package-service";
+import { prepareCampaignCreativeHandoff } from "@/lib/creatives/service";
 
 const inputNumber=(value:unknown,fallback:number)=>Number.isFinite(Number(value))?Number(value):fallback;
 
@@ -108,4 +110,60 @@ export async function scoreStage(db:SupabaseClient,job:CampaignJob){
 
 export async function selectStage(db:SupabaseClient,job:CampaignJob){const result=await db.from("seo_campaign_candidates").select("id,opportunity_id,score,confidence,eligibility_status,seo_opportunities(target_url)").eq("job_id",job.id);const selected=selectNextBestAction((result.data??[]).map((row)=>({opportunityId:row.opportunity_id,score:row.score,confidence:row.confidence,eligible:row.eligibility_status==="eligible",targetUrl:(Array.isArray(row.seo_opportunities)?row.seo_opportunities[0]:row.seo_opportunities)?.target_url})));if(!selected){if(job.input.managedDiscoveryOnly===true)return complete(db,job,{managedDiscoveryOnly:true,billable:false,noAction:true,message:"Fresh evidence was reviewed automatically, but no opportunity passed every value and safety gate. Autopilot will try again when the evidence changes."});throw new ApiError("No eligible evidence-backed opportunity is available.",409,"CONFLICT",job.reference_id);}await Promise.all([db.from("seo_campaign_candidates").update({eligibility_status:"selected",selection_reason:"Highest confidence-adjusted expected-profit score after local relevance and safety gates."}).eq("job_id",job.id).eq("opportunity_id",selected.opportunityId),db.from("seo_campaign_candidates").update({eligibility_status:"deferred",deferred_reason:"A higher expected-value eligible action was selected."}).eq("job_id",job.id).neq("opportunity_id",selected.opportunityId).eq("eligibility_status","eligible")]);const withSelection={...job,result:{...job.result,opportunityId:selected.opportunityId}};await db.from("seo_campaign_jobs").update({result:withSelection.result}).eq("id",job.id);if(job.input.managedDiscoveryOnly===true)return complete(db,withSelection,{opportunityId:selected.opportunityId,managedDiscoveryOnly:true,billable:false,message:"Evidence discovery completed. The managed outcome scheduler will reserve capacity only when implementation work begins."});return advance(db,withSelection,"prepare",{opportunityId:selected.opportunityId});}
 
-export async function prepareStage(db:SupabaseClient,job:CampaignJob){const latest=await db.from("seo_campaign_jobs").select("result,input").eq("id",job.id).single(),opportunityId=latest.data?.result?.opportunityId as string|undefined;if(!opportunityId)throw new ApiError("The selected opportunity is unavailable.",409,"CONFLICT",job.reference_id);const [opportunity,cms,gate]=await Promise.all([db.from("seo_opportunities").select("action_type,target_url,evidence,recommended_actions,priority").eq("id",opportunityId).single(),db.from("cms_connections").select("cms_type").eq("project_id",job.project_id).limit(1).maybeSingle(),db.rpc("github_execution_readiness",{target_agency:job.agency_id,target_project:job.project_id})]),requested=latest.data?.input?.automationMode==="EXECUTE_WITH_APPROVAL",decision=selectImplementationPath({cmsType:cms.data?.cms_type,actionType:opportunity.data?.action_type??"IMPROVE",repositoryRequested:requested,repositoryReady:Boolean(gate.data?.ready)}),evidence=record(opportunity.data?.evidence),valueExplanation=typeof evidence.valueExplanation==="string"?evidence.valueExplanation:"HD SEO selected this as the strongest evidence-backed opportunity in the approved market.",businessValue=record(evidence.businessValue),plainSummary=`HD SEO found the best available ${String(opportunity.data?.action_type??"SEO").toLowerCase()} opportunity. ${valueExplanation} Nothing will publish until an authorized person approves the exact change.`;const draft=await db.from("seo_action_drafts").insert({agency_id:job.agency_id,client_organization_id:job.client_organization_id,project_id:job.project_id,opportunity_id:opportunityId,execution_path:decision.path,status:"draft",target_url:opportunity.data?.target_url,evidence_snapshot:opportunity.data?.evidence??{},content_brief:{recommendedActions:opportunity.data?.recommended_actions??[],pathReason:decision.reason,risk:decision.risk,plainSummary,expectedValue:businessValue,approvalQuestion:"Should HD SEO prepare this change for a validated preview?"},created_by:job.requested_by}).select("id").single();if(!draft.data)throw new ApiError("The implementation draft could not be created.",500,"OPERATION_FAILED",job.reference_id);await db.from("seo_tasks").insert({agency_id:job.agency_id,client_organization_id:job.client_organization_id,project_id:job.project_id,draft_id:draft.data.id,title:"Approve HD SEO's highest-value recommendation",status:"awaiting_review",priority:opportunity.data?.priority??"high",client_visible_notes:plainSummary,created_by:job.requested_by});return pause(db,{...job,result:{...job.result,opportunityId}},"awaiting_opportunity_review",{opportunityId,draftId:draft.data.id,implementationPath:decision.path,pathReason:decision.reason,plainSummary,expectedValue:businessValue,approvalQuestion:"Should HD SEO prepare this change for a validated preview?"});}
+export async function prepareStage(db:SupabaseClient,job:CampaignJob){
+  const latest=await db.from("seo_campaign_jobs").select("result,input").eq("id",job.id).single();
+  const latestResult=record(latest.data?.result),latestInput=record(latest.data?.input),opportunityId=latestResult.opportunityId as string|undefined;
+  if(!opportunityId)throw new ApiError("The selected opportunity is unavailable.",409,"CONFLICT",job.reference_id);
+  const [opportunity,cms,gate]=await Promise.all([
+    db.from("seo_opportunities").select("action_type,target_url,evidence,recommended_actions,priority").eq("id",opportunityId).eq("agency_id",job.agency_id).eq("client_organization_id",job.client_organization_id).eq("project_id",job.project_id).maybeSingle(),
+    db.from("cms_connections").select("cms_type").eq("agency_id",job.agency_id).eq("project_id",job.project_id).eq("status","active").order("last_verified_at",{ascending:false}).limit(1).maybeSingle(),
+    db.rpc("github_execution_readiness",{target_agency:job.agency_id,target_project:job.project_id}),
+  ]);
+  if(opportunity.error||!opportunity.data)throw new ApiError("The selected opportunity could not be loaded.",409,"CONFLICT",job.reference_id);
+  const requested=latestInput.automationMode==="EXECUTE_WITH_APPROVAL",managedOutcome=latestInput.managedOutcome===true;
+  const decision=selectImplementationPath({cmsType:cms.data?.cms_type,actionType:opportunity.data.action_type??"IMPROVE",repositoryRequested:requested,repositoryReady:Boolean(gate.data?.ready)});
+  const evidence=record(opportunity.data.evidence),valueExplanation=typeof evidence.valueExplanation==="string"?evidence.valueExplanation:"HD SEO selected this as the strongest evidence-backed opportunity in the approved market.",businessValue=record(evidence.businessValue),plainSummary=`HD SEO found the best available ${String(opportunity.data.action_type??"SEO").toLowerCase()} opportunity. ${valueExplanation} Nothing will publish until an authorized person approves the exact change.`;
+
+  let draftId=typeof latestResult.draftId==="string"?latestResult.draftId:"";
+  if(draftId){
+    const existing=await db.from("seo_action_drafts").select("id").eq("id",draftId).eq("agency_id",job.agency_id).eq("client_organization_id",job.client_organization_id).eq("project_id",job.project_id).maybeSingle();
+    if(!existing.data)draftId="";
+  }
+  if(!draftId){
+    const draft=await db.from("seo_action_drafts").insert({agency_id:job.agency_id,client_organization_id:job.client_organization_id,project_id:job.project_id,opportunity_id:opportunityId,execution_path:decision.path,status:"draft",target_url:opportunity.data.target_url,evidence_snapshot:opportunity.data.evidence??{},content_brief:{recommendedActions:opportunity.data.recommended_actions??[],pathReason:decision.reason,risk:decision.risk,plainSummary,expectedValue:businessValue,approvalQuestion:managedOutcome?"Review the exact prepared change before it is published.":"Should HD SEO prepare this change for a validated preview?"},created_by:job.requested_by}).select("id").single();
+    if(!draft.data)throw new ApiError("The implementation draft could not be created.",500,"OPERATION_FAILED",job.reference_id);
+    draftId=draft.data.id;
+  }
+  const nextResult={...job.result,...latestResult,opportunityId,draftId,implementationPath:decision.path,pathReason:decision.reason,plainSummary,expectedValue:businessValue};
+
+  // Autopilot prepares all reversible work itself. Human attention is reserved
+  // for exact copy, release, material business proof, or a protected mutation.
+  if(managedOutcome){
+    if(decision.path==="repository"){
+      if(opportunity.data.action_type==="BUILD"||opportunity.data.action_type==="CONTENT"){
+        const creative=await prepareCampaignCreativeHandoff(db,{agencyId:job.agency_id,clientId:job.client_organization_id,projectId:job.project_id,userId:job.requested_by},opportunityId);
+        const creativeResult={...nextResult,creativeSpecId:creative.specId,...("draftId" in creative?{creativeDraftId:creative.draftId}:{}),creativeState:creative.state,requiredAction:"reason" in creative?creative.reason:creative.state==="review_required"?"Review and approve the exact QA-passed draft.":null};
+        if(creative.state==="approved"){
+          const withResult={...job,result:creativeResult};
+          await db.from("seo_campaign_jobs").update({result:creativeResult}).eq("id",job.id);
+          return advance(db,withResult,"inspect_repository",{creativeState:creative.state,creativeDraftId:"draftId" in creative?creative.draftId:null});
+        }
+        const waitingStatus=creative.state==="evidence_required"?"awaiting_creative_evidence":"awaiting_creative_review";
+        return pause(db,{...job,result:creativeResult},waitingStatus,creativeResult);
+      }
+      const withResult={...job,result:nextResult};
+      await db.from("seo_campaign_jobs").update({result:nextResult}).eq("id",job.id);
+      return advance(db,withResult,"inspect_repository",{automaticallyPrepared:true});
+    }
+
+    const enrollment=await db.from("agent_service_enrollments").select("approval_owner").eq("agency_id",job.agency_id).eq("client_organization_id",job.client_organization_id).eq("project_id",job.project_id).eq("service_mode","managed_agent").in("status",["trialing","active"]).maybeSingle();
+    if(enrollment.error)throw new ApiError("The Autopilot approval policy could not be loaded.",500,"DATABASE_BINDING_FAILED",job.reference_id);
+    const approvalOwner=(enrollment.data?.approval_owner??"agency") as "agency"|"client"|"both";
+    const created=await createManualPackage(db,{agencyId:job.agency_id,clientId:job.client_organization_id,projectId:job.project_id,opportunityId,draftId,createdBy:job.requested_by,requestedPath:decision.path,approvalOwner});
+    await db.from("seo_opportunities").update({status:"in_progress"}).eq("id",opportunityId).eq("project_id",job.project_id);
+    return pause(db,{...job,result:nextResult},"awaiting_manual_completion",{...nextResult,packageId:created.id,taskId:created.taskId,approvalOwner,approvalQuestion:approvalOwner==="client"?"Approve the exact prepared change, or ask HD SEO to revise it.":"The accountable agency reviewer must approve this exact package before client publication."});
+  }
+
+  await db.from("seo_tasks").insert({agency_id:job.agency_id,client_organization_id:job.client_organization_id,project_id:job.project_id,draft_id:draftId,title:"Approve HD SEO's highest-value recommendation",status:"awaiting_review",priority:opportunity.data.priority??"high",client_visible_notes:plainSummary,created_by:job.requested_by});
+  return pause(db,{...job,result:nextResult},"awaiting_opportunity_review",{...nextResult,approvalQuestion:"Should HD SEO prepare this change for a validated preview?"});
+}

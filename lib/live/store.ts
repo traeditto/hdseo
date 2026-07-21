@@ -4170,6 +4170,7 @@ export async function recordClientPackageDecision(
   const approved=input.decision==="client_approved",approvalDigest=approved?implementationPackageDigest(pkg):null,approvedSnapshot=approved?implementationPackageSnapshot(pkg):{};
   const decided=await db.rpc("decide_implementation_package",{p_agency_id:pkg.agency_id,p_client_organization_id:pkg.client_organization_id,p_project_id:pkg.project_id,p_package_id:input.packageId,p_user_id:userId,p_decision:input.decision,p_note:"The client decision was recorded through the secure portal.",p_approval_digest:approvalDigest,p_approved_snapshot:approvedSnapshot});
   if(decided.error)throw new ApiError("This exact approval could not be committed or was already processed.",409,"CONFLICT");
+  await wakeManagedAgentService(db,{agencyId:pkg.agency_id,clientId:pkg.client_organization_id,projectId:pkg.project_id,reason:"approval_decided"});
   await recordAudit(db, {
     agencyId: pkg.agency_id,
     actorUserId: userId,

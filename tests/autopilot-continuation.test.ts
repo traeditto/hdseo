@@ -52,4 +52,32 @@ describe("Autopilot event-driven continuation", () => {
     expect(scheduler).toContain('["failed","stale"].includes(existing.data.status)');
     expect(scheduler).toContain('current_stage:"discover"');
   });
+
+  it("prepares managed outcomes automatically and pauses only on an exact accountable decision", () => {
+    const stages = read("lib/jobs/stages/intelligence.ts");
+    const packages = read("lib/manual/package-service.ts");
+    expect(stages).toContain("if(managedOutcome)");
+    expect(stages).toContain("prepareCampaignCreativeHandoff");
+    expect(stages).toContain('approvalOwner');
+    expect(stages).toContain('"awaiting_manual_completion"');
+    expect(packages).toContain("publishForClientReview");
+    expect(packages).toContain('status:"awaiting_client"');
+    expect(packages).toContain("could not be added to the client approval inbox");
+  });
+
+  it("shows managed decisions in the business owner approval inbox", () => {
+    const portal = read("app/ui/live-client-dashboard.tsx");
+    const panel = read("app/ui/agent-service-panel.tsx");
+    expect(portal).toContain("managedDecisionCount");
+    expect(portal).toContain("decisionsOnly");
+    expect(panel).toContain("AUTOPILOT DECISIONS");
+    expect(panel).toContain("onDecisionCount");
+  });
+
+  it("wakes the outcome supervisor immediately after a client decision", () => {
+    const store = read("lib/live/store.ts");
+    const clientApi = read("app/api/client/approvals/route.ts");
+    expect(store).toContain('reason:"approval_decided"');
+    expect(clientApi).toContain('reason:"approval_decided"');
+  });
 });

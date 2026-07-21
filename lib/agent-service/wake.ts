@@ -9,6 +9,7 @@ export type ManagedAgentWakeReason =
   | "opportunity_ready"
   | "discovery_completed"
   | "specialist_completed"
+  | "approval_decided"
   | "workflow_recovered";
 
 /**
