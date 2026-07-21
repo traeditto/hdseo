@@ -31,6 +31,9 @@ export async function vercelRequest<T>(path: string, credentials: VercelCredenti
 }
 
 export interface VercelProject { id: string; name: string; framework?: string | null; link?: { type?:string;org?:string;repo?:string;repoId?:number;productionBranch?: string }; accountId?: string }
+export function listVercelProjects(credentials: VercelCredentials) {
+  return vercelRequest<{ projects: VercelProject[] }>("/v9/projects?limit=100", credentials);
+}
 export function getVercelProject(credentials: VercelCredentials, idOrName: string) {
   return vercelRequest<VercelProject>(`/v9/projects/${encodeURIComponent(idOrName)}`, credentials);
 }

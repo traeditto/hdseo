@@ -77,11 +77,12 @@ function wait(milliseconds: number) {
 export function DeploymentSetupWizard({
   agencyId,
   project,
+  portal = "agency",
   onClose,
-  onOpenPackages,
 }: {
   agencyId: string;
   project: SetupProject;
+  portal?: "agency" | "client";
   onClose: (refresh: boolean) => void;
   onOpenPackages: () => void;
 }) {
@@ -172,7 +173,9 @@ export function DeploymentSetupWizard({
   async function connectAgencyVercel() {
     const result = await post(
       "/api/vercel/connect",
-      { agencyId, usePlatformToken: true },
+      portal === "client"
+        ? { ...scope, useManagedPlatform: true }
+        : { agencyId, usePlatformToken: true },
       "vercel-account",
     );
     if (!result) return;
@@ -219,6 +222,84 @@ export function DeploymentSetupWizard({
     if (!result) return;
     setMessage("Human-approved GitHub and Vercel automation is enabled.");
     await load(false);
+  }
+
+  async function verifySafetyBaseline() {
+    const result = await post(
+      "/api/deployment/setup",
+      { ...scope, action: "verify_safety_baseline" },
+      "baseline",
+    );
+    if (!result) return false;
+    setMessage("GitHub, Vercel, and the safe deployment baseline are verified.");
+    await load(false);
+    return true;
+  }
+
+  async function finishAutomatically() {
+    setMessage("");
+    setError("");
+    let current = await load(false);
+    if (!current?.repository) {
+      setError("Connect the website repository before HD SEO finishes deployment setup.");
+      return;
+    }
+    if (!current.vercelConnection) {
+      const connected = await post(
+        "/api/vercel/connect",
+        portal === "client"
+          ? { ...scope, useManagedPlatform: true }
+          : { agencyId, usePlatformToken: true },
+        "auto-vercel",
+      );
+      if (!connected) return;
+      current = await load(false);
+    }
+    if (!current?.vercelConnection) return;
+    const repositoryId = current.repository?.id;
+    if (!repositoryId) return;
+    if (!current.vercelProject) {
+      const mapped = await post(
+        "/api/vercel/connect",
+        {
+          ...scope,
+          connectionId: current.vercelConnection.id,
+          repositoryId,
+          projectName: projectSlug(project),
+          createIfMissing: true,
+          productionDomains: [],
+        },
+        "auto-project",
+      );
+      if (!mapped) return;
+      current = await load(false);
+    }
+    if (!current?.checks.manualWorkflowVerified) {
+      const verified = await post(
+        "/api/deployment/setup",
+        { ...scope, action: "verify_safety_baseline" },
+        "auto-baseline",
+      );
+      if (!verified) return;
+      current = await load(false);
+    }
+    if (!current?.checks.automationEnabled && current?.repository) {
+      const enabled = await post(
+        "/api/github/readiness",
+        {
+          ...scope,
+          repositoryId: current.repository.id,
+          acknowledgeHumanApprovedExecution: true,
+        },
+        "auto-enable",
+      );
+      if (!enabled) return;
+    }
+    const finalState = await load(false);
+    if (finalState?.checks.complete) {
+      setChanged(true);
+      setMessage("Website deployment setup is complete. Work remains approval-gated and rollback protected.");
+    }
   }
 
   async function testConnections() {
@@ -302,6 +383,13 @@ export function DeploymentSetupWizard({
         </div>
         <div className="deployment-progress-label"><strong>{completed} of 5 complete</strong><span>No production change is published during setup.</span></div>
 
+        {portal === "client" && setup && !setup.checks.complete && setup.checks.repositoryConnected && (
+          <div className="deployment-auto-finish">
+            <div><strong>Let HD SEO finish this safely</strong><span>HD SEO will match the authorized repository to Vercel, verify read access, and enable approval-only automation. Nothing publishes now.</span></div>
+            <button className="github-primary" disabled={busy !== null} onClick={() => void finishAutomatically()}>{busy?.startsWith("auto-") ? "Finishing setup…" : "Finish setup automatically →"}</button>
+          </div>
+        )}
+
         {error && <div className="github-alert error" role="alert">{error}</div>}
         {message && <div className="github-alert success" role="status">✓ {message}</div>}
         {busy === "loading" && !setup ? <div className="deployment-loading">Checking GitHub, Vercel, and safety controls…</div> : setup && <div className="deployment-steps">
@@ -323,10 +411,10 @@ export function DeploymentSetupWizard({
             {!checks!.vercelProjectConnected && <button className="github-primary" disabled={busy !== null || !checks!.repositoryConnected || !checks!.vercelConnectionActive} onClick={() => void connectVercelProject()}>{busy === "vercel-project" ? "Connecting…" : "Connect project"}</button>}
           </article>
 
-          <article className={stepClass(checks!.manualWorkflowVerified)}>
+          <article className={stepClass(checks!.manualWorkflowVerified, checks!.repositoryConnected && checks!.vercelProjectConnected)}>
             <span>{checks!.manualWorkflowVerified ? "✓" : "4"}</span>
-            <div><small>FIRST SAFE CHANGE</small><strong>{checks!.manualWorkflowVerified ? "Manual workflow verified" : "Verify one human-reviewed implementation"}</strong><p>{checks!.manualWorkflowVerified ? "The required safety baseline is complete." : "This proves approvals, implementation evidence, and validation work before repository writes are allowed."}</p></div>
-            {!checks!.manualWorkflowVerified && <button className="github-primary secondary" onClick={() => { onClose(false); onOpenPackages(); }}>Open Packages</button>}
+            <div><small>SAFETY BASELINE</small><strong>{checks!.manualWorkflowVerified ? "GitHub and Vercel verified" : "Verify protected deployment access"}</strong><p>{checks!.manualWorkflowVerified ? "The required safety baseline is complete." : "HD SEO checks both providers without publishing or changing the website."}</p></div>
+            {!checks!.manualWorkflowVerified && <button className="github-primary secondary" disabled={busy !== null || !checks!.repositoryConnected || !checks!.vercelProjectConnected} onClick={() => void verifySafetyBaseline()}>{busy === "baseline" ? "Verifying…" : "Verify safely"}</button>}
           </article>
 
           <article className={stepClass(checks!.automationEnabled, checks!.repositoryConnected && checks!.vercelProjectConnected && checks!.manualWorkflowVerified)}>

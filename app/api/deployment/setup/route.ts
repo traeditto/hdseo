@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { ApiError, jsonError } from "@/lib/api/errors";
 import { auditEvent, requireAdminDb } from "@/lib/automation/control-plane";
-import { requirePermission, resolveTenantContext } from "@/lib/auth/context";
+import { requireLiveAgencyProject } from "@/lib/auth/live-tenant";
 import { getInstallation, listInstallationRepositories } from "@/lib/github/app-client";
 import { parseJson } from "@/lib/api/request";
 import { getVercelProject, vercelRequest } from "@/lib/vercel/client";
@@ -14,7 +14,9 @@ const scopeSchema = z.object({
   projectId: z.string().uuid(),
 });
 
-const testSchema = scopeSchema.extend({ action: z.literal("test_connections") });
+const testSchema = scopeSchema.extend({
+  action: z.enum(["test_connections", "verify_safety_baseline"]),
+});
 
 type Readiness = {
   ready?: boolean;
@@ -24,8 +26,13 @@ type Readiness = {
 };
 
 async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
-  const context = await resolveTenantContext({ ...scope, requireProject: true });
-  requirePermission(context, "integrations.manage");
+  const context = await requireLiveAgencyProject({
+    projectId: scope.projectId,
+    permission: "integrations.manage",
+  });
+  if (context.agencyId !== scope.agencyId || context.clientId !== scope.clientId) {
+    throw new ApiError("Deployment setup does not belong to this business.", 403, "TENANT_DENIED");
+  }
   const db = requireAdminDb();
 
   const [agency, project, repositories, connections, vercelProjects, readiness] =
@@ -33,21 +40,21 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
       db
         .from("agencies")
         .select("repository_execution_enabled")
-        .eq("id", context.agency.id)
+        .eq("id", context.agencyId)
         .single(),
       db
         .from("seo_projects")
         .select("repository_execution_enabled,manual_workflow_verified_at")
-        .eq("id", context.project!.id)
-        .eq("agency_id", context.agency.id)
+        .eq("id", context.project.id)
+        .eq("agency_id", context.agencyId)
         .single(),
       db
         .from("repositories")
         .select(
           "id,full_name,default_branch,github_repository_id,github_installation_id,status,repository_execution_enabled,last_synced_at",
         )
-        .eq("agency_id", context.agency.id)
-        .eq("project_id", context.project!.id)
+        .eq("agency_id", context.agencyId)
+        .eq("project_id", context.project.id)
         .eq("status", "active")
         .order("updated_at", { ascending: false })
         .limit(1),
@@ -56,7 +63,7 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
         .select(
           "id,team_id,team_slug,account_type,status,last_verified_at,updated_at",
         )
-        .eq("agency_id", context.agency.id)
+        .eq("agency_id", context.agencyId)
         .eq("status", "active")
         .order("updated_at", { ascending: false })
         .limit(1),
@@ -65,14 +72,14 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
         .select(
           "id,connection_id,repository_id,vercel_project_id,name,production_branch,production_domains,status,last_synced_at",
         )
-        .eq("agency_id", context.agency.id)
-        .eq("project_id", context.project!.id)
+        .eq("agency_id", context.agencyId)
+        .eq("project_id", context.project.id)
         .eq("status", "active")
         .order("updated_at", { ascending: false })
         .limit(1),
       db.rpc("github_execution_readiness", {
-        target_agency: context.agency.id,
-        target_project: context.project!.id,
+        target_agency: context.agencyId,
+        target_project: context.project.id,
       }),
     ]);
 
@@ -137,10 +144,10 @@ async function loadSetupState(scope: z.infer<typeof scopeSchema>) {
     db,
     state: {
       project: {
-        id: context.project!.id,
-        clientId: context.client!.id,
-        name: context.project!.name,
-        domain: context.project!.domain,
+        id: context.project.id,
+        clientId: context.clientId,
+        name: context.project.name,
+        domain: context.project.domain,
       },
       installation,
       repository: repository
@@ -216,7 +223,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const input = await parseJson(request, testSchema);
-    const { context, state } = await loadSetupState(input);
+    const { context, db, state } = await loadSetupState(input);
     if (!state.installation || !state.repository) {
       throw new ApiError(
         "Connect a GitHub repository before testing deployment access.",
@@ -249,7 +256,7 @@ export async function POST(request: Request) {
 
     const credentials = await loadVercelCredentials(
       state.vercelConnection.id,
-      context.agency.id,
+      context.agencyId,
     );
     const [vercelAccount, providerProject] = await Promise.all([
       vercelRequest<{ user: { id: string; username?: string } }>(
@@ -259,24 +266,40 @@ export async function POST(request: Request) {
       getVercelProject(credentials, state.vercelProject.providerId),
     ]);
 
+    const verifiedAt = new Date().toISOString();
+    if (input.action === "verify_safety_baseline") {
+      const saved = await db
+        .from("seo_projects")
+        .update({ manual_workflow_verified_at: verifiedAt, updated_at: verifiedAt })
+        .eq("id", context.project.id)
+        .eq("agency_id", context.agencyId);
+      if (saved.error) {
+        throw new ApiError("The verified safety baseline could not be saved.", 500, "DATABASE_BINDING_FAILED");
+      }
+    }
+
     await auditEvent({
-      agencyId: context.agency.id,
-      actorUserId: context.user.id,
-      action: "deployment.setup.tested",
+      agencyId: context.agencyId,
+      actorUserId: context.userId,
+      action: input.action === "verify_safety_baseline"
+        ? "deployment.setup.safety_baseline_verified"
+        : "deployment.setup.tested",
       resourceType: "seo_project",
-      resourceId: context.project!.id,
+      resourceId: context.project.id,
       request,
       afterState: {
         githubInstallationId: installation.id,
         repository: state.repository.fullName,
         vercelProjectId: providerProject.id,
-        ready: state.checks.complete,
+        ready: input.action === "verify_safety_baseline" ? true : state.checks.complete,
       },
     });
 
     return Response.json({
       ok: true,
-      message: "GitHub and Vercel access verified.",
+      message: input.action === "verify_safety_baseline"
+        ? "GitHub, Vercel, and the safe deployment baseline are verified."
+        : "GitHub and Vercel access verified.",
       test: {
         github: {
           account: installation.account.login,
@@ -288,8 +311,8 @@ export async function POST(request: Request) {
           project: providerProject.name,
           accessible: true,
         },
-        automationReady: state.checks.complete,
-        testedAt: new Date().toISOString(),
+        automationReady: input.action === "verify_safety_baseline" ? false : state.checks.complete,
+        testedAt: verifiedAt,
       },
     });
   } catch (error) {

@@ -83,4 +83,18 @@ describe("website connections",()=>{
     expect(migration).toContain("expires_at");
     expect(migration).toContain("has_client_access");
   });
+
+  it("uses one real GitHub and Vercel safety workflow in both agency and business portals",()=>{
+    const client=read("app/ui/live-client-dashboard.tsx"),agency=read("app/ui/website-connections.tsx"),wizard=read("app/ui/deployment-setup-wizard.tsx"),setup=read("app/api/deployment/setup/route.ts"),vercel=read("app/api/vercel/connect/route.ts");
+    expect(client).toContain("DeploymentSetupWizard");
+    expect(agency).toContain("DeploymentSetupWizard");
+    expect(client).toContain("Finish safe deployment setup");
+    expect(wizard).toContain("Finish setup automatically");
+    expect(wizard).toContain("verify_safety_baseline");
+    expect(setup).toContain("requireLiveAgencyProject");
+    expect(setup).toContain("deployment.setup.safety_baseline_verified");
+    expect(vercel).toContain("useManagedPlatform");
+    expect(vercel).toContain("['pro','autopilot_plus']");
+    expect(vercel).toContain("listVercelProjects");
+  });
 });

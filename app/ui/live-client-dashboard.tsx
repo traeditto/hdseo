@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { OutcomesControlCenter } from "@/app/ui/outcomes-control-center";
 import { AgentServicePanel } from "@/app/ui/agent-service-panel";
+import { DeploymentSetupWizard } from "@/app/ui/deployment-setup-wizard";
 import {FOUNDING_BETA_OFFER_KEY,retailBillingPlans} from "@/lib/billing/catalog";
 
 type User = { displayName: string; email: string };
@@ -630,6 +631,7 @@ export function LiveClientBusinessDashboard({
   const [message, setMessage] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [managedDecisionCount, setManagedDecisionCount] = useState(0);
+  const [deploymentSetupProject, setDeploymentSetupProject] = useState<Project | null>(null);
   const [selectedClientId, setSelectedClientId] = useState(
     initialData.clients[0]?.client.id ?? "",
   );
@@ -838,6 +840,7 @@ export function LiveClientBusinessDashboard({
         : "Nothing needs your attention right now.";
 
   return (
+    <>
     <main className="owner-portal">
       <aside className="owner-sidebar">
         <Brand />
@@ -1509,11 +1512,25 @@ export function LiveClientBusinessDashboard({
               busy={busyId !== null}
               canManage={selectedAccess?.role === "client_admin"}
               onAction={act}
+              onOpenDeploymentSetup={() => setDeploymentSetupProject(project)}
             />
           )}
         </div>
       </section>
     </main>
+    {deploymentSetupProject && (
+      <DeploymentSetupWizard
+        agencyId={deploymentSetupProject.agencyId}
+        project={deploymentSetupProject}
+        portal="client"
+        onClose={(refresh) => {
+          setDeploymentSetupProject(null);
+          if (refresh) window.location.reload();
+        }}
+        onOpenPackages={() => setTab("approvals")}
+      />
+    )}
+    </>
   );
 }
 
@@ -1525,12 +1542,14 @@ function OwnerWebsiteSetup({
   busy,
   canManage,
   onAction,
+  onOpenDeploymentSetup,
 }: {
   project: Project;
   website: Website | undefined;
   busy: boolean;
   canManage: boolean;
   onAction: (body: Record<string, unknown>, success?: string) => Promise<PostActionResult | null>;
+  onOpenDeploymentSetup: () => void;
 }) {
   const detected = website?.cmsType ?? "unknown";
   const recommendedChoice: OwnerConnectionChoice = [
@@ -1718,14 +1737,20 @@ function OwnerWebsiteSetup({
             <a className="owner-setup-submit" href={githubHref}>
               {repositoryConnected ? "Review or change repository →" : "Connect GitHub repository →"}
             </a>
-            <button type="button" disabled={busy} onClick={requestConnectionHelp}>
-              {repositoryConnected ? "Have HD SEO finish Vercel setup" : "I don’t use GitHub—help me connect"}
+            <button type="button" disabled={busy} onClick={repositoryConnected ? onOpenDeploymentSetup : requestConnectionHelp}>
+              {repositoryConnected ? "Finish safe deployment setup" : "I don’t use GitHub—help me connect"}
             </button>
           </div>
           {repositoryConnected && website.publishingBlockers.length > 0 && (
             <div className="owner-publishing-blockers">
               <strong>Still protected</strong>
-              <span>{website.publishingBlockers.map(friendlyStatus).join(" · ")}</span>
+              <span>{website.publishingBlockers.map((blocker) => ({
+                AGENCY_FEATURE_DISABLED: "Account automation awaiting activation",
+                PROJECT_FEATURE_DISABLED: "Website automation awaiting activation",
+                MANUAL_WORKFLOW_NOT_VERIFIED: "GitHub and Vercel safety test required",
+                REPOSITORY_NOT_VERIFIED: "Repository verification required",
+                READINESS_CHECK_FAILED: "Setup status needs to be checked again",
+              }[blocker] ?? friendlyStatus(blocker))).join(" · ")}</span>
             </div>
           )}
         </div>
@@ -1889,6 +1914,7 @@ function BusinessSettings({
   busy,
   canManage,
   onAction,
+  onOpenDeploymentSetup,
 }: {
   data: {
     profile: GrowthProfile | undefined;
@@ -1902,6 +1928,7 @@ function BusinessSettings({
   busy: boolean;
   canManage: boolean;
   onAction: (body: Record<string, unknown>, success?: string) => Promise<PostActionResult | null>;
+  onOpenDeploymentSetup: () => void;
 }) {
   const profile = data.profile;
   const [marketScope, setMarketScope] = useState<"service_area" | "nationwide">(
@@ -1997,6 +2024,7 @@ function BusinessSettings({
         busy={busy}
         canManage={canManage}
         onAction={onAction}
+        onOpenDeploymentSetup={onOpenDeploymentSetup}
       />
       <div className="owner-settings-grid">
         <form className="owner-settings-card" onSubmit={save}>
