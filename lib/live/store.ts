@@ -48,6 +48,7 @@ import {
 } from "@/lib/agents/control-plane";
 import { requestManagedAgentServiceCycle } from "@/lib/agent-service/service";
 import { runManagedAgentCycle } from "@/lib/agent-service/scheduler";
+import { wakeManagedAgentService } from "@/lib/agent-service/wake";
 import {
   publishCmsPackage,
   rollbackCmsPublication,
@@ -3191,6 +3192,14 @@ async function discoverKeywordOpportunitiesForActor(
         excludedOutsideServiceArea,
       },
     });
+    if (candidates.length) {
+      await wakeManagedAgentService(db, {
+        agencyId,
+        clientId: project.client_organization_id,
+        projectId: project.id,
+        reason: "opportunity_ready",
+      });
+    }
     return {
       analyzed,
       selected: candidates.length,

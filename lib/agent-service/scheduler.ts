@@ -283,15 +283,23 @@ async function ensureDiscoveryCampaign(db:SupabaseClient,enrollment:Enrollment,r
     db.from("seo_locations").select("name").eq("project_id",enrollment.project_id).eq("status","active").order("priority",{ascending:false}).limit(25),
   ]);
   const serviceAreas=(locations.data??[]).map(row=>row.name),targetMarket=project.data?.primary_market||serviceAreas.join(", ")||"verified service area";
+  const idempotencyKey=`managed-discovery:${enrollment.project_id}:${new Date().toISOString().slice(0,10)}`;
   const inserted=await db.from("seo_campaign_jobs").insert({
     agency_id:enrollment.agency_id,client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,
     requested_by:requestedBy,status:"queued",current_stage:"discover",progress_percent:0,
     input:{automationMode:"RECOMMEND",managedDiscoveryOnly:true,targetMarket,serviceAreas,discoveryLimit:100},
-    result:{managedDiscoveryOnly:true},idempotency_key:`managed-discovery:${enrollment.project_id}:${new Date().toISOString().slice(0,10)}`,
+    result:{managedDiscoveryOnly:true},idempotency_key:idempotencyKey,
     reference_id:crypto.randomUUID(),
   }).select("id").single();
   if(inserted.error&&inserted.error.code!=="23505")throw new ApiError("Evidence discovery could not be queued.",503,"DATABASE_BINDING_FAILED");
-  return inserted.data?.id as string|undefined;
+  if(inserted.data?.id)return inserted.data.id as string;
+  const existing=await db.from("seo_campaign_jobs").select("id,status").eq("idempotency_key",idempotencyKey).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).maybeSingle();
+  if(existing.error||!existing.data)throw new ApiError("The existing evidence discovery workflow could not be recovered.",503,"DATABASE_BINDING_FAILED");
+  if(["failed","stale"].includes(existing.data.status)){
+    const recovered=await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"discover",last_completed_stage:null,progress_percent:0,attempt_count:0,error_code:null,error_message:null,error_details:{},failed_at:null,completed_at:null,next_attempt_at:now(),worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:now(),updated_at:now()}).eq("id",existing.data.id).in("status",["failed","stale"]).select("id").maybeSingle();
+    if(recovered.error||!recovered.data)throw new ApiError("The stopped evidence discovery workflow could not be restarted safely.",503,"DATABASE_BINDING_FAILED");
+  }
+  return existing.data.id as string;
 }
 
 async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{triggerType?:"scheduled"|"manual"|"onboarding"|"recovery";requestedBy?:string|null}={}){

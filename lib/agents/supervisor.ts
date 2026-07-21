@@ -10,6 +10,7 @@ import{buildInternalLinkGraph,createCaseStudySnapshot,evaluateContentRefreshes,g
 import {actionDigest} from "@/lib/safety/action-digest";
 import {publishCmsPackage} from "@/lib/websites/publishing";
 import {verifyLiveImplementation} from "@/lib/manual/live-verification";
+import {wakeManagedAgentService} from "@/lib/agent-service/wake";
 
 type BackgroundJob={id:string;agency_id:string;payload:Record<string,unknown>;attempt_count:number;max_attempts:number;fencing_token:string|null};
 type WorkItem={id:string;agency_id:string;client_id:string;project_id:string;work_type:string;goal:string;assigned_agent_key:string;status:string;priority:number;risk_level:string;evidence:Record<string,unknown>;proposed_plan:Record<string,unknown>;authorized_tools:string[];spending_limit:number;spent_amount:number;required_approvals:Array<{type?:string;reason?:string}>;execution_context:Record<string,unknown>;source_type:string|null;source_id:string|null;requested_by:string|null};
@@ -140,6 +141,11 @@ async function pendingEvidenceJobs(db:SupabaseClient,work:WorkItem){
 
 async function finish(db:SupabaseClient,work:WorkItem,outcome:Record<string,unknown>,validation:Record<string,unknown>={status:"passed"}){
   const completed=now();
+  if(work.source_type==="outcome_loop"||work.source_type==="outcome_loop_delivery"){
+    const client=await db.from("clients").select("organization_id").eq("id",work.client_id).eq("agency_id",work.agency_id).maybeSingle();
+    if(client.error||!client.data?.organization_id)throw new ApiError("The completed Autopilot work could not be bound to its client organization.",500,"DATABASE_BINDING_FAILED");
+    await wakeManagedAgentService(db,{agencyId:work.agency_id,clientId:client.data.organization_id,projectId:work.project_id,reason:"specialist_completed"});
+  }
   await db.from("agent_work_steps").update({status:"succeeded",completed_at:completed,output:outcome,validation,updated_at:completed}).eq("work_item_id",work.id).in("status",["ready","running"]);
   await db.from("agent_work_steps").update({status:"skipped",completed_at:completed,output:{reason:"This step was not executed by the completed domain operation."},updated_at:completed}).eq("work_item_id",work.id).in("status",["waiting","pending"]);
   await db.from("agent_work_items").update({status:"succeeded",validation_results:validation,final_outcome:outcome,completed_at:completed,updated_at:completed}).eq("id",work.id);
