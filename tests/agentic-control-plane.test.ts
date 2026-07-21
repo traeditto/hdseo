@@ -41,8 +41,13 @@ describe("agent-first operating environment",()=>{
   });
 
   it("starts the initial agent team from the structured onboarding profile",()=>{
-    const store=read("lib/live/store.ts"),controlPlane=read("lib/agents/control-plane.ts"),cron=read("app/api/cron/automation/route.ts");
+    const store=read("lib/live/store.ts"),controlPlane=read("lib/agents/control-plane.ts"),supervisor=read("lib/agents/supervisor.ts"),cron=read("app/api/cron/automation/route.ts");
     expect(store).toContain("seedOnboardingAgentTeam");
+    expect(store).toContain("resumeEvidenceBlockedAgentWork");
+    expect(controlPlane).toContain("agent.evidence-recovered:");
+    expect(controlPlane).toContain('final_outcome->>code');
+    expect(supervisor).toContain('eq("work_type","research.discovery")');
+    expect(supervisor).toContain("waiting for the Research Agent to finish prioritizing opportunities");
     for(const workType of ["onboarding.profile","technical.audit","research.discovery","strategy.roadmap","reporting.summary"])expect(controlPlane).toContain(workType);
     expect(cron).toContain("processAgentBatch");
   });

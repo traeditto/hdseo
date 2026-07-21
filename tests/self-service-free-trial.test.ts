@@ -69,9 +69,34 @@ describe("self-service free trial", () => {
     expect(route).toContain("trial-crawl:");
     expect(route).toContain("maxPages:25");
     expect(route).toContain("markTrialCrawlQueued");
-    expect(store).toContain('crawlAccess.mode==="trial"?[]:await seedOnboardingAgentTeam');
+    expect(store).toContain('const agentWork = crawlAccess.mode === "trial"');
+    expect(store).toContain('? []\n    : await seedOnboardingAgentTeam');
     expect(worker).toContain('settleTrialCrawl(db,{jobId:job.id,status:"succeeded"})');
     expect(worker).toContain('settleTrialCrawl(db,{jobId:job.id,status:"failed"');
+  });
+
+  it("runs paid keyword discovery before starting the retail agent team", () => {
+    const store = read("lib/live/store.ts");
+    const activation = store.slice(
+      store.indexOf("export async function activateRetailGrowth"),
+      store.indexOf("export async function disconnectRetailGoogle"),
+    );
+
+    expect(activation).toContain("discoverKeywordOpportunitiesForActor");
+    expect(activation).toContain("discoveryJobId: discovery?.jobId ?? null");
+    expect(activation).toContain("resumeEvidenceBlockedAgentWork");
+    expect(activation).not.toContain("discoveryJobId:null");
+    expect(activation.indexOf("discoverKeywordOpportunitiesForActor")).toBeLessThan(
+      activation.indexOf("seedOnboardingAgentTeam"),
+    );
+  });
+
+  it("gives a paid business owner a safe recovery action when first-run evidence was blocked", () => {
+    const dashboard = read("app/ui/live-client-dashboard.tsx");
+
+    expect(dashboard).toContain("evidenceBlocked");
+    expect(dashboard).toContain("Resume my agent team →");
+    expect(dashboard).toContain('action: "retail_activate"');
   });
 
   it("keeps paid work in preview mode until the customer upgrades", () => {

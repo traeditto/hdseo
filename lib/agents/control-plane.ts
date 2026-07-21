@@ -71,6 +71,27 @@ export async function seedOnboardingAgentTeam(db:SupabaseClient,tenant:AgentTena
   return Promise.all(specs.map(spec=>enqueueAgentWorkItem(db,tenant,{...spec,evidence:sharedEvidence,idempotencyKey:`onboarding:${input.launchKey}:${spec.workType}`,sourceType:"client_onboarding",sourceId:input.launchKey})));
 }
 
+export async function resumeEvidenceBlockedAgentWork(db:SupabaseClient,input:{agencyId:string;projectId:string;recoveryKey:string}){
+  const blocked=await db.from("agent_work_items")
+    .select("id,priority,execution_context")
+    .eq("agency_id",input.agencyId)
+    .eq("project_id",input.projectId)
+    .in("work_type",["research.discovery","strategy.roadmap"])
+    .eq("status","blocked")
+    .eq("final_outcome->>code","EVIDENCE_NOT_READY");
+  if(blocked.error)throw new ApiError("Evidence-ready agent work could not be inspected.",500,"DATABASE_BINDING_FAILED");
+  let resumed=0;
+  for(const work of blocked.data??[]){
+    const queued=await db.from("background_jobs").upsert({queue:"agents",job_type:"agent.supervise",agency_id:input.agencyId,payload:{workItemId:work.id},status:"queued",priority:work.priority,available_at:new Date().toISOString(),attempt_count:0,worker_id:null,locked_at:null,lock_expires_at:null,last_error_code:null,last_error_message:null,completed_at:null,idempotency_key:`agent.evidence-recovered:${work.id}:${input.recoveryKey}`,updated_at:new Date().toISOString()},{onConflict:"queue,idempotency_key"});
+    if(queued.error)throw new ApiError("Evidence-ready agent work could not be requeued.",500,"DATABASE_BINDING_FAILED");
+    const executionContext=asObject(work.execution_context),updated=await db.from("agent_work_items").update({status:"queued",execution_context:{...executionContext,supervisorAttempts:0,waitingReason:null,evidenceRecoveredAt:new Date().toISOString()},final_outcome:{},failed_at:null,updated_at:new Date().toISOString()}).eq("id",work.id).eq("status","blocked").select("id").maybeSingle();
+    if(updated.error)throw new ApiError("Evidence-ready agent work could not be resumed.",500,"DATABASE_BINDING_FAILED");
+    if(!updated.data)continue;
+    resumed++;
+  }
+  return resumed;
+}
+
 const asObject=(value:unknown)=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const numberValue=(value:unknown)=>typeof value==="number"?value:Number(value)||0;
 

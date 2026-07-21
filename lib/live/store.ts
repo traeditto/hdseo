@@ -10,7 +10,6 @@ import {
   LiveConfigError,
 } from "@/lib/live/identity";
 import { env, hasDataForSeoConfig } from "@/lib/config/env";
-import type { TenantContext } from "@/lib/auth/context";
 import {
   hasPermission,
   permissionMatrix,
@@ -43,7 +42,10 @@ import {
   detectWebsitePlatform,
   type WebsitePlatformAnalysis,
 } from "@/lib/websites/platform-detection";
-import { seedOnboardingAgentTeam } from "@/lib/agents/control-plane";
+import {
+  resumeEvidenceBlockedAgentWork,
+  seedOnboardingAgentTeam,
+} from "@/lib/agents/control-plane";
 import {
   publishCmsPackage,
   rollbackCmsPublication,
@@ -2050,11 +2052,65 @@ export async function activateRetailGrowth(email: string, projectId: string) {
   const serviceAreas = Array.isArray(profile.data.service_areas)
     ? profile.data.service_areas
     : [];
-  const agentWork = crawlAccess.mode==="trial"?[]:await seedOnboardingAgentTeam(
-    context.db,
-    {agencyId: context.agencyId,clientId: context.clientId,projectId,userId: context.userId},
-    {evidenceJobIds:[evidenceJobId],discoveryJobId:null,monthlyBudget:Number(profile.data.monthly_budget)||99,targetMarket:serviceAreas[0]??context.primaryMarket??"United States",launchKey:`retail:${projectId}`},
-  );
+  const monthlyBudget = Number(profile.data.monthly_budget) || 99;
+  const targetMarket = serviceAreas[0] ?? context.primaryMarket ?? "United States";
+  let existingOpportunityCount = 0;
+  if (crawlAccess.mode !== "trial") {
+    const existingOpportunities = await context.db
+      .from("seo_opportunities")
+      .select("id", { count: "exact", head: true })
+      .eq("agency_id", context.agencyId)
+      .eq("project_id", projectId);
+    if (existingOpportunities.error) {
+      throw new ApiError(
+        "Existing keyword opportunities could not be inspected safely.",
+        500,
+        "DATABASE_BINDING_FAILED",
+      );
+    }
+    existingOpportunityCount = existingOpportunities.count ?? 0;
+  }
+  const discovery = crawlAccess.mode === "trial" || existingOpportunityCount > 0
+    ? null
+    : await discoverKeywordOpportunitiesForActor(
+        email,
+        {
+          projectId,
+          monthlyBudget,
+          targetMarket,
+          limit: 50,
+        },
+        {
+          db: context.db,
+          agencyId: context.agencyId,
+          userId: context.userId,
+        },
+      );
+  if (crawlAccess.mode !== "trial" && (existingOpportunityCount > 0 || (discovery?.selected ?? 0) > 0)) {
+    await resumeEvidenceBlockedAgentWork(context.db, {
+      agencyId: context.agencyId,
+      projectId,
+      recoveryKey: discovery?.jobId ?? bucket,
+    });
+  }
+  const agentWork = crawlAccess.mode === "trial"
+    ? []
+    : await seedOnboardingAgentTeam(
+        context.db,
+        {
+          agencyId: context.agencyId,
+          clientId: context.clientId,
+          projectId,
+          userId: context.userId,
+        },
+        {
+          evidenceJobIds: [evidenceJobId],
+          discoveryJobId: discovery?.jobId ?? null,
+          monthlyBudget,
+          targetMarket: discovery?.targetMarket ?? targetMarket,
+          launchKey: `retail:${projectId}`,
+        },
+      );
   const now = nowIso();
   await Promise.all([
     context.db
@@ -2623,15 +2679,37 @@ export type KeywordDiscoverySummary = {
   excludedOutsideServiceArea: number;
 };
 
+type KeywordDiscoveryInput = {
+  projectId: string;
+  monthlyBudget: number;
+  targetMarket?: string;
+  marketScope?: "service_area" | "nationwide";
+  limit: number;
+};
+
+type KeywordDiscoveryActor = {
+  db: SupabaseClient;
+  agencyId: string;
+  userId: string;
+};
+
 export async function discoverKeywordOpportunities(
   email: string,
-  input: {
-    projectId: string;
-    monthlyBudget: number;
-    targetMarket?: string;
-    marketScope?: "service_area" | "nationwide";
-    limit: number;
-  },
+  input: KeywordDiscoveryInput,
+): Promise<KeywordDiscoverySummary> {
+  const { db, agencyId, userId, role } = await agencyContext(email);
+  requireLivePermission(role, "provider.authorize");
+  return discoverKeywordOpportunitiesForActor(email, input, {
+    db,
+    agencyId,
+    userId,
+  });
+}
+
+async function discoverKeywordOpportunitiesForActor(
+  email: string,
+  input: KeywordDiscoveryInput,
+  actor: KeywordDiscoveryActor,
 ): Promise<KeywordDiscoverySummary> {
   if (!hasDataForSeoConfig) {
     throw new ApiError(
@@ -2641,13 +2719,11 @@ export async function discoverKeywordOpportunities(
     );
   }
 
-  const { db, agencyId, userId, role } = await agencyContext(email);
-  requireLivePermission(role, "provider.authorize");
-  const membership = await requireAgency(email);
+  const { db, agencyId, userId } = actor;
   const { data: project } = await db
     .from("seo_projects")
     .select(
-      "id,name,domain,primary_market,market_scope,client_organization_id,country_code,language_code,client_organizations(name)",
+      "id,name,domain,primary_market,market_scope,client_organization_id,country_code,language_code",
     )
     .eq("id", input.projectId)
     .eq("agency_id", agencyId)
@@ -2708,9 +2784,6 @@ export async function discoverKeywordOpportunities(
     project.language_code || "en",
   );
 
-  const clientRow = Array.isArray(project.client_organizations)
-    ? project.client_organizations[0]
-    : project.client_organizations;
   const limit = Math.min(env.MAX_KEYWORDS_PER_RUN, input.limit);
   const discoveryDomain = project.domain
     .replace(/^https?:\/\//, "")
@@ -2761,24 +2834,16 @@ export async function discoverKeywordOpportunities(
     );
   }
 
-  const context: TenantContext = {
-    user: { id: userId, email },
-    agency: {
-      id: agencyId,
-      name: membership.agency.name,
-      slug: membership.agency.slug,
-    },
-    client: {
-      id: project.client_organization_id,
-      name: clientRow?.name ?? project.name,
-    },
-    project: { id: project.id, name: project.name, domain: project.domain },
-    role: membership.role,
+  const paidTenantContext = {
+    user: { id: userId },
+    agency: { id: agencyId },
+    client: { id: project.client_organization_id },
+    project: { id: project.id },
   };
 
   let paid: Awaited<ReturnType<typeof beginPaidOperation>> | null = null;
   try {
-    paid = await beginPaidOperation(context, {
+    paid = await beginPaidOperation(paidTenantContext, {
       confirmationId: confirmation.id,
       operation,
       estimatedUnits: limit,

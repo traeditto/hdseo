@@ -689,6 +689,11 @@ export function LiveClientBusinessDashboard({
       completedStatuses.has(item.status),
     ),
     topOpportunity = company.opportunities[0] ?? null;
+  const evidenceBlocked = company.agentWork.some(
+    (item) =>
+      item.status === "blocked" &&
+      ["research", "strategy"].includes(item.agentKey),
+  );
   const gsc = company.integrations.find(
       (item) =>
         item.provider === "google_search_console" && item.status === "active",
@@ -751,6 +756,8 @@ export function LiveClientBusinessDashboard({
         : "Your free website crawl is in progress"
     : approvals.length
     ? "We need one quick decision"
+    : evidenceBlocked
+      ? "Research needs a safe restart"
     : profile?.onboardingStatus !== "active"
       ? "Finish setup to start growing"
       : company.agentWork.length
@@ -766,6 +773,8 @@ export function LiveClientBusinessDashboard({
         : "The crawl is queued safely. You can explore every product area while the worker collects public website evidence."
     : approvals.length
     ? "Approving or requesting changes keeps the highest-value work moving."
+    : evidenceBlocked
+      ? "The first keyword evidence run did not start correctly. Restarting will collect it before the strategy is built."
     : profile?.onboardingStatus !== "active"
       ? "Confirm your connections, then let the agent team begin the first local audit."
       : company.agentWork.length
@@ -876,6 +885,20 @@ export function LiveClientBusinessDashboard({
                 ) : approvals.length ? (
                   <button onClick={() => setTab("approvals")}>
                     Review the decision →
+                  </button>
+                ) : evidenceBlocked && project ? (
+                  <button
+                    disabled={busyId === "retail_activate"}
+                    onClick={() =>
+                      void act({
+                        action: "retail_activate",
+                        projectId: project.id,
+                      })
+                    }
+                  >
+                    {busyId === "retail_activate"
+                      ? "Restarting research…"
+                      : "Resume my agent team →"}
                   </button>
                 ) : profile?.onboardingStatus !== "active" && project ? (
                   <button
