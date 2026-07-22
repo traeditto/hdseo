@@ -108,4 +108,11 @@ describe("complete API security surface", () => {
       expect(source).toContain("guardWorkerCron(request)");
     }
   });
+
+  it("rejects malformed proof uploads before multipart parsing and authenticates Vercel setup before provider configuration", () => {
+    const proofUpload = readFileSync(join(root, "app/api/creatives/proof-upload/route.ts"), "utf8");
+    expect(proofUpload.indexOf('startsWith("multipart/form-data")')).toBeLessThan(proofUpload.indexOf("request.formData()"));
+    const vercelConnect = readFileSync(join(root, "app/api/vercel/connect/route.ts"), "utf8");
+    expect(vercelConnect.indexOf("resolveTenantContext({...parsed.data")).toBeLessThan(vercelConnect.indexOf("VERCEL_INTEGRATION_SLUG)throw"));
+  });
 });

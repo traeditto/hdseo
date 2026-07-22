@@ -31,4 +31,4 @@ jobs:
         env:
           HDSEO_ACCEPTANCE_ORIGIN: https://hdseo.vercel.app
           HDSEO_EXPECTED_RELEASE: ${{ github.event.workflow_run.head_sha || github.sha }}
-        run: node tests/production-smoke.mjs
+        run: npm run test:production

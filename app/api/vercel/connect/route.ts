@@ -39,9 +39,9 @@ export async function GET(request:Request){try{
     await auditEvent({agencyId:context.agency.id,actorUserId:context.user.id,action:"vercel.connection.connected",resourceType:"vercel_connection",resourceId:saved.id,request});
     return Response.redirect(new URL(`/portal/agency?vercel=connected&connectionId=${saved.id}`,"https://hdseo.vercel.app"),303);
   }
-  if(!env.VERCEL_INTEGRATION_SLUG)throw new ApiError("Vercel Integration slug is not configured.",503,"NOT_CONFIGURED");
   const parsed=beginSchema.safeParse(Object.fromEntries(url.searchParams));if(!parsed.success)throw new ApiError("A valid agency is required.",400,"VALIDATION_ERROR");
   const context=await resolveTenantContext({...parsed.data,requireProject:Boolean(parsed.data.projectId)});requirePermission(context,"integrations.manage");
+  if(!env.VERCEL_INTEGRATION_SLUG)throw new ApiError("Vercel Integration slug is not configured.",503,"NOT_CONFIGURED");
   const state=createIntegrationState({purpose:"vercel_connect",agencyId:context.agency.id,clientId:context.client?.id,projectId:context.project?.id,userId:context.user.id});
   return Response.redirect(`https://vercel.com/integrations/${env.VERCEL_INTEGRATION_SLUG}/new?state=${encodeURIComponent(state)}`,307);
 }catch(error){return jsonError(error)}}

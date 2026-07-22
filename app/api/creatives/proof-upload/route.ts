@@ -5,6 +5,7 @@ import{addBusinessProof,verifyBusinessProof}from"@/lib/creatives/service";
 
 const allowed=new Set(["image/jpeg","image/png","image/webp","audio/mpeg","audio/mp4","audio/wav","application/pdf"]);
 export async function POST(request:Request){try{
+  if(!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data"))throw new ApiError("Proof uploads must use multipart form data.",400,"VALIDATION_ERROR");
   const form=await request.formData(),projectId=String(form.get("projectId")??""),file=form.get("file");if(!(file instanceof File)||!projectId)throw new ApiError("Choose a proof file and client project.",400,"VALIDATION_ERROR");if(!allowed.has(file.type)||file.size>10*1024*1024)throw new ApiError("Proof files must be JPG, PNG, WebP, MP3, M4A, WAV, or PDF and no larger than 10 MB.",400,"VALIDATION_ERROR");
   const context=await requireLiveAgencyProject({projectId,permission:"seo.write"});
   const ownerAttested=context.actorType==="client";

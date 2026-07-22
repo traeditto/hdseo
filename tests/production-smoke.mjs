@@ -35,6 +35,19 @@ async function body(response) {
   return value;
 }
 
+function localLinks(html) {
+  const links = new Set();
+  for (const match of html.matchAll(/\bhref=["']([^"']+)["']/gi)) {
+    const href = match[1].replaceAll("&amp;", "&").trim();
+    if (!href || href.startsWith("#") || /^(?:mailto|tel|javascript|data):/i.test(href)) continue;
+    const url = new URL(href, `${origin}/`);
+    if (url.origin !== origin || url.pathname.startsWith("/_next/") || url.pathname.startsWith("/api/")) continue;
+    url.hash = "";
+    links.add(`${url.pathname}${url.search}`);
+  }
+  return links;
+}
+
 async function waitForRelease() {
   if (!expectedRelease) return;
   const deadline = Date.now() + releaseWaitMs;
@@ -101,12 +114,24 @@ async function main() {
     }
   }
 
+  const discoveredPublicLinks = new Set();
   for (const [path, phrase] of publicPages) {
     await check(`public page ${path}`, async () => {
       const response = await request(path);
       assert.equal(response.status, 200, `${path} did not render successfully`);
       assert.match(response.headers.get("content-type") || "", /text\/html/);
-      assert.match(await body(response), new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+      const html = await body(response);
+      assert.match(html, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+      for (const link of localLinks(html)) discoveredPublicLinks.add(link);
+    });
+  }
+
+  for (const path of [...discoveredPublicLinks].sort()) {
+    await check(`public link ${path}`, async () => {
+      const response = await request(path);
+      assert.ok(response.status >= 200 && response.status < 400, `${path} returned ${response.status}`);
+      if (response.status < 300) await body(response);
+      else assert.ok(response.headers.get("location"), `${path} redirected without a destination`);
     });
   }
 
