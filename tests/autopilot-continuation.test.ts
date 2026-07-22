@@ -149,7 +149,9 @@ describe("Autopilot event-driven continuation", () => {
     const worker = read("lib/automation/worker.ts");
     const automation = vercel.crons.find((cron) => cron.path === "/api/cron/automation");
     expect(automation?.schedule).toBe("* * * * *");
-    expect(worker).toContain("const db=requireAdminDb(),reconciliation=await reconcilePreviewCampaigns(db),claimed=");
+    expect(worker).toContain("reconciliation={ok:true,...await reconcilePreviewCampaigns(db)}");
+    expect(worker).toContain("deployment_reconciliation_deferred");
+    expect(worker).toContain('const claimed=await db.rpc("claim_background_jobs"');
     expect(worker).toContain("const recovered=await recoverProtectedProductionValidations(db)");
     expect(worker).toContain("const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db)");
     expect(worker).toContain("recoverMissingProductionRollbackBaselines");
@@ -190,6 +192,7 @@ describe("Autopilot event-driven continuation", () => {
     const cron = read("app/api/cron/automation/route.ts");
     expect(cron).toContain("Promise.allSettled");
     expect(cron).toContain('status:failures.length?207:200');
+    expect(cron).toContain('"deployment_reconciliation" as const');
   });
 
   it("continues the exact approved package instead of reapplying the discovery threshold", () => {
