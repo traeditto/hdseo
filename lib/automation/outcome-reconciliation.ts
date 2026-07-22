@@ -30,7 +30,7 @@ export async function reconcileHealthyProductionOutcome(db:SupabaseClient,input:
 export async function reconcileRecentHealthyProductionOutcomes(db:SupabaseClient,limit=20){
   const executions=await db.from("seo_executions")
     .select("id,outcome_run_id")
-    .eq("status","production_deployed")
+    .in("status",["production_deployed","monitoring"])
     .not("outcome_run_id","is",null)
     .order("updated_at",{ascending:false})
     .limit(limit);

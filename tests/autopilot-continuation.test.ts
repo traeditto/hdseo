@@ -153,7 +153,7 @@ describe("Autopilot event-driven continuation", () => {
     expect(state.completedStep.status).toBe("succeeded");
     expect(state.monitorStep.status).toBe("running");
     expect(reconciliation).toContain("reconcileRecentHealthyProductionOutcomes");
-    expect(reconciliation).toContain('eq("status","production_deployed")');
+    expect(reconciliation).toContain('in("status",["production_deployed","monitoring"])');
     expect(reconciliation).toContain('eq("environment","production").eq("status","healthy")');
     expect(reconciliation).toContain('db.from("agent_service_cycles").update(state.cycle)');
     expect(reconciliation).toContain('db.from("outcome_loop_steps").update(state.completedStep)');
