@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+const releaseSha = process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA;
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async headers() {
@@ -38,6 +40,9 @@ const nextConfig: NextConfig = {
             key: "Strict-Transport-Security",
             value: "max-age=63072000; includeSubDomains; preload",
           },
+          ...(releaseSha
+            ? [{ key: "X-HDSEO-Release-SHA", value: releaseSha }]
+            : []),
         ],
       },
     ];

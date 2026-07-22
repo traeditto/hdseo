@@ -13,6 +13,7 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "vitest run",
     "test:render": "node --test tests/rendered-html.test.mjs",
+    "test:production": "node tests/production-smoke.mjs",
     "test:release": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:render && pnpm build:vercel",
     "security:audit": "pnpm audit --audit-level high",
     "typecheck": "tsc --noEmit",
