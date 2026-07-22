@@ -27,6 +27,10 @@ describe("customer-visible accountable work receipts", () => {
     expect(route).toContain('failureCode === "CONNECTION_REQUIRED"');
     expect(route).toContain("The protected worker should claim this within five minutes");
     expect(receipt).toContain("No outcome is finally charged until a customer-visible delivery is independently verified");
+    expect(route).toContain("const previewQaPassed");
+    expect(route).toContain("const previewFailed");
+    expect(route).toContain('failureCode === "PREVIEW_QA_FAILED"');
+    expect(route).toContain("HD SEO automatically retries temporary hosting and access failures");
   });
 
   it("refreshes active receipts automatically without requiring SEO or queue knowledge", () => {

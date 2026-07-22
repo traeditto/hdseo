@@ -310,22 +310,35 @@ export async function GET(request: Request) {
           ["implementation", "preview", "qa", "publish", "monitor"].includes(step.step_kind),
         ),
     );
+    const previewQaPassed = Boolean(
+      execution?.status === "preview_ready" ||
+        (deployment?.environment === "preview" && deployment?.status === "healthy"),
+    );
+    const previewFailed = Boolean(
+      execution?.status === "preview_failed" ||
+        (deployment?.environment === "preview" && deployment?.status === "failed"),
+    );
+    const failedPreviewChecks = list(record(deployment?.validation_summary).failed).map(String);
     const published = Boolean(
       pkg.implemented_at ||
         execution?.production_deployed_at ||
-        ["ready", "healthy"].includes(deployment?.status) ||
+        (deployment?.environment === "production" && ["ready", "healthy"].includes(deployment?.status)) ||
         ["monitoring", "completed"].includes(run?.status),
     );
     const verified = Boolean(
       verification?.status === "passed" || run?.status === "completed",
     );
-    const blocked = [run?.status, cycle?.status].includes("blocked");
-    const failureCode = run?.failure_code ?? cycle?.failure_code ?? null;
-    const failureMessage = run?.failure_message ?? cycle?.failure_message ?? null;
+    const blocked = previewFailed || [run?.status, cycle?.status].includes("blocked");
+    const failureCode = run?.failure_code ?? cycle?.failure_code ?? (previewFailed ? "PREVIEW_QA_FAILED" : null);
+    const failureMessage = run?.failure_message ?? cycle?.failure_message ?? (previewFailed
+      ? `The preview stopped because ${failedPreviewChecks.length ? failedPreviewChecks.join(", ") : "a required safety check"} failed. Nothing was published. HD SEO automatically retries temporary hosting and access failures; a genuine page problem is returned for revision.`
+      : null);
     const stage = verified
       ? "verified"
       : published
         ? "monitoring"
+        : previewQaPassed
+          ? "release approval"
         : deployment
           ? "preview"
           : implementationStarted
@@ -338,7 +351,7 @@ export async function GET(request: Request) {
       { key: "approved", label: "Customer approved", complete: approvalRecorded },
       { key: "implementation", label: "Change prepared", complete: implementationStarted },
       { key: "preview", label: "Preview created", complete: Boolean(deployment) },
-      { key: "qa", label: "Safety checks passed", complete: verified || steps.some((step) => step.step_kind === "qa" && step.status === "succeeded") },
+      { key: "qa", label: "Safety checks passed", complete: previewQaPassed || verified || steps.some((step) => step.step_kind === "qa" && step.status === "succeeded") },
       { key: "published", label: "Published", complete: published },
       { key: "monitoring", label: "Results monitored", complete: verified },
     ];
@@ -435,6 +448,10 @@ export async function GET(request: Request) {
                 ? "Another protected website workflow is finishing first. This approved change remains next in line and has not consumed outcome capacity."
                 : failureMessage
                   ? failureMessage
+                  : failureCode === "PREVIEW_QA_FAILED"
+                    ? failureMessage
+                  : previewQaPassed
+                    ? "All preview safety checks passed. The exact protected release is ready for your final approval; HD SEO will continue automatically as soon as you approve it."
                   : verified
             ? "HD SEO is monitoring rankings, traffic, leads and value."
             : published

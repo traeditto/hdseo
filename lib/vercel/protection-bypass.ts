@@ -26,10 +26,11 @@ export async function ensureVercelAutomationBypass(input: {
   credentials: VercelCredentials;
   projectId: string;
   environmentConfig?: VercelEnvironmentConfig | null;
+  forceRefresh?: boolean;
 }) {
   const environmentConfig = input.environmentConfig ?? {};
   const stored = storedBypass(environmentConfig);
-  if (stored?.encryptedSecret) {
+  if (stored?.encryptedSecret && !input.forceRefresh) {
     return {
       secret: decryptSecret(stored.encryptedSecret),
       environmentConfig,

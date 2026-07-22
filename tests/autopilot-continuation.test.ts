@@ -81,6 +81,16 @@ describe("Autopilot event-driven continuation", () => {
     expect(clientApi).toContain('reason:"approval_decided"');
   });
 
+  it("rotates expired preview access, retries transient QA, and advances the campaign", () => {
+    const worker = read("lib/automation/worker.ts");
+    expect(worker).toContain("forceRefresh:true");
+    expect(worker).toContain('"PREVIEW_VALIDATION_RETRY"');
+    expect(worker).toContain("reconcilePreviewCampaigns");
+    expect(worker).toContain('status:"awaiting_release_approval"');
+    expect(worker).toContain("reconcileCampaignForExecution");
+    expect(worker).toContain('job.job_type==="deployment.validate"');
+  });
+
   it("continues the exact approved package instead of reapplying the discovery threshold", () => {
     const scheduler = read("lib/agent-service/scheduler.ts");
     const store = read("lib/live/store.ts");
