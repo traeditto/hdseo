@@ -89,7 +89,7 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain('status:"awaiting_release_approval"');
     expect(worker).toContain("reconcileCampaignForExecution");
     expect(worker).toContain('job.job_type==="deployment.validate"');
-    expect(worker).toContain('validationModelVersion:"preview-aware-v2"');
+    expect(worker).toContain('deployment.environment==="preview"?"preview-aware-v2"');
     expect(worker).toContain("preview_indexing_policy_upgrade");
     expect(worker).toContain("validationUrl");
   });
@@ -108,6 +108,19 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("releaseAutopilotPreview");
     expect(worker).toContain("autopilot_release_reconciliation_failed");
     expect(service).toContain("filter(item=>!item.outcome_run_id)");
+  });
+
+  it("polls Vercel production as a webhook-independent continuation path", () => {
+    const client = read("lib/vercel/client.ts");
+    const worker = read("lib/automation/worker.ts");
+    expect(client).toContain("listVercelDeployments");
+    expect(client).toContain('target?: "production" | "preview"');
+    expect(worker).toContain("reconcileProductionDeployments");
+    expect(worker).toContain('source:"production_poll"');
+    expect(worker).toContain('environment:"production"');
+    expect(worker).toContain('status:failed.length?"production_failed":"production_deployed"');
+    expect(worker).toContain('current_stage:"schedule_monitoring"');
+    expect(worker).toContain('validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v1"');
   });
 
   it("isolates deployment, agent, and provider worker failures", () => {

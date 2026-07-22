@@ -3,7 +3,7 @@ import { ApiError,logEvent,safeError } from "@/lib/api/errors";
 import { env } from "@/lib/config/env";
 import { requireAdminDb } from "./control-plane";
 import { loadVercelCredentials } from "@/lib/vercel/credentials";
-import { createVercelDeployment,getVercelDeployment,getVercelDeploymentEvents,rollbackVercelProject } from "@/lib/vercel/client";
+import { createVercelDeployment,getVercelDeployment,getVercelDeploymentEvents,listVercelDeployments,rollbackVercelProject } from "@/lib/vercel/client";
 import { validateDeploymentUrl,type ValidationCheck } from "./validator";
 import { ensureVercelAutomationBypass } from "@/lib/vercel/protection-bypass";
 import { compareSeoDrift,deploymentSnapshotFromChecks } from "@/lib/seo/drift";
@@ -57,6 +57,65 @@ async function reconcileCampaignForExecution(db:ReturnType<typeof requireAdminDb
   if(outcomeRunId)await db.from("outcome_loop_runs").update({status:"failed",failure_code:"PREVIEW_QA_FAILED",failure_message:failureMessage,completed_at:now,updated_at:now}).eq("id",outcomeRunId);
 }
 
+async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminDb>){
+  const pending=await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,repository_connection_id,merge_commit_sha,outcome_run_id,merged_at").eq("status","merged").not("merge_commit_sha","is",null).order("merged_at",{ascending:true}).limit(20);
+  let detected=0,queued=0;const errors:Array<{executionId:string;code:string;message:string}>=[];
+  for(const execution of pending.data??[]){
+    try{
+      const [client,connection]=await Promise.all([
+        db.from("clients").select("id").eq("agency_id",execution.agency_id).eq("organization_id",execution.client_organization_id).maybeSingle(),
+        execution.repository_connection_id?db.from("repository_connections").select("repository_owner,repository_name,default_branch").eq("id",execution.repository_connection_id).eq("project_id",execution.project_id).maybeSingle():Promise.resolve({data:null,error:null}),
+      ]);
+      if(!client.data||!connection.data)continue;
+      const repository=await db.from("repositories").select("id").eq("agency_id",execution.agency_id).eq("client_id",client.data.id).eq("project_id",execution.project_id).eq("owner",connection.data.repository_owner).eq("name",connection.data.repository_name).eq("status","active").maybeSingle();
+      if(!repository.data)continue;
+      const vercelProject=await db.from("vercel_projects").select("id,connection_id,vercel_project_id,production_branch,production_domains").eq("agency_id",execution.agency_id).eq("client_id",client.data.id).eq("project_id",execution.project_id).eq("repository_id",repository.data.id).eq("status","active").limit(1).maybeSingle();
+      if(!vercelProject.data)continue;
+      const credentials=await loadVercelCredentials(vercelProject.data.connection_id,execution.agency_id),provider=await listVercelDeployments(credentials,{projectId:vercelProject.data.vercel_project_id,target:"production",limit:20,since:execution.merged_at?new Date(execution.merged_at).getTime()-300_000:undefined}),matched=provider.deployments.find(item=>{
+        const sha=item.meta?.githubCommitSha??item.meta?.gitCommitSha;
+        return sha===execution.merge_commit_sha&&(item.target??"production")==="production";
+      });
+      if(!matched)continue;
+      const state=(matched.readyState??"").toUpperCase();
+      if(state==="ERROR"||state==="CANCELED"){
+        const now=new Date().toISOString(),message="Vercel reported that the production deployment failed. The previous live version remains protected.";
+        await Promise.all([
+          db.from("seo_executions").update({status:"production_failed",updated_at:now}).eq("id",execution.id),
+          db.from("seo_campaign_jobs").update({status:"failed",error_code:"VERCEL_DEPLOYMENT_FAILED",error_message:message,failed_at:now,updated_at:now}).contains("result",{executionId:execution.id}),
+          execution.outcome_run_id?db.from("outcome_loop_runs").update({status:"failed",failure_code:"VERCEL_DEPLOYMENT_FAILED",failure_message:message,completed_at:now,updated_at:now}).eq("id",execution.outcome_run_id):Promise.resolve({error:null}),
+        ]);
+        continue;
+      }
+      if(state!=="READY")continue;
+      detected++;
+      const existing=await db.from("deployments").select("id,status").eq("vercel_project_id",vercelProject.data.id).eq("external_deployment_id",matched.id).maybeSingle();
+      if(existing.data){
+        if(existing.data.status==="healthy"){
+          const now=new Date().toISOString();
+          await Promise.all([
+            db.from("seo_executions").update({status:"production_deployed",production_commit_sha:execution.merge_commit_sha,production_deployed_at:now,updated_at:now}).eq("id",execution.id),
+            db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now,error_code:null,error_message:null,updated_at:now}).contains("result",{executionId:execution.id}),
+          ]);
+          logEvent("production_deployment_state_repaired",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"production_deployed",stage:"schedule_monitoring"});
+        }
+        continue;
+      }
+      const productionDomain=Array.isArray(vercelProject.data.production_domains)?vercelProject.data.production_domains.find((domain:string)=>Boolean(domain)):null,now=new Date().toISOString(),created=await db.from("deployments").insert({
+        agency_id:execution.agency_id,client_id:client.data.id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:repository.data.id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??connection.data.default_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:productionDomain?`https://${productionDomain}`:null},started_at:matched.createdAt?new Date(matched.createdAt).toISOString():now,ready_at:matched.ready?new Date(matched.ready).toISOString():now,updated_at:now,
+      }).select("id").single();
+      if(created.error||!created.data)throw new ApiError("The detected production deployment could not be recorded.",500,"DATABASE_BINDING_FAILED");
+      const job=await db.from("background_jobs").upsert({queue:"deployments",job_type:"deployment.validate",agency_id:execution.agency_id,deployment_id:created.data.id,payload:{source:"production_poll",executionId:execution.id},status:"queued",priority:90,idempotency_key:`deployment.validate:${created.data.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});
+      if(job.error)throw new ApiError("Production safety validation could not be queued.",500,"DATABASE_BINDING_FAILED");
+      queued++;
+      logEvent("production_deployment_reconciled",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"queued",stage:"production_qa"});
+    }catch(error){
+      const safe=safeError(error);errors.push({executionId:execution.id,code:safe.body.error.code,message:safe.body.error.message});
+      logEvent("production_deployment_reconciliation_failed",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"deferred",errorCode:safe.body.error.code,stage:"production_poll"});
+    }
+  }
+  return{detected,queued,errors};
+}
+
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
   const failedHealth=await db.from("deployment_checks").select("deployment_id,details,updated_at").eq("check_type","health").eq("status","failed").order("updated_at",{ascending:false}).limit(20);
   let recovered=0,advanced=0,autopilotReleased=0;const releaseErrors:Array<{executionId:string;code:string;message:string}>=[];
@@ -103,7 +162,8 @@ async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
     ]);
     policyRecovered+=1;
   }
-  return{recovered,policyRecovered,advanced,autopilotReleased,releaseErrors};
+  const production=await reconcileProductionDeployments(db);
+  return{recovered,policyRecovered,advanced,autopilotReleased,releaseErrors,production};
 }
 
 async function createDeployment(job:BackgroundJob){if(!job.deployment_id)throw new ApiError("Deployment job is incomplete.",500,"OPERATION_FAILED");const{db,deployment,project,repository}=await deploymentContext(job.deployment_id);if(!repository)throw new ApiError("Repository record not found.",404,"NOT_FOUND");const safety=safetyMetadata(job,deployment);await claimStoredMutationIntent(db,{intentId:safety.mutationIntentId,agencyId:job.agency_id,projectId:deployment.project_id,toolKey:"vercel.deploy",expectedDigest:safety.actionDigest,executionRef:job.id});const credentials=await loadVercelCredentials(project.connection_id,job.agency_id),now=new Date().toISOString();await db.from("deployments").update({status:"creating",started_at:now,updated_at:now}).eq("id",deployment.id);await setRun(job.automation_run_id,"running","deployment.create");const created=await createVercelDeployment(credentials,{projectId:project.vercel_project_id,projectName:project.name,repositoryId:String(repository.github_repository_id),ref:deployment.git_ref,sha:deployment.git_sha??undefined,environment:deployment.environment,metadata:{hdSeoDeploymentId:deployment.id,hdSeoRunId:job.automation_run_id??"",githubCommitSha:deployment.git_sha??"",projectId:project.vercel_project_id,hdSeoMutationIntentId:safety.mutationIntentId,hdSeoActionDigest:safety.actionDigest}});const saved=await db.from("deployments").update({external_deployment_id:created.id,url:created.url,status:created.readyState==="READY"?"ready":"building",provider_metadata:{...created,safety},updated_at:new Date().toISOString()}).eq("id",deployment.id);if(saved.error)throw new ApiError("The Vercel deployment succeeded but reconciliation must complete before retrying.",503,"DATABASE_BINDING_FAILED");await settleMutationIntent(db,{intentId:safety.mutationIntentId,executionRef:job.id,status:"succeeded"});await addLog(deployment.id,"vercel","info","Vercel deployment created.",{providerDeploymentId:created.id,url:created.url});await db.from("background_jobs").upsert({queue:"deployments",job_type:created.readyState==="READY"?"deployment.validate":"deployment.poll",agency_id:job.agency_id,automation_run_id:job.automation_run_id,deployment_id:deployment.id,payload:{},status:"queued",priority:created.readyState==="READY"?80:60,available_at:new Date(Date.now()+(created.readyState==="READY"?0:20_000)).toISOString(),idempotency_key:`${created.readyState==="READY"?"deployment.validate":"deployment.poll"}:${deployment.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});}
@@ -114,24 +174,31 @@ async function validateDeployment(job:BackgroundJob){
   if(!job.deployment_id)throw new ApiError("Validation job is incomplete.",500,"OPERATION_FAILED");
   const{db,deployment,project}=await deploymentContext(job.deployment_id);
   if(!deployment.url)throw new ApiError("Deployment URL is not available.",503,"OPERATION_FAILED");
-  const executionContext=await db.from("seo_executions").select("id,validation_results,outcome_run_id,opportunity_id,client_organization_id").eq("preview_deployment_id",deployment.id).maybeSingle(),opportunity=executionContext.data?.opportunity_id?await db.from("seo_opportunities").select("target_url").eq("id",executionContext.data.opportunity_id).maybeSingle():{data:null},targetPath=opportunity.data?.target_url?new URL(opportunity.data.target_url,"https://hdseo.invalid").pathname:"/",validationUrl=new URL(targetPath,deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`).toString();
+  const executionQuery=db.from("seo_executions").select("id,validation_results,outcome_run_id,opportunity_id,client_organization_id");
+  const executionContext=deployment.environment==="production"&&deployment.git_sha
+    ?await executionQuery.eq("merge_commit_sha",deployment.git_sha).maybeSingle()
+    :await executionQuery.eq("preview_deployment_id",deployment.id).maybeSingle();
+  const opportunity=executionContext.data?.opportunity_id?await db.from("seo_opportunities").select("target_url").eq("id",executionContext.data.opportunity_id).maybeSingle():{data:null},targetPath=opportunity.data?.target_url?new URL(opportunity.data.target_url,"https://hdseo.invalid").pathname:"/",providerMetadata=deployment.provider_metadata&&typeof deployment.provider_metadata==="object"?deployment.provider_metadata as Record<string,unknown>:{},configuredBase=deployment.environment==="production"&&typeof providerMetadata.validationBaseUrl==="string"?providerMetadata.validationBaseUrl:deployment.url,validationUrl=new URL(targetPath,configuredBase.startsWith("http")?configuredBase:`https://${configuredBase}`).toString();
   const previous=await db.from("deployments").select("id").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
   const baselineChecks=previous.data?await db.from("deployment_checks").select("check_type,score,details").eq("deployment_id",previous.data.id):{data:[]};
   const baseline=previous.data?deploymentSnapshotFromChecks(baselineChecks.data??[]):null;
   await db.from("deployments").update({status:"validating",updated_at:new Date().toISOString()}).eq("id",deployment.id);
   await setRun(job.automation_run_id,"running","deployment.validate");
-  const credentials=await loadVercelCredentials(project.connection_id,job.agency_id);
-  let bypass=await ensureVercelAutomationBypass({credentials,projectId:project.vercel_project_id,environmentConfig:project.environment_config});
-  if(bypass.created)await saveBypassConfig(db,project.id,job.agency_id,bypass.environmentConfig);
   const started=new Date().toISOString();
-  let checks=await validateDeploymentUrl(validationUrl,{protectionBypassSecret:bypass.secret,environment:deployment.environment});
-  if(protectionRedirect(checks)){
-    bypass=await ensureVercelAutomationBypass({credentials,projectId:project.vercel_project_id,environmentConfig:bypass.environmentConfig,forceRefresh:true});
-    await saveBypassConfig(db,project.id,job.agency_id,bypass.environmentConfig);
-    await addLog(deployment.id,"hdseo","warn","Vercel preview access expired; HD SEO rotated it and retried validation.",{reason:"protection_bypass_rotation"});
+  let checks:ValidationCheck[];
+  if(deployment.environment==="preview"){
+    const credentials=await loadVercelCredentials(project.connection_id,job.agency_id);
+    let bypass=await ensureVercelAutomationBypass({credentials,projectId:project.vercel_project_id,environmentConfig:project.environment_config});
+    if(bypass.created)await saveBypassConfig(db,project.id,job.agency_id,bypass.environmentConfig);
     checks=await validateDeploymentUrl(validationUrl,{protectionBypassSecret:bypass.secret,environment:deployment.environment});
-  }
-  if(transientPreviewFailure(checks)){
+    if(protectionRedirect(checks)){
+      bypass=await ensureVercelAutomationBypass({credentials,projectId:project.vercel_project_id,environmentConfig:bypass.environmentConfig,forceRefresh:true});
+      await saveBypassConfig(db,project.id,job.agency_id,bypass.environmentConfig);
+      await addLog(deployment.id,"hdseo","warn","Vercel preview access expired; HD SEO rotated it and retried validation.",{reason:"protection_bypass_rotation"});
+      checks=await validateDeploymentUrl(validationUrl,{protectionBypassSecret:bypass.secret,environment:deployment.environment});
+    }
+  }else checks=await validateDeploymentUrl(validationUrl,{environment:deployment.environment});
+  if(deployment.environment==="preview"&&transientPreviewFailure(checks)){
     const health=checks.find(check=>check.checkType==="health");
     await db.from("deployments").update({status:"ready",validation_summary:{retrying:true,reason:"temporary_preview_access",health:health?.details??{}},completed_at:null,updated_at:new Date().toISOString()}).eq("id",deployment.id);
     throw new ApiError("The preview is temporarily unavailable. HD SEO will retry automatically.",503,"PREVIEW_VALIDATION_RETRY");
@@ -139,16 +206,34 @@ async function validateDeployment(job:BackgroundJob){
   const current=deploymentSnapshotFromChecks(checks),drift=compareSeoDrift(baseline,current);
   checks.push({checkType:"drift",status:drift.status,required:drift.required,details:{baselineDeploymentId:previous.data?.id??null,findings:drift.findings,baseline:drift.baseline,current:drift.current}});
   for(const check of checks){const saved=await db.from("deployment_checks").upsert({deployment_id:deployment.id,check_type:check.checkType,status:check.status,required:check.required,score:check.score??null,details:check.details,started_at:started,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()},{onConflict:"deployment_id,check_type"});if(saved.error)throw new ApiError(`The ${check.checkType} validation result could not be persisted.`,500,"DATABASE_BINDING_FAILED");}
-  const failed=checks.filter(check=>check.required&&check.status==="failed"),summary={passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId:previous.data?.id??null,validationModelVersion:"preview-aware-v2",validatedUrl:validationUrl};
+  const failed=checks.filter(check=>check.required&&check.status==="failed"),summary={passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId:previous.data?.id??null,validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v1",validatedUrl:validationUrl};
   await db.from("deployments").update({status:failed.length?"failed":"healthy",validation_summary:summary,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",deployment.id);
   const client=await db.from("clients").select("organization_id,automation_config").eq("id",deployment.client_id).single(),run=job.automation_run_id?await db.from("automation_runs").select("seo_job_id").eq("id",job.automation_run_id).single():null,seoJob=run?.data?await db.from("seo_jobs").select("requested_by").eq("id",run.data.seo_job_id).single():null;
   const execution=executionContext;
   if(execution.data){
-    await db.from("seo_executions").update({status:failed.length?"preview_failed":"preview_ready",preview_url:deployment.url,preview_validated_at:new Date().toISOString(),validation_results:{...(execution.data.validation_results??{}),preview:{status:failed.length?"failed":"healthy",deploymentId:deployment.id,url:deployment.url,summary,checks}}}).eq("id",execution.data.id);
-    await reconcileCampaignForExecution(db,execution.data.id,execution.data.outcome_run_id,failed.length?"failed":"ready",failed.length?`The preview failed required checks: ${failed.map(item=>item.checkType).join(", ")}. Nothing was published.`:undefined);
-    if(!failed.length&&execution.data.outcome_run_id)await releaseAutopilotPreview(db,{executionId:execution.data.id,agencyId:deployment.agency_id,clientId:execution.data.client_organization_id,projectId:deployment.project_id});
-    const clientVisibleBody=failed.length?`The preview failed required checks: ${failed.map(item=>item.checkType).join(", ")}. Nothing was published.`:"The preview passed all required checks. Review the exact change and preview before authorizing the repository merge.";
-    await db.from("notifications").insert({agency_id:deployment.agency_id,client_organization_id:client.data?.organization_id??null,project_id:deployment.project_id,user_id:seoJob?.data?.requested_by??null,event_type:failed.length?"seo.preview_failed":"seo.preview_ready",title:failed.length?"SEO preview needs revision":"SEO preview ready for final review",body:clientVisibleBody,status:"sent",sent_at:new Date().toISOString(),client_visible:true,metadata:{executionId:execution.data.id,deploymentId:deployment.id,url:deployment.url,summary}});
+    const now=new Date().toISOString();
+    if(deployment.environment==="production"){
+      const failureMessage=`The production deployment failed required checks: ${failed.map(item=>item.checkType).join(", ")}. HD SEO kept the previous safe version available for rollback.`;
+      await db.from("seo_executions").update({status:failed.length?"production_failed":"production_deployed",production_commit_sha:deployment.git_sha,production_deployed_at:failed.length?null:now,validation_results:{...(execution.data.validation_results??{}),production:{status:failed.length?"failed":"healthy",deploymentId:deployment.id,url:validationUrl,summary,checks}},updated_at:now}).eq("id",execution.data.id);
+      if(failed.length){
+        await db.from("seo_campaign_jobs").update({status:"failed",error_code:"PRODUCTION_QA_FAILED",error_message:failureMessage,failed_at:now,updated_at:now}).contains("result",{executionId:execution.data.id});
+        if(execution.data.outcome_run_id)await db.from("outcome_loop_runs").update({status:"failed",failure_code:"PRODUCTION_QA_FAILED",failure_message:failureMessage,completed_at:now,updated_at:now}).eq("id",execution.data.outcome_run_id);
+      }else{
+        await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now,error_code:null,error_message:null,updated_at:now}).contains("result",{executionId:execution.data.id});
+        if(execution.data.outcome_run_id)await Promise.all([
+          db.from("outcome_loop_runs").update({status:"publishing",current_step:"publish",failure_code:null,failure_message:null,updated_at:now}).eq("id",execution.data.outcome_run_id),
+          db.from("outcome_loop_steps").update({status:"succeeded",completed_at:now,updated_at:now}).eq("run_id",execution.data.outcome_run_id).eq("step_key","publish"),
+        ]);
+        logEvent("production_deployed",{executionId:execution.data.id,agencyId:deployment.agency_id,projectId:deployment.project_id,status:"production_deployed",stage:"production_qa"});
+      }
+      await db.from("notifications").insert({agency_id:deployment.agency_id,client_organization_id:client.data?.organization_id??null,project_id:deployment.project_id,user_id:seoJob?.data?.requested_by??null,event_type:failed.length?"seo.production_failed":"seo.production_healthy",title:failed.length?"Production change needs rollback":"SEO change published safely",body:failed.length?failureMessage:"The approved change is live, passed production safety checks, and is now being monitored for rankings, traffic, leads, and value.",status:"sent",sent_at:now,client_visible:true,metadata:{executionId:execution.data.id,deploymentId:deployment.id,url:validationUrl,summary}});
+    }else{
+      await db.from("seo_executions").update({status:failed.length?"preview_failed":"preview_ready",preview_url:deployment.url,preview_validated_at:now,validation_results:{...(execution.data.validation_results??{}),preview:{status:failed.length?"failed":"healthy",deploymentId:deployment.id,url:deployment.url,summary,checks}}}).eq("id",execution.data.id);
+      await reconcileCampaignForExecution(db,execution.data.id,execution.data.outcome_run_id,failed.length?"failed":"ready",failed.length?`The preview failed required checks: ${failed.map(item=>item.checkType).join(", ")}. Nothing was published.`:undefined);
+      if(!failed.length&&execution.data.outcome_run_id)await releaseAutopilotPreview(db,{executionId:execution.data.id,agencyId:deployment.agency_id,clientId:execution.data.client_organization_id,projectId:deployment.project_id});
+      const clientVisibleBody=failed.length?`The preview failed required checks: ${failed.map(item=>item.checkType).join(", ")}. Nothing was published.`:"The preview passed all required checks. Autopilot will continue the unchanged approved work automatically.";
+      await db.from("notifications").insert({agency_id:deployment.agency_id,client_organization_id:client.data?.organization_id??null,project_id:deployment.project_id,user_id:seoJob?.data?.requested_by??null,event_type:failed.length?"seo.preview_failed":"seo.preview_ready",title:failed.length?"SEO preview needs revision":"SEO preview passed safety checks",body:clientVisibleBody,status:"sent",sent_at:now,client_visible:true,metadata:{executionId:execution.data.id,deploymentId:deployment.id,url:deployment.url,summary}});
+    }
   }
   await addLog(deployment.id,"hdseo",failed.length?"error":"info",failed.length?`Deployment validation failed: ${failed.map(item=>item.checkType).join(", ")}.`:"All required deployment validations passed.",summary);
   await setRun(job.automation_run_id,failed.length?"failed":"succeeded",failed.length?"deployment.validation_failed":"completed",failed.length?{code:"DEPLOYMENT_VALIDATION_FAILED",message:`Required checks failed: ${failed.map(item=>item.checkType).join(", ")}`} : undefined);
@@ -162,4 +247,4 @@ async function validateDeployment(job:BackgroundJob){
 async function rollbackDeployment(job:BackgroundJob){if(!job.deployment_id)throw new ApiError("Rollback job is incomplete.",500,"OPERATION_FAILED");const{db,deployment,project}=await deploymentContext(job.deployment_id),targetId=deployment.previous_deployment_id as string|null;if(!targetId)throw new ApiError("Rollback target is missing.",409,"CONFLICT");const safety=safetyMetadata(job,deployment);await claimStoredMutationIntent(db,{intentId:safety.mutationIntentId,agencyId:job.agency_id,projectId:deployment.project_id,toolKey:"vercel.rollback",expectedDigest:safety.actionDigest,executionRef:job.id});const target=await db.from("deployments").select("external_deployment_id,url").eq("id",targetId).single();if(!target.data?.external_deployment_id)throw new ApiError("Rollback target is not a Vercel production deployment.",409,"CONFLICT");await db.from("deployments").update({status:"rolling_back",started_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",deployment.id);await setRun(job.automation_run_id,"running","deployment.rollback");const credentials=await loadVercelCredentials(project.connection_id,job.agency_id);await rollbackVercelProject(credentials,project.vercel_project_id,target.data.external_deployment_id,`HD SEO rollback ${deployment.id}`);const saved=await db.from("deployments").update({status:"rolled_back",url:target.data.url,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",deployment.id);if(saved.error)throw new ApiError("Rollback completed at Vercel but its local record requires reconciliation.",503,"DATABASE_BINDING_FAILED");if(deployment.rollback_of_id)await db.from("deployments").update({status:"rolled_back",updated_at:new Date().toISOString()}).eq("id",deployment.rollback_of_id);await settleMutationIntent(db,{intentId:safety.mutationIntentId,executionRef:job.id,status:"succeeded"});await setRun(job.automation_run_id,"succeeded","completed");await addLog(deployment.id,"vercel","warn","Production traffic was rolled back to a prior healthy deployment.",{targetDeploymentId:targetId,targetProviderDeploymentId:target.data.external_deployment_id});}
 
 const handlers:Record<string,(job:BackgroundJob)=>Promise<void>>={"deployment.create":createDeployment,"deployment.poll":pollDeployment,"deployment.validate":validateDeployment,"deployment.rollback":rollbackDeployment};
-export async function processDeploymentBatch(size=env.AUTOMATION_JOB_BATCH_SIZE,workerId=`automation:${crypto.randomUUID()}`){const db=requireAdminDb(),reconciliation=await reconcilePreviewCampaigns(db),claimed=await db.rpc("claim_background_jobs",{p_worker_id:workerId,p_batch_size:size,p_lock_seconds:300,p_queue:"deployments"});if(claimed.error)throw new Error("Background jobs could not be claimed.");const jobs=(claimed.data??[]) as BackgroundJob[],results=[];for(const job of jobs){const handler=handlers[job.job_type];try{if(!handler)throw new ApiError(`Unknown background job type: ${job.job_type}`,500,"OPERATION_FAILED");if(!job.fencing_token)throw new ApiError("The claimed deployment job has no fencing token.",500,"INVALID_STATE");const lease=await db.rpc("extend_background_job_lease",{p_job_id:job.id,p_worker_id:workerId,p_fencing_token:job.fencing_token,p_lock_seconds:300});if(lease.error||!lease.data)throw new ApiError("The deployment worker lost its job lease.",409,"CONFLICT");await handler(job);const completed=await db.from("background_jobs").update({status:"succeeded",completed_at:new Date().toISOString(),worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,updated_at:new Date().toISOString()}).eq("id",job.id).eq("worker_id",workerId).eq("fencing_token",job.fencing_token).select("id").maybeSingle();if(!completed.data){results.push({jobId:job.id,status:"stale_worker"});continue;}results.push({jobId:job.id,status:"succeeded"});logEvent("automation_job_completed",{jobId:job.id,agencyId:job.agency_id,status:"succeeded",stage:job.job_type})}catch(error){const safe=safeError(error),retryable=(safe.status===429||safe.status>=500)&&job.attempt_count<job.max_attempts,delay=Math.min(900_000,15_000*2**Math.max(0,job.attempt_count-1))+Math.floor(Math.random()*5000),status=retryable?"retry_scheduled":job.attempt_count>=job.max_attempts?"dead_letter":"failed";await db.from("background_jobs").update({status,available_at:new Date(Date.now()+delay).toISOString(),last_error_code:safe.body.error.code,last_error_message:safe.body.error.message,worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,updated_at:new Date().toISOString()}).eq("id",job.id).eq("worker_id",workerId).eq("fencing_token",job.fencing_token);if(!retryable){if(safe.body.error.code!=="DATABASE_BINDING_FAILED")await failClaimedMutation(db,job,safe.body.error.code,safe.body.error.message);await setRun(job.automation_run_id,"failed",job.job_type,{code:safe.body.error.code,message:safe.body.error.message});if(job.job_type==="deployment.validate"&&job.deployment_id){const execution=await db.from("seo_executions").select("id,outcome_run_id").eq("preview_deployment_id",job.deployment_id).maybeSingle();if(execution.data)await reconcileCampaignForExecution(db,execution.data.id,execution.data.outcome_run_id,"failed",safe.body.error.message);}}results.push({jobId:job.id,status,error:safe.body.error});logEvent("automation_job_failed",{jobId:job.id,agencyId:job.agency_id,status,errorCode:safe.body.error.code,stage:job.job_type})}}return{reconciliation,claimed:jobs.length,results}}
+export async function processDeploymentBatch(size=env.AUTOMATION_JOB_BATCH_SIZE,workerId=`automation:${crypto.randomUUID()}`){const db=requireAdminDb(),reconciliation=await reconcilePreviewCampaigns(db),claimed=await db.rpc("claim_background_jobs",{p_worker_id:workerId,p_batch_size:size,p_lock_seconds:300,p_queue:"deployments"});if(claimed.error)throw new Error("Background jobs could not be claimed.");const jobs=(claimed.data??[]) as BackgroundJob[],results=[];for(const job of jobs){const handler=handlers[job.job_type];try{if(!handler)throw new ApiError(`Unknown background job type: ${job.job_type}`,500,"OPERATION_FAILED");if(!job.fencing_token)throw new ApiError("The claimed deployment job has no fencing token.",500,"INVALID_STATE");const lease=await db.rpc("extend_background_job_lease",{p_job_id:job.id,p_worker_id:workerId,p_fencing_token:job.fencing_token,p_lock_seconds:300});if(lease.error||!lease.data)throw new ApiError("The deployment worker lost its job lease.",409,"CONFLICT");await handler(job);const completed=await db.from("background_jobs").update({status:"succeeded",completed_at:new Date().toISOString(),worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,updated_at:new Date().toISOString()}).eq("id",job.id).eq("worker_id",workerId).eq("fencing_token",job.fencing_token).select("id").maybeSingle();if(!completed.data){results.push({jobId:job.id,status:"stale_worker"});continue;}results.push({jobId:job.id,status:"succeeded"});logEvent("automation_job_completed",{jobId:job.id,agencyId:job.agency_id,status:"succeeded",stage:job.job_type})}catch(error){const safe=safeError(error),retryable=(safe.status===429||safe.status>=500)&&job.attempt_count<job.max_attempts,delay=Math.min(900_000,15_000*2**Math.max(0,job.attempt_count-1))+Math.floor(Math.random()*5000),status=retryable?"retry_scheduled":job.attempt_count>=job.max_attempts?"dead_letter":"failed";await db.from("background_jobs").update({status,available_at:new Date(Date.now()+delay).toISOString(),last_error_code:safe.body.error.code,last_error_message:safe.body.error.message,worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,updated_at:new Date().toISOString()}).eq("id",job.id).eq("worker_id",workerId).eq("fencing_token",job.fencing_token);if(!retryable){if(safe.body.error.code!=="DATABASE_BINDING_FAILED")await failClaimedMutation(db,job,safe.body.error.code,safe.body.error.message);await setRun(job.automation_run_id,"failed",job.job_type,{code:safe.body.error.code,message:safe.body.error.message});if(job.job_type==="deployment.validate"&&job.deployment_id){const deployment=await db.from("deployments").select("environment,git_sha").eq("id",job.deployment_id).maybeSingle(),execution=deployment.data?.environment==="production"&&deployment.data.git_sha?await db.from("seo_executions").select("id,outcome_run_id").eq("merge_commit_sha",deployment.data.git_sha).maybeSingle():await db.from("seo_executions").select("id,outcome_run_id").eq("preview_deployment_id",job.deployment_id).maybeSingle();if(execution.data){if(deployment.data?.environment==="production"){const now=new Date().toISOString();await db.from("seo_campaign_jobs").update({status:"failed",error_code:safe.body.error.code,error_message:safe.body.error.message,failed_at:now,updated_at:now}).contains("result",{executionId:execution.data.id});if(execution.data.outcome_run_id)await db.from("outcome_loop_runs").update({status:"failed",failure_code:safe.body.error.code,failure_message:safe.body.error.message,completed_at:now,updated_at:now}).eq("id",execution.data.outcome_run_id);}else await reconcileCampaignForExecution(db,execution.data.id,execution.data.outcome_run_id,"failed",safe.body.error.message);}}}results.push({jobId:job.id,status,error:safe.body.error});logEvent("automation_job_failed",{jobId:job.id,agencyId:job.agency_id,status,errorCode:safe.body.error.code,stage:job.job_type})}}return{reconciliation,claimed:jobs.length,results}}
