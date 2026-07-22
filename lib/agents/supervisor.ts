@@ -141,14 +141,27 @@ async function pendingEvidenceJobs(db:SupabaseClient,work:WorkItem){
 
 async function finish(db:SupabaseClient,work:WorkItem,outcome:Record<string,unknown>,validation:Record<string,unknown>={status:"passed"}){
   const completed=now();
+  const completedSteps=await db.from("agent_work_steps").update({status:"succeeded",completed_at:completed,output:outcome,validation,updated_at:completed}).eq("work_item_id",work.id).in("status",["ready","running"]);
+  if(completedSteps.error)throw new ApiError("The completed agent steps could not be recorded.",500,"DATABASE_BINDING_FAILED");
+  const skippedSteps=await db.from("agent_work_steps").update({status:"skipped",completed_at:completed,output:{reason:"This step was not executed by the completed domain operation."},updated_at:completed}).eq("work_item_id",work.id).in("status",["waiting","pending"]);
+  if(skippedSteps.error)throw new ApiError("The unused agent steps could not be closed safely.",500,"DATABASE_BINDING_FAILED");
+  const completedWork=await db.from("agent_work_items").update({status:"succeeded",validation_results:validation,final_outcome:outcome,completed_at:completed,updated_at:completed}).eq("id",work.id);
+  if(completedWork.error)throw new ApiError("The completed agent work could not be recorded.",500,"DATABASE_BINDING_FAILED");
+  if(work.source_type==="outcome_loop"&&work.work_type==="reporting.summary"&&work.source_id){
+    const completedReport=await db.from("outcome_loop_steps").update({
+      status:"succeeded",work_item_id:work.id,output:outcome,validation,
+      completed_at:completed,updated_at:completed,
+    }).eq("run_id",work.source_id).eq("agency_id",work.agency_id)
+      .eq("project_id",work.project_id).eq("step_key","report");
+    if(completedReport.error)throw new ApiError("The completed customer report could not be reflected in Autopilot progress.",500,"DATABASE_BINDING_FAILED");
+  }
   if(work.source_type==="outcome_loop"||work.source_type==="outcome_loop_delivery"){
     const client=await db.from("clients").select("organization_id").eq("id",work.client_id).eq("agency_id",work.agency_id).maybeSingle();
     if(client.error||!client.data?.organization_id)throw new ApiError("The completed Autopilot work could not be bound to its client organization.",500,"DATABASE_BINDING_FAILED");
+    // Wake only after the specialist and customer-visible progress are durable,
+    // so the next scheduler pass never observes a half-completed handoff.
     await wakeManagedAgentService(db,{agencyId:work.agency_id,clientId:client.data.organization_id,projectId:work.project_id,reason:"specialist_completed"});
   }
-  await db.from("agent_work_steps").update({status:"succeeded",completed_at:completed,output:outcome,validation,updated_at:completed}).eq("work_item_id",work.id).in("status",["ready","running"]);
-  await db.from("agent_work_steps").update({status:"skipped",completed_at:completed,output:{reason:"This step was not executed by the completed domain operation."},updated_at:completed}).eq("work_item_id",work.id).in("status",["waiting","pending"]);
-  await db.from("agent_work_items").update({status:"succeeded",validation_results:validation,final_outcome:outcome,completed_at:completed,updated_at:completed}).eq("id",work.id);
   await memory(db,work,`${work.work_type}:latest`,"outcome",outcome,[{workItemId:work.id}]);
   await event(db,work,"work.succeeded",`${work.assigned_agent_key.replaceAll("_"," ")} completed its work`,typeof outcome.summary==="string"?outcome.summary:work.goal);
 }
