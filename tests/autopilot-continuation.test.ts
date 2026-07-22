@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import {healthyProductionOutcomeState,healthyProductionStepKeys} from "../lib/automation/outcome-state";
 
 const read = (path: string) => readFileSync(path, "utf8");
 
@@ -140,6 +141,24 @@ describe("Autopilot event-driven continuation", () => {
     const webhook = read("app/api/vercel/webhook/route.ts");
     expect(webhook).toContain("production_deployment_ready_for_qa");
     expect(webhook).not.toContain('if(ready&&environment==="production"&&execution.data.merge_commit_sha===commitSha){\n          requireWebhookMutation(await db.from("seo_executions").update({status:"production_deployed"');
+  });
+
+  it("self-heals every outcome ledger after healthy production QA", () => {
+    const reconciliation=read("lib/automation/outcome-reconciliation.ts");
+    const worker=read("lib/automation/worker.ts");
+    const state=healthyProductionOutcomeState({executionId:"execution-1",deploymentId:"deployment-1",now:"2026-07-22T12:00:00.000Z"});
+    expect(healthyProductionStepKeys).toEqual(["implementation","preview","qa","publish"]);
+    expect(state.run).toMatchObject({status:"monitoring",current_step:"monitor",failure_code:null,execution_id:"execution-1",deployment_id:"deployment-1"});
+    expect(state.cycle).toMatchObject({status:"monitoring",stage:"monitor",failure_code:null,execution_id:"execution-1",deployment_id:"deployment-1"});
+    expect(state.completedStep.status).toBe("succeeded");
+    expect(state.monitorStep.status).toBe("running");
+    expect(reconciliation).toContain("reconcileRecentHealthyProductionOutcomes");
+    expect(reconciliation).toContain('eq("status","production_deployed")');
+    expect(reconciliation).toContain('eq("environment","production").eq("status","healthy")');
+    expect(reconciliation).toContain('db.from("agent_service_cycles").update(state.cycle)');
+    expect(reconciliation).toContain('db.from("outcome_loop_steps").update(state.completedStep)');
+    expect(worker).toContain("const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db)");
+    expect(worker).toContain("reconcileHealthyProductionOutcome(db,{outcomeRunId:execution.data.outcome_run_id");
   });
 
   it("isolates deployment, agent, and provider worker failures", () => {

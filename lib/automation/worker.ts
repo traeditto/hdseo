@@ -11,6 +11,7 @@ import {claimStoredMutationIntent,requestMutationIntent,settleMutationIntent,typ
 import {releaseAutopilotPreview} from "@/lib/execution/autopilot-release";
 import {previewContinuationJobIsActive,type PreviewContinuationJobState} from "./job-state";
 import {isGeneratedVercelHostname,productionValidationCandidates,verifiedProviderHostnames,type ProductionValidationCandidate,type ProviderDomain} from "./validation-target";
+import {reconcileHealthyProductionOutcome,reconcileRecentHealthyProductionOutcomes} from "./outcome-reconciliation";
 
 interface BackgroundJob{id:string;job_type:string;agency_id:string;automation_run_id:string|null;deployment_id:string|null;payload:Record<string,unknown>;attempt_count:number;max_attempts:number;fencing_token:string|null}
 type SafetyMetadata={mutationIntentId:string;actionDigest:string;traceId?:string;approvalPolicy?:string};
@@ -120,6 +121,7 @@ async function reconcileCampaignForExecution(db:ReturnType<typeof requireAdminDb
 
 async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminDb>){
   const recovered=await recoverProtectedProductionValidations(db);
+  const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db);
   const waitingCampaigns=await db.from("seo_campaign_jobs").select("id,agency_id,client_organization_id,project_id,outcome_run_id,result,status,current_stage").eq("status","awaiting_deployment").order("updated_at",{ascending:true}).limit(20);
   if(waitingCampaigns.error)throw new ApiError("Production deployment reconciliation could not read the waiting campaign queue.",500,"DATABASE_BINDING_FAILED");
   const waitingExecutionIds=[...new Set((waitingCampaigns.data??[]).map(campaign=>campaign.result&&typeof campaign.result==="object"?(campaign.result as Record<string,unknown>).executionId:null).filter((id):id is string=>typeof id==="string"&&Boolean(id)))];
@@ -174,6 +176,7 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
             db.from("seo_executions").update({status:"production_deployed",production_commit_sha:execution.merge_commit_sha,production_deployed_at:now,updated_at:now}).eq("id",execution.id),
             db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now,error_code:null,error_message:null,updated_at:now}).contains("result",{executionId:execution.id}),
           ]);
+          if(execution.outcome_run_id)await reconcileHealthyProductionOutcome(db,{outcomeRunId:execution.outcome_run_id,executionId:execution.id,deploymentId:existing.data.id});
           logEvent("production_deployment_state_repaired",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"production_deployed",stage:"schedule_monitoring"});
         }
         if(existing.data.status==="ready"){
@@ -198,7 +201,7 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
       logEvent("production_deployment_reconciliation_failed",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"deferred",errorCode:safe.body.error.code,stage:"production_poll"});
     }
   }
-  return{recovered,detected,queued,errors};
+  return{recovered,healthyOutcomes,detected,queued,errors};
 }
 
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
@@ -358,10 +361,7 @@ async function validateDeployment(job:BackgroundJob){
         if(execution.data.outcome_run_id)await db.from("outcome_loop_runs").update({status:"failed",failure_code:"PRODUCTION_QA_FAILED",failure_message:failureMessage,completed_at:now,updated_at:now}).eq("id",execution.data.outcome_run_id);
       }else{
         await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now,error_code:null,error_message:null,updated_at:now}).contains("result",{executionId:execution.data.id});
-        if(execution.data.outcome_run_id)await Promise.all([
-          db.from("outcome_loop_runs").update({status:"publishing",current_step:"publish",failure_code:null,failure_message:null,updated_at:now}).eq("id",execution.data.outcome_run_id),
-          db.from("outcome_loop_steps").update({status:"succeeded",completed_at:now,updated_at:now}).eq("run_id",execution.data.outcome_run_id).eq("step_key","publish"),
-        ]);
+        if(execution.data.outcome_run_id)await reconcileHealthyProductionOutcome(db,{outcomeRunId:execution.data.outcome_run_id,executionId:execution.data.id,deploymentId:deployment.id});
         logEvent("production_deployed",{executionId:execution.data.id,agencyId:deployment.agency_id,projectId:deployment.project_id,status:"production_deployed",stage:"production_qa"});
       }
       await db.from("notifications").insert({agency_id:deployment.agency_id,client_organization_id:client.data?.organization_id??null,project_id:deployment.project_id,user_id:seoJob?.data?.requested_by??null,event_type:failed.length?"seo.production_failed":"seo.production_healthy",title:failed.length?"Production change needs rollback":"SEO change published safely",body:failed.length?failureMessage:"The approved change is live, passed production safety checks, and is now being monitored for rankings, traffic, leads, and value.",status:"sent",sent_at:now,client_visible:true,metadata:{executionId:execution.data.id,deploymentId:deployment.id,url:validationUrl,summary}});
