@@ -89,6 +89,9 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain('status:"awaiting_release_approval"');
     expect(worker).toContain("reconcileCampaignForExecution");
     expect(worker).toContain('job.job_type==="deployment.validate"');
+    expect(worker).toContain('validationModelVersion:"preview-aware-v2"');
+    expect(worker).toContain("preview_indexing_policy_upgrade");
+    expect(worker).toContain("validationUrl");
   });
 
   it("continues the exact approved package instead of reapplying the discovery threshold", () => {
