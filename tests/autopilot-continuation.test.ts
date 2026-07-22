@@ -143,6 +143,16 @@ describe("Autopilot event-driven continuation", () => {
     expect(webhook).not.toContain('if(ready&&environment==="production"&&execution.data.merge_commit_sha===commitSha){\n          requireWebhookMutation(await db.from("seo_executions").update({status:"production_deployed"');
   });
 
+  it("runs the continuation watchdog every minute and reconciles before claiming new work", () => {
+    const vercel = JSON.parse(read("vercel.json")) as { crons: Array<{ path: string; schedule: string }> };
+    const worker = read("lib/automation/worker.ts");
+    const automation = vercel.crons.find((cron) => cron.path === "/api/cron/automation");
+    expect(automation?.schedule).toBe("* * * * *");
+    expect(worker).toContain("const db=requireAdminDb(),reconciliation=await reconcilePreviewCampaigns(db),claimed=");
+    expect(worker).toContain("const recovered=await recoverProtectedProductionValidations(db)");
+    expect(worker).toContain("const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db)");
+  });
+
   it("self-heals every outcome ledger after healthy production QA", () => {
     const reconciliation=read("lib/automation/outcome-reconciliation.ts");
     const worker=read("lib/automation/worker.ts");
