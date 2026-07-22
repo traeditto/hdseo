@@ -5,7 +5,7 @@ import { ApiError } from "@/lib/api/errors";
 import { decryptSecret,encryptSecret } from "@/lib/security/encryption";
 import { refreshGoogleCredentials,type GoogleCredentials } from "./search-console";
 
-export type GoogleConnection={id:string;agency_id:string;client_organization_id:string;project_id:string;selected_resource:string|null;encrypted_secret_reference:string|null;status:string;last_synced_at:string|null;metadata:Record<string,unknown>};
+export type GoogleConnection={id:string;agency_id:string;client_organization_id:string;project_id:string;selected_resource:string|null;encrypted_secret_reference:string|null;status:string;last_synced_at:string|null;last_sync_attempt_at?:string|null;next_sync_at?:string|null;consecutive_sync_failures?:number;last_sync_error_code?:string|null;metadata:Record<string,unknown>};
 
 export async function loadGoogleConnection(db:SupabaseClient,input:{connectionId?:string;agencyId:string;clientId:string;projectId:string}){
   let query=db.from("integration_connections").select("id,agency_id,client_organization_id,project_id,selected_resource,encrypted_secret_reference,status,last_synced_at,metadata").eq("provider","google_search_console").eq("agency_id",input.agencyId).eq("client_organization_id",input.clientId).eq("project_id",input.projectId);
