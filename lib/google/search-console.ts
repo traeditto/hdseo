@@ -33,6 +33,7 @@ export function googleAuthorizationUrl(state:string,options?:{scopes?:string[];r
 async function parsedResponse<T>(response:Response,code:"GOOGLE_OAUTH_FAILED"|"GOOGLE_API_FAILED"){
   const body=await response.json().catch(()=>null) as T&{error?:unknown;error_description?:string}|null;
   if(!response.ok){
+    if(response.status===429)throw new ApiError("Google quota is temporarily limited. HD SEO will retry automatically after the quota window clears.",503,"RATE_LIMITED");
     const retryable=response.status===429||response.status>=500;
     throw new ApiError(retryable?"Google is temporarily unavailable. The evidence job will retry.":code==="GOOGLE_OAUTH_FAILED"?"Google authorization could not be completed.":"Google Search Console rejected the request.",retryable?503:response.status===401?401:502,code);
   }
@@ -66,7 +67,7 @@ export async function googleFetch<T>(url:string,accessToken:string,init:RequestI
     let response:Response;
     try{response=await fetch(url,{...init,headers:{accept:"application/json",authorization:`Bearer ${accessToken}`,...init.headers},cache:"no-store"});}
     catch{if(attempt<2)continue;throw new ApiError("Google Search Console could not be reached.",503,"GOOGLE_API_FAILED");}
-    if((response.status===429||response.status>=500)&&attempt<2)continue;
+    if(response.status>=500&&attempt<2)continue;
     return parsedResponse<T>(response,"GOOGLE_API_FAILED");
   }
   throw new ApiError("Google Search Console could not be reached.",503,"GOOGLE_API_FAILED");
