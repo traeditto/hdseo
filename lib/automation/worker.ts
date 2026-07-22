@@ -62,20 +62,13 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
   let detected=0,queued=0;const errors:Array<{executionId:string;code:string;message:string}>=[];
   for(const execution of pending.data??[]){
     try{
-      const [client,connection]=await Promise.all([
-        db.from("clients").select("id").eq("agency_id",execution.agency_id).eq("organization_id",execution.client_organization_id).maybeSingle(),
-        execution.repository_connection_id?db.from("repository_connections").select("repository_owner,repository_name,default_branch").eq("id",execution.repository_connection_id).eq("project_id",execution.project_id).maybeSingle():Promise.resolve({data:null,error:null}),
-      ]);
-      if(!client.data||!connection.data)continue;
-      const repository=await db.from("repositories").select("id").eq("agency_id",execution.agency_id).eq("client_id",client.data.id).eq("project_id",execution.project_id).eq("owner",connection.data.repository_owner).eq("name",connection.data.repository_name).eq("status","active").maybeSingle();
-      if(!repository.data)continue;
-      const vercelProject=await db.from("vercel_projects").select("id,connection_id,vercel_project_id,production_branch,production_domains").eq("agency_id",execution.agency_id).eq("client_id",client.data.id).eq("project_id",execution.project_id).eq("repository_id",repository.data.id).eq("status","active").limit(1).maybeSingle();
-      if(!vercelProject.data)continue;
+      const vercelProject=await db.from("vercel_projects").select("id,client_id,repository_id,connection_id,vercel_project_id,production_branch,production_domains").eq("agency_id",execution.agency_id).eq("project_id",execution.project_id).eq("status","active").not("repository_id","is",null).order("updated_at",{ascending:false}).limit(1).maybeSingle();
+      if(!vercelProject.data){logEvent("production_deployment_reconciliation_waiting",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"waiting",stage:"vercel_project_mapping"});continue;}
       const credentials=await loadVercelCredentials(vercelProject.data.connection_id,execution.agency_id),provider=await listVercelDeployments(credentials,{projectId:vercelProject.data.vercel_project_id,target:"production",limit:20,since:execution.merged_at?new Date(execution.merged_at).getTime()-300_000:undefined}),matched=provider.deployments.find(item=>{
         const sha=item.meta?.githubCommitSha??item.meta?.gitCommitSha;
         return sha===execution.merge_commit_sha&&(item.target??"production")==="production";
       });
-      if(!matched)continue;
+      if(!matched){logEvent("production_deployment_reconciliation_waiting",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"waiting",stage:"provider_deployment_match"});continue;}
       const state=(matched.readyState??"").toUpperCase();
       if(state==="ERROR"||state==="CANCELED"){
         const now=new Date().toISOString(),message="Vercel reported that the production deployment failed. The previous live version remains protected.";
@@ -101,7 +94,7 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
         continue;
       }
       const productionDomain=Array.isArray(vercelProject.data.production_domains)?vercelProject.data.production_domains.find((domain:string)=>Boolean(domain)):null,now=new Date().toISOString(),created=await db.from("deployments").insert({
-        agency_id:execution.agency_id,client_id:client.data.id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:repository.data.id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??connection.data.default_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:productionDomain?`https://${productionDomain}`:null},started_at:matched.createdAt?new Date(matched.createdAt).toISOString():now,ready_at:matched.ready?new Date(matched.ready).toISOString():now,updated_at:now,
+        agency_id:execution.agency_id,client_id:vercelProject.data.client_id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:vercelProject.data.repository_id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:productionDomain?`https://${productionDomain}`:null},started_at:matched.createdAt?new Date(matched.createdAt).toISOString():now,ready_at:matched.ready?new Date(matched.ready).toISOString():now,updated_at:now,
       }).select("id").single();
       if(created.error||!created.data)throw new ApiError("The detected production deployment could not be recorded.",500,"DATABASE_BINDING_FAILED");
       const job=await db.from("background_jobs").upsert({queue:"deployments",job_type:"deployment.validate",agency_id:execution.agency_id,deployment_id:created.data.id,payload:{source:"production_poll",executionId:execution.id},status:"queued",priority:90,idempotency_key:`deployment.validate:${created.data.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});
