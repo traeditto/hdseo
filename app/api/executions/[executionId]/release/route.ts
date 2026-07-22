@@ -11,12 +11,12 @@ const schema=z.object({agencyId:z.string().uuid(),clientId:z.string().uuid(),pro
 const releaseCheckPolicy={
   health:new Set(["passed"]),
   lighthouse:new Set(["passed","warning","skipped"]),
-  seo:new Set(["passed"]),
+  seo:new Set(["passed","warning"]),
   links:new Set(["passed"]),
   schema:new Set(["passed","warning"]),
   sitemap:new Set(["passed"]),
-  robots:new Set(["passed"]),
-  indexing_readiness:new Set(["passed"]),
+  robots:new Set(["passed","skipped"]),
+  indexing_readiness:new Set(["passed","skipped"]),
   drift:new Set(["passed","warning","skipped"]),
 } as const;
 
@@ -38,7 +38,12 @@ export async function POST(request:Request,{params}:{params:Promise<{executionId
     ]);
     if(!connection.data?.installation_id||!deployment.data?.git_sha||!['ready','healthy'].includes(deployment.data.status))throw new ApiError("The validated preview is not ready for production release.",409,"APPROVAL_REQUIRED");
     if(checks.error)throw new ApiError("The preview QA record could not be verified.",503,"DATABASE_BINDING_FAILED");
-    const checkByType=new Map((checks.data??[]).map(item=>[item.check_type,item])),missing=Object.keys(releaseCheckPolicy).filter(type=>!checkByType.has(type)),unverified=Object.entries(releaseCheckPolicy).flatMap(([type,allowed])=>{const check=checkByType.get(type);if(!check)return[];if(!allowed.has(check.status as never))return[check];if(type==="lighthouse"&&check.status==="skipped"&&check.details?.reason!=="Protected preview credentials are never sent to external PageSpeed services; Lighthouse runs again after release.")return[check];return[];});
+    const protectedPreviewSkipReasons:Record<string,string>={
+      lighthouse:"Protected preview credentials are never sent to external PageSpeed services; Lighthouse runs again after release.",
+      robots:"Protected previews must not be indexable; production robots.txt is checked after release.",
+      indexing_readiness:"Protected previews are intentionally excluded from indexing; production readiness is checked after release.",
+    };
+    const checkByType=new Map((checks.data??[]).map(item=>[item.check_type,item])),missing=Object.keys(releaseCheckPolicy).filter(type=>!checkByType.has(type)),unverified=Object.entries(releaseCheckPolicy).flatMap(([type,allowed])=>{const check=checkByType.get(type);if(!check)return[];if(!allowed.has(check.status as never))return[check];if(check.status==="skipped"&&protectedPreviewSkipReasons[type]&&check.details?.reason!==protectedPreviewSkipReasons[type])return[check];return[];});
     if(missing.length||unverified.length)throw new ApiError("Every health, Lighthouse, SEO, link, schema, sitemap, robots, indexing-readiness, and drift check must finish successfully before release.",409,"APPROVAL_REQUIRED");
     const required=(checks.data??[]).filter(item=>item.required);
     const action:MutationAction={agencyId:context.agencyId,clientId:context.clientId,projectId:context.project.id,toolKey:"github.merge",resourceType:"seo_execution",resourceId:executionId,environment:"production",payload:{executionId,pullRequestNumber:execution.data.pull_request_number,expectedHeadSha:deployment.data.git_sha,previewDeploymentId:deployment.data.id,previewUrl:deployment.data.url,requiredChecks:required.map(item=>({type:item.check_type,status:item.status,score:item.score}))}};

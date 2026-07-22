@@ -94,6 +94,19 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("validationUrl");
   });
 
+  it("uses one exact-change approval for the unchanged QA-passed Autopilot release", () => {
+    const release = read("lib/execution/autopilot-release.ts");
+    const worker = read("lib/automation/worker.ts");
+    const service = read("lib/agent-service/service.ts");
+    expect(release).toContain("repositoryApproval.approvedBy");
+    expect(release).toContain("repositoryWrite.commitSha!==deployment.data.git_sha");
+    expect(release).toContain('approvalPolicy:"client_package"');
+    expect(release).toContain("mergeApprovedPullRequest");
+    expect(release).toContain('status:"awaiting_deployment"');
+    expect(worker).toContain("releaseAutopilotPreview");
+    expect(service).toContain("filter(item=>!item.outcome_run_id)");
+  });
+
   it("continues the exact approved package instead of reapplying the discovery threshold", () => {
     const scheduler = read("lib/agent-service/scheduler.ts");
     const store = read("lib/live/store.ts");
