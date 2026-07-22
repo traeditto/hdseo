@@ -59,7 +59,7 @@ async function reconcileCampaignForExecution(db:ReturnType<typeof requireAdminDb
 
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
   const failedHealth=await db.from("deployment_checks").select("deployment_id,details,updated_at").eq("check_type","health").eq("status","failed").order("updated_at",{ascending:false}).limit(20);
-  let recovered=0,advanced=0;
+  let recovered=0,advanced=0,autopilotReleased=0;const releaseErrors:Array<{executionId:string;code:string;message:string}>=[];
   for(const health of failedHealth.data??[]){
     const details=health.details as Record<string,unknown>|null;
     if(details?.error!=="Protected preview redirected outside its verified origin."&&details?.reason!=="vercel_deployment_protection")continue;
@@ -83,7 +83,7 @@ async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
     if(campaigns.data?.length){await reconcileCampaignForExecution(db,execution.id,execution.outcome_run_id,"ready");advanced+=campaigns.data.length;}
     if(execution.outcome_run_id){
       const details=await db.from("seo_executions").select("agency_id,client_organization_id,project_id").eq("id",execution.id).maybeSingle();
-      if(details.data)await releaseAutopilotPreview(db,{executionId:execution.id,agencyId:details.data.agency_id,clientId:details.data.client_organization_id,projectId:details.data.project_id});
+      if(details.data)try{const released=await releaseAutopilotPreview(db,{executionId:execution.id,agencyId:details.data.agency_id,clientId:details.data.client_organization_id,projectId:details.data.project_id});if(released.released)autopilotReleased++;}catch(error){const safe=safeError(error);releaseErrors.push({executionId:execution.id,code:safe.body.error.code,message:safe.body.error.message});logEvent("autopilot_release_reconciliation_failed",{executionId:execution.id,agencyId:details.data.agency_id,projectId:details.data.project_id,status:"deferred",errorCode:safe.body.error.code,stage:"release_preview"});}
     }
   }
   const legacyPolicyFailures=await db.from("deployments").select("id,validation_summary").eq("environment","preview").eq("status","failed").order("updated_at",{ascending:false}).limit(20);
@@ -103,7 +103,7 @@ async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
     ]);
     policyRecovered+=1;
   }
-  return{recovered,policyRecovered,advanced};
+  return{recovered,policyRecovered,advanced,autopilotReleased,releaseErrors};
 }
 
 async function createDeployment(job:BackgroundJob){if(!job.deployment_id)throw new ApiError("Deployment job is incomplete.",500,"OPERATION_FAILED");const{db,deployment,project,repository}=await deploymentContext(job.deployment_id);if(!repository)throw new ApiError("Repository record not found.",404,"NOT_FOUND");const safety=safetyMetadata(job,deployment);await claimStoredMutationIntent(db,{intentId:safety.mutationIntentId,agencyId:job.agency_id,projectId:deployment.project_id,toolKey:"vercel.deploy",expectedDigest:safety.actionDigest,executionRef:job.id});const credentials=await loadVercelCredentials(project.connection_id,job.agency_id),now=new Date().toISOString();await db.from("deployments").update({status:"creating",started_at:now,updated_at:now}).eq("id",deployment.id);await setRun(job.automation_run_id,"running","deployment.create");const created=await createVercelDeployment(credentials,{projectId:project.vercel_project_id,projectName:project.name,repositoryId:String(repository.github_repository_id),ref:deployment.git_ref,sha:deployment.git_sha??undefined,environment:deployment.environment,metadata:{hdSeoDeploymentId:deployment.id,hdSeoRunId:job.automation_run_id??"",githubCommitSha:deployment.git_sha??"",projectId:project.vercel_project_id,hdSeoMutationIntentId:safety.mutationIntentId,hdSeoActionDigest:safety.actionDigest}});const saved=await db.from("deployments").update({external_deployment_id:created.id,url:created.url,status:created.readyState==="READY"?"ready":"building",provider_metadata:{...created,safety},updated_at:new Date().toISOString()}).eq("id",deployment.id);if(saved.error)throw new ApiError("The Vercel deployment succeeded but reconciliation must complete before retrying.",503,"DATABASE_BINDING_FAILED");await settleMutationIntent(db,{intentId:safety.mutationIntentId,executionRef:job.id,status:"succeeded"});await addLog(deployment.id,"vercel","info","Vercel deployment created.",{providerDeploymentId:created.id,url:created.url});await db.from("background_jobs").upsert({queue:"deployments",job_type:created.readyState==="READY"?"deployment.validate":"deployment.poll",agency_id:job.agency_id,automation_run_id:job.automation_run_id,deployment_id:deployment.id,payload:{},status:"queued",priority:created.readyState==="READY"?80:60,available_at:new Date(Date.now()+(created.readyState==="READY"?0:20_000)).toISOString(),idempotency_key:`${created.readyState==="READY"?"deployment.validate":"deployment.poll"}:${deployment.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});}

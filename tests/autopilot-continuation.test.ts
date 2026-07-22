@@ -99,12 +99,21 @@ describe("Autopilot event-driven continuation", () => {
     const worker = read("lib/automation/worker.ts");
     const service = read("lib/agent-service/service.ts");
     expect(release).toContain("repositoryApproval.approvedBy");
+    expect(release).toContain("repository_mutation_intent_id");
+    expect(release).toContain("approvalIntent.data?.approved_by");
     expect(release).toContain("repositoryWrite.commitSha!==deployment.data.git_sha");
     expect(release).toContain('approvalPolicy:"client_package"');
     expect(release).toContain("mergeApprovedPullRequest");
     expect(release).toContain('status:"awaiting_deployment"');
     expect(worker).toContain("releaseAutopilotPreview");
+    expect(worker).toContain("autopilot_release_reconciliation_failed");
     expect(service).toContain("filter(item=>!item.outcome_run_id)");
+  });
+
+  it("isolates deployment, agent, and provider worker failures", () => {
+    const cron = read("app/api/cron/automation/route.ts");
+    expect(cron).toContain("Promise.allSettled");
+    expect(cron).toContain('status:failures.length?207:200');
   });
 
   it("continues the exact approved package instead of reapplying the discovery threshold", () => {
