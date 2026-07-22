@@ -376,6 +376,26 @@ export async function GET(request: Request) {
     const verifiedPhotos = verifiedAssets.filter(
       (asset) => asset.proof_type === "photo" || text(asset.mime_type).startsWith("image/"),
     );
+    const latestProgressAt = [
+      pkg.updated_at,
+      run?.updated_at,
+      cycle?.updated_at,
+      execution?.updated_at,
+      deployment?.completed_at,
+      deployment?.created_at,
+      verification?.updated_at,
+      ...steps.map((step) => step.updated_at),
+    ]
+      .filter((value): value is string => typeof value === "string" && Boolean(value))
+      .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+    const approvalNeeded = Boolean(
+      !verified &&
+        !blocked &&
+        (run?.status === "awaiting_approval" || (!approvalRecorded && !implementationStarted)),
+    );
+    const continuesAutomatically = Boolean(
+      !verified && !blocked && !approvalNeeded && (implementationStarted || published),
+    );
 
     return Response.json({
       ok: true,
@@ -468,6 +488,19 @@ export async function GET(request: Request) {
                   : approvalRecorded
                     ? "Approval is recorded and tied to this exact package. HD SEO is claiming the protected implementation job; nothing has been claimed as published yet."
                     : "Review the proposed change before HD SEO continues.",
+        },
+        automation: {
+          continuesAutomatically,
+          approvalNeeded,
+          lastProgressAt: latestProgressAt,
+          workerCadenceMinutes: continuesAutomatically ? 1 : null,
+          message: continuesAutomatically
+            ? "No action is needed. You can close this screen; the protected worker is scheduled every minute and this receipt refreshes automatically."
+            : approvalNeeded
+              ? "A plain-language decision is waiting in Approvals. HD SEO will continue automatically after that decision."
+              : blocked
+                ? "Automatic work is paused safely. The exact requirement is shown above; nothing will publish or be charged while it is blocked."
+                : "This work is complete and its evidence remains available here.",
         },
         timeline,
         steps: steps.map((step) => ({

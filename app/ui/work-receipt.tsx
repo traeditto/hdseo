@@ -49,6 +49,13 @@ type Receipt = {
     pickupTarget: string | null;
     nextAction: string;
   };
+  automation: {
+    continuesAutomatically: boolean;
+    approvalNeeded: boolean;
+    lastProgressAt: string | null;
+    workerCadenceMinutes: number | null;
+    message: string;
+  };
   timeline: TimelineItem[];
   proof: Array<{
     id: string;
@@ -250,6 +257,24 @@ export function WorkReceipt({
                 <span>No outcome is finally charged until a customer-visible delivery is independently verified.</span>
               </aside>
             )}
+            <aside className={receipt.automation.continuesAutomatically ? "receipt-truth active" : "receipt-truth waiting"}>
+              <strong>
+                {receipt.automation.continuesAutomatically
+                  ? "Automatic—no action needed"
+                  : receipt.automation.approvalNeeded
+                    ? "Your decision is the only next step"
+                    : receipt.execution.blocked
+                      ? "Paused safely"
+                      : "Evidence retained"}
+              </strong>
+              <p>{receipt.automation.message}</p>
+              <span>
+                Last recorded progress {date(receipt.automation.lastProgressAt)}
+                {receipt.automation.workerCadenceMinutes
+                  ? ` · Automatic worker cadence: every ${receipt.automation.workerCadenceMinutes} minute`
+                  : ""}
+              </span>
+            </aside>
 
             <section className="receipt-section receipt-timeline">
               <div className="receipt-section-head">

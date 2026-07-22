@@ -151,7 +151,7 @@ async function main() {
   await check("malformed portal request", async () => {
     const malformedPortal = await request("/api/auth/portal-access", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin },
       body: "{",
     });
     await expectJsonError(malformedPortal, [400]);
@@ -163,8 +163,8 @@ async function main() {
     ["/api/system/readiness?projectId=" + uuid, { method: "GET" }],
     ["/api/github/install?agencyId=" + uuid + "&projectId=" + uuid, { method: "GET" }],
     ["/api/google/connect?projectId=" + uuid, { method: "GET" }],
-    ["/api/billing/checkout", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: uuid, planKey: "starter" }) }],
-    ["/api/agency-billing/checkout", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planKey: "launch" }) }],
+    ["/api/billing/checkout", { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ projectId: uuid, planKey: "starter" }) }],
+    ["/api/agency-billing/checkout", { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ planKey: "launch" }) }],
     ["/api/work-receipts?projectId=" + uuid + "&packageId=" + uuid, { method: "GET" }],
   ];
   for (const [path, options] of unauthenticatedRequests) {
@@ -177,10 +177,26 @@ async function main() {
   await check("public audit SSRF boundary", async () => {
     const privateAudit = await request("/api/public/audit", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.10" },
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.10", origin },
       body: JSON.stringify({ website: "https://127.0.0.1" }),
     });
     await expectJsonError(privateAudit, [400]);
+  });
+
+  await check("cross-origin browser mutation boundary", async () => {
+    const forgedMutation = await request("/api/public/audit", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+      },
+      body: JSON.stringify({ website: "https://example.com" }),
+    });
+    const forgedMutationCopy = forgedMutation.clone();
+    await expectJsonError(forgedMutation, [403]);
+    const payload = await forgedMutationCopy.json().catch(() => null);
+    if (payload) assert.equal(payload.error?.code, "INVALID_ORIGIN");
   });
 
   await check("invalid website setup handoff", async () => {

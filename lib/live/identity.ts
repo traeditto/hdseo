@@ -3,7 +3,6 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { platformAdminEmails } from "@/lib/config/env";
 import type { ChatGPTUser } from "@/app/chatgpt-auth";
 
 export type LiveScope = "agency" | "client" | "admin";
@@ -41,8 +40,8 @@ export function getLiveAdminClient(): SupabaseClient {
 
 /**
  * Finds (or creates) the auth.users row that backs a ChatGPT identity, keeps
- * the profile row in sync, links the user to any client org that lists them as
- * the primary contact, and bootstraps platform-admin access from the allowlist.
+ * the profile row in sync, and links the user to any client org that lists them
+ * as the primary contact. Platform administration is provisioned separately.
  */
 export async function resolveLiveIdentity(
   admin: SupabaseClient,
@@ -62,7 +61,7 @@ export async function resolveLiveIdentity(
     { onConflict: "id" },
   );
 
-  const isPlatformAdmin = await ensurePlatformAdmin(admin, userId, email);
+  const isPlatformAdmin = await resolvePlatformAdmin(admin, userId);
   await autoLinkClientContact(admin, userId, email);
 
   return { userId, email, displayName, isPlatformAdmin };
@@ -126,10 +125,9 @@ async function findAuthUserByEmail(
   return null;
 }
 
-async function ensurePlatformAdmin(
+async function resolvePlatformAdmin(
   admin: SupabaseClient,
   userId: string,
-  email: string,
 ): Promise<boolean> {
   const { data: existing } = await admin
     .from("platform_admins")
@@ -141,17 +139,7 @@ async function ensurePlatformAdmin(
     return existing.status === "active";
   }
 
-  // Platform administration is explicit. Never promote the first person who
-  // happens to sign in to a new environment.
-  if (!platformAdminEmails.has(email)) return false;
-
-  await admin
-    .from("platform_admins")
-    .upsert(
-      { user_id: userId, status: "active", role: "platform_admin" },
-      { onConflict: "user_id" },
-    );
-  return true;
+  return false;
 }
 
 async function autoLinkClientContact(

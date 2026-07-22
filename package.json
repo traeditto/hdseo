@@ -16,6 +16,7 @@
     "test:production": "node tests/production-smoke.mjs",
     "test:release": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:render && pnpm build:vercel",
     "security:audit": "pnpm audit --audit-level high",
+    "security:secrets": "node scripts/security/scan-tracked-secrets.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"

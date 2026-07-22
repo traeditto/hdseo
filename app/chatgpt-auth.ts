@@ -17,6 +17,15 @@ const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
+  // Legacy Sites identity headers are not an authentication mechanism for the
+  // canonical Vercel application. They are disabled by default everywhere and
+  // can only be enabled explicitly in a non-Vercel private preview.
+  if (
+    process.env.VERCEL ||
+    process.env.HDSEO_ENABLE_LEGACY_SITES_IDENTITY !== "true"
+  ) {
+    return null;
+  }
   const requestHeaders = await headers();
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!email) return null;
