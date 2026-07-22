@@ -41,11 +41,7 @@ export async function POST(request:Request){
       if(execution.data){
         const environment=providerDeployment.target??payload.target??"preview",legacyStatus=ready?"ready":failed?"failed":"building";
         requireWebhookMutation(await db.from("seo_deployments").upsert({execution_id:execution.data.id,provider:"vercel",environment,commit_sha:commitSha,deployment_id:deploymentId,deployment_url:providerDeployment.url??payload.url,status:legacyStatus,started_at:now,completed_at:ready||failed?now:null},{onConflict:"provider,environment,commit_sha"}),"The SEO deployment event could not be recorded.");
-        if(ready&&environment==="production"&&execution.data.merge_commit_sha===commitSha){
-          requireWebhookMutation(await db.from("seo_executions").update({status:"production_deployed",production_commit_sha:commitSha,production_deployed_at:now}).eq("id",execution.data.id),"The production SEO execution could not be recorded.");
-          requireWebhookMutation(await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now}).contains("result",{executionId:execution.data.id}),"Production outcome monitoring could not be queued.");
-          logEvent("production_deployed",{executionId:execution.data.id,agencyId:execution.data.agency_id,projectId:execution.data.project_id,status:"production_deployed"});
-        }
+        if(ready&&environment==="production"&&execution.data.merge_commit_sha===commitSha)logEvent("production_deployment_ready_for_qa",{executionId:execution.data.id,agencyId:execution.data.agency_id,projectId:execution.data.project_id,status:"ready",stage:"production_qa"});
       }
     }
     requireWebhookMutation(await db.from("webhook_deliveries").upsert({provider:"vercel",delivery_id:delivery,event_type:type,signature_valid:true,payload_hash:payloadHash,processed_at:now},{onConflict:"provider,delivery_id"}),"The Vercel delivery receipt could not be saved.");

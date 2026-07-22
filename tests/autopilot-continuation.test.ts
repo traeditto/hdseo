@@ -96,6 +96,11 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain('source:"preview_reconciliation"');
     expect(worker).toContain("previewReconciliationAttempts");
     expect(worker).toContain("preview_continuation_recovered");
+    expect(worker).toContain("previewContinuationJobIsActive");
+    expect(worker).toContain('failureCode="PREVIEW_CONTINUATION_EXHAUSTED"');
+    expect(worker).toContain('event_type:"seo.preview_continuation_exhausted"');
+    expect(worker).not.toContain('status:"blocked",stage:jobType});continue;');
+    expect(worker).toContain("...previousSummary,retrying:true");
   });
 
   it("uses one exact-change approval for the unchanged QA-passed Autopilot release", () => {
@@ -127,7 +132,14 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain('environment:"production"');
     expect(worker).toContain('status:failed.length?"production_failed":"production_deployed"');
     expect(worker).toContain('current_stage:"schedule_monitoring"');
-    expect(worker).toContain('validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v1"');
+    expect(worker).toContain('validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v2"');
+    expect(worker).toContain("loadProductionValidationTargets");
+    expect(worker).toContain("recoverProtectedProductionValidations");
+    expect(worker).toContain('productionTargetRecoveryReason:"protected_generated_deployment_url"');
+    expect(worker).toContain('"PRODUCTION_VALIDATION_RETRY"');
+    const webhook = read("app/api/vercel/webhook/route.ts");
+    expect(webhook).toContain("production_deployment_ready_for_qa");
+    expect(webhook).not.toContain('if(ready&&environment==="production"&&execution.data.merge_commit_sha===commitSha){\n          requireWebhookMutation(await db.from("seo_executions").update({status:"production_deployed"');
   });
 
   it("isolates deployment, agent, and provider worker failures", () => {
@@ -167,6 +179,14 @@ describe("Autopilot event-driven continuation", () => {
     expect(panel).toContain('`/api/executions/${item.id}/review`');
     expect(panel).toContain("Approve exact change");
     expect(panel).toContain("Request revision");
+  });
+
+  it("does not tell the customer a production release is published before independent QA", () => {
+    const receipt = read("app/api/work-receipts/route.ts");
+    expect(receipt).toContain('deployment?.environment === "production" && deployment?.status === "healthy"');
+    expect(receipt).toContain('productionChecksRunning');
+    expect(receipt).toContain('? "production checks"');
+    expect(receipt).not.toContain('["ready", "healthy"].includes(deployment?.status)');
   });
 
   it("requires approved creative and targets only the intended public page", () => {

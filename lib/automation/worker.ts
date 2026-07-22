@@ -3,12 +3,14 @@ import { ApiError,logEvent,safeError } from "@/lib/api/errors";
 import { env } from "@/lib/config/env";
 import { requireAdminDb } from "./control-plane";
 import { loadVercelCredentials } from "@/lib/vercel/credentials";
-import { createVercelDeployment,getVercelDeployment,getVercelDeploymentEvents,listVercelDeployments,rollbackVercelProject } from "@/lib/vercel/client";
+import { createVercelDeployment,getVercelDeployment,getVercelDeploymentEvents,listVercelDeployments,listVercelProjectDomains,rollbackVercelProject,type VercelCredentials } from "@/lib/vercel/client";
 import { validateDeploymentUrl,type ValidationCheck } from "./validator";
 import { ensureVercelAutomationBypass } from "@/lib/vercel/protection-bypass";
 import { compareSeoDrift,deploymentSnapshotFromChecks } from "@/lib/seo/drift";
 import {claimStoredMutationIntent,requestMutationIntent,settleMutationIntent,type MutationAction} from "@/lib/safety/mutation-gateway";
 import {releaseAutopilotPreview} from "@/lib/execution/autopilot-release";
+import {previewContinuationJobIsActive,type PreviewContinuationJobState} from "./job-state";
+import {isGeneratedVercelHostname,productionValidationCandidates,verifiedProviderHostnames,type ProductionValidationCandidate,type ProviderDomain} from "./validation-target";
 
 interface BackgroundJob{id:string;job_type:string;agency_id:string;automation_run_id:string|null;deployment_id:string|null;payload:Record<string,unknown>;attempt_count:number;max_attempts:number;fencing_token:string|null}
 type SafetyMetadata={mutationIntentId:string;actionDigest:string;traceId?:string;approvalPolicy?:string};
@@ -32,6 +34,65 @@ function transientPreviewFailure(checks:ValidationCheck[]){
   if(!health||health.status!=="failed")return false;
   const status=Number(health.details.status),error=String(health.details.error??"").toLowerCase();
   return protectionRedirect(checks)||[401,403,429].includes(status)||status>=500||error.includes("abort")||error.includes("timeout")||error.includes("fetch failed");
+}
+
+async function loadProductionValidationTargets(
+  db:ReturnType<typeof requireAdminDb>,
+  input:{agencyId:string;projectId:string;vercelProject:{id:string;connection_id:string;vercel_project_id:string;production_domains?:unknown};credentials?:VercelCredentials},
+){
+  const seoProject=await db.from("seo_projects").select("domain,canonical_domain").eq("id",input.projectId).eq("agency_id",input.agencyId).maybeSingle();
+  if(seoProject.error)throw new ApiError("The production website address could not be loaded.",500,"DATABASE_BINDING_FAILED");
+  let providerDomains:ProviderDomain[]=[];
+  try{
+    const credentials=input.credentials??await loadVercelCredentials(input.vercelProject.connection_id,input.agencyId);
+    const response=await listVercelProjectDomains(credentials,input.vercelProject.vercel_project_id);
+    providerDomains=response.domains??[];
+  }catch(error){
+    const safe=safeError(error);
+    logEvent("production_domain_sync_deferred",{agencyId:input.agencyId,projectId:input.projectId,status:"deferred",errorCode:safe.body.error.code,stage:"production_domain_discovery"});
+  }
+  const configuredDomains=Array.isArray(input.vercelProject.production_domains)?input.vercelProject.production_domains:[];
+  const candidates=productionValidationCandidates({canonicalDomain:seoProject.data?.canonical_domain,projectDomain:seoProject.data?.domain,providerDomains,configuredDomains});
+  const syncedDomains=verifiedProviderHostnames(providerDomains).filter(hostname=>!isGeneratedVercelHostname(hostname));
+  if(syncedDomains.length){
+    const saved=await db.from("vercel_projects").update({production_domains:syncedDomains,last_synced_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",input.vercelProject.id).eq("agency_id",input.agencyId);
+    if(saved.error)throw new ApiError("The verified production domains could not be synchronized.",500,"DATABASE_BINDING_FAILED");
+  }
+  if(!candidates.length)throw new ApiError("A public production domain is not ready yet. HD SEO will discover it and retry automatically.",503,"PRODUCTION_VALIDATION_RETRY");
+  return candidates;
+}
+
+async function recoverProtectedProductionValidations(db:ReturnType<typeof requireAdminDb>){
+  const checks=await db.from("deployment_checks").select("deployment_id,details,updated_at").eq("check_type","health").eq("status","failed").order("updated_at",{ascending:false}).limit(50);
+  if(checks.error)throw new ApiError("Production validation recovery could not inspect recent health checks.",500,"DATABASE_BINDING_FAILED");
+  let recovered=0;
+  for(const check of checks.data??[]){
+    const details=check.details&&typeof check.details==="object"?check.details as Record<string,unknown>:{};
+    if(details.reason!=="vercel_deployment_protection")continue;
+    const deployment=await db.from("deployments").select("id,agency_id,project_id,vercel_project_id,git_sha,status,environment,provider_metadata,validation_summary").eq("id",check.deployment_id).eq("environment","production").eq("status","failed").maybeSingle();
+    if(!deployment.data?.git_sha)continue;
+    const summary=deployment.data.validation_summary&&typeof deployment.data.validation_summary==="object"?deployment.data.validation_summary as Record<string,unknown>:{};
+    if(Number(summary.productionTargetRecoveryAttempts??0)>=3)continue;
+    const execution=await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,outcome_run_id,status").eq("merge_commit_sha",deployment.data.git_sha).eq("agency_id",deployment.data.agency_id).maybeSingle();
+    if(!execution.data||execution.data.status!=="production_failed")continue;
+    const vercelProject=await db.from("vercel_projects").select("id,connection_id,vercel_project_id,production_domains").eq("id",deployment.data.vercel_project_id).eq("agency_id",deployment.data.agency_id).maybeSingle();
+    if(!vercelProject.data)continue;
+    let targets:ProductionValidationCandidate[];
+    try{targets=await loadProductionValidationTargets(db,{agencyId:deployment.data.agency_id,projectId:deployment.data.project_id,vercelProject:vercelProject.data});}
+    catch(error){const safe=safeError(error);logEvent("production_validation_recovery_deferred",{executionId:execution.data.id,agencyId:deployment.data.agency_id,projectId:deployment.data.project_id,status:"deferred",errorCode:safe.body.error.code,stage:"production_domain_discovery"});continue;}
+    const target=targets[0],now=new Date().toISOString(),providerMetadata=deployment.data.provider_metadata&&typeof deployment.data.provider_metadata==="object"?deployment.data.provider_metadata as Record<string,unknown>:{};
+    const results=await Promise.all([
+      db.from("deployments").update({status:"ready",provider_metadata:{...providerMetadata,validationBaseUrl:target.baseUrl,validationTargetSource:target.source,validationCandidates:targets},validation_summary:{...summary,productionTargetRecoveryAttempts:Number(summary.productionTargetRecoveryAttempts??0)+1,productionTargetRecoveryReason:"protected_generated_deployment_url",productionTargetRecoveredAt:now},completed_at:null,updated_at:now}).eq("id",deployment.data.id),
+      db.from("seo_campaign_jobs").update({status:"awaiting_deployment",current_stage:"production_qa",error_code:null,error_message:null,error_details:{},failed_at:null,completed_at:null,worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:null,next_attempt_at:now,updated_at:now}).contains("result",{executionId:execution.data.id}),
+      execution.data.outcome_run_id?db.from("outcome_loop_runs").update({status:"publishing",current_step:"publish",failure_code:null,failure_message:null,completed_at:null,updated_at:now}).eq("id",execution.data.outcome_run_id):Promise.resolve({error:null}),
+      execution.data.outcome_run_id?db.from("outcome_loop_steps").update({status:"running",completed_at:null,updated_at:now}).eq("run_id",execution.data.outcome_run_id).eq("step_key","publish"):Promise.resolve({error:null}),
+      db.from("background_jobs").upsert({queue:"deployments",job_type:"deployment.validate",agency_id:deployment.data.agency_id,deployment_id:deployment.data.id,payload:{source:"production_target_recovery",executionId:execution.data.id},status:"queued",priority:95,available_at:now,attempt_count:0,worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,last_error_code:null,last_error_message:null,completed_at:null,idempotency_key:`deployment.validate:${deployment.data.id}`,updated_at:now},{onConflict:"queue,idempotency_key"}),
+    ]);
+    if(results.some(result=>"error" in result&&result.error))throw new ApiError("The protected production validation could not be restored.",500,"DATABASE_BINDING_FAILED");
+    recovered++;
+    logEvent("production_validation_recovered",{executionId:execution.data.id,agencyId:deployment.data.agency_id,projectId:deployment.data.project_id,status:"queued",stage:"production_qa"});
+  }
+  return recovered;
 }
 
 async function saveBypassConfig(db:ReturnType<typeof requireAdminDb>,projectId:string,agencyId:string,environmentConfig:Record<string,unknown>){
@@ -58,6 +119,7 @@ async function reconcileCampaignForExecution(db:ReturnType<typeof requireAdminDb
 }
 
 async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminDb>){
+  const recovered=await recoverProtectedProductionValidations(db);
   const waitingCampaigns=await db.from("seo_campaign_jobs").select("id,agency_id,client_organization_id,project_id,outcome_run_id,result,status,current_stage").eq("status","awaiting_deployment").order("updated_at",{ascending:true}).limit(20);
   if(waitingCampaigns.error)throw new ApiError("Production deployment reconciliation could not read the waiting campaign queue.",500,"DATABASE_BINDING_FAILED");
   const waitingExecutionIds=[...new Set((waitingCampaigns.data??[]).map(campaign=>campaign.result&&typeof campaign.result==="object"?(campaign.result as Record<string,unknown>).executionId:null).filter((id):id is string=>typeof id==="string"&&Boolean(id)))];
@@ -102,7 +164,9 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
       }
       if(state!=="READY")continue;
       detected++;
-      const existing=await db.from("deployments").select("id,status").eq("vercel_project_id",vercelProject.data.id).eq("external_deployment_id",matched.id).maybeSingle();
+      const validationTargets=await loadProductionValidationTargets(db,{agencyId:execution.agency_id,projectId:execution.project_id,vercelProject:vercelProject.data,credentials}),validationTarget=validationTargets[0];
+      let existing=await db.from("deployments").select("id,status,provider_metadata").eq("vercel_project_id",vercelProject.data.id).eq("external_deployment_id",matched.id).maybeSingle();
+      if(!existing.data)existing=await db.from("deployments").select("id,status,provider_metadata").eq("vercel_project_id",vercelProject.data.id).eq("environment","production").eq("git_sha",execution.merge_commit_sha).order("updated_at",{ascending:false}).limit(1).maybeSingle();
       if(existing.data){
         if(existing.data.status==="healthy"){
           const now=new Date().toISOString();
@@ -112,10 +176,17 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
           ]);
           logEvent("production_deployment_state_repaired",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"production_deployed",stage:"schedule_monitoring"});
         }
+        if(existing.data.status==="ready"){
+          const existingMetadata=existing.data.provider_metadata&&typeof existing.data.provider_metadata==="object"?existing.data.provider_metadata as Record<string,unknown>:{};
+          await db.from("deployments").update({external_deployment_id:matched.id,url:matched.url,provider_metadata:{...existingMetadata,provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:validationTarget.baseUrl,validationTargetSource:validationTarget.source,validationCandidates:validationTargets},ready_at:matched.ready?new Date(matched.ready).toISOString():new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",existing.data.id);
+          const job=await db.from("background_jobs").upsert({queue:"deployments",job_type:"deployment.validate",agency_id:execution.agency_id,deployment_id:existing.data.id,payload:{source:"production_poll",executionId:execution.id},status:"queued",priority:90,available_at:new Date().toISOString(),worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,last_error_code:null,last_error_message:null,completed_at:null,idempotency_key:`deployment.validate:${existing.data.id}`,updated_at:new Date().toISOString()},{onConflict:"queue,idempotency_key"});
+          if(job.error)throw new ApiError("Production safety validation could not be restored.",500,"DATABASE_BINDING_FAILED");
+          queued++;
+        }
         continue;
       }
-      const productionDomain=Array.isArray(vercelProject.data.production_domains)?vercelProject.data.production_domains.find((domain:string)=>Boolean(domain)):null,now=new Date().toISOString(),created=await db.from("deployments").insert({
-        agency_id:execution.agency_id,client_id:vercelProject.data.client_id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:vercelProject.data.repository_id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:productionDomain?`https://${productionDomain}`:null},started_at:matched.createdAt?new Date(matched.createdAt).toISOString():now,ready_at:matched.ready?new Date(matched.ready).toISOString():now,updated_at:now,
+      const now=new Date().toISOString(),created=await db.from("deployments").insert({
+        agency_id:execution.agency_id,client_id:vercelProject.data.client_id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:vercelProject.data.repository_id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:validationTarget.baseUrl,validationTargetSource:validationTarget.source,validationCandidates:validationTargets},started_at:matched.createdAt?new Date(matched.createdAt).toISOString():now,ready_at:matched.ready?new Date(matched.ready).toISOString():now,updated_at:now,
       }).select("id").single();
       if(created.error||!created.data)throw new ApiError("The detected production deployment could not be recorded.",500,"DATABASE_BINDING_FAILED");
       const job=await db.from("background_jobs").upsert({queue:"deployments",job_type:"deployment.validate",agency_id:execution.agency_id,deployment_id:created.data.id,payload:{source:"production_poll",executionId:execution.id},status:"queued",priority:90,idempotency_key:`deployment.validate:${created.data.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});
@@ -127,23 +198,34 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
       logEvent("production_deployment_reconciliation_failed",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"deferred",errorCode:safe.body.error.code,stage:"production_poll"});
     }
   }
-  return{detected,queued,errors};
+  return{recovered,detected,queued,errors};
 }
 
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
-  const strandedPreviews=await db.from("seo_executions").select("id,agency_id,preview_deployment_id").eq("status","preview_queued").not("preview_deployment_id","is",null).order("updated_at",{ascending:true}).limit(20);
+  const strandedPreviews=await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,outcome_run_id,preview_deployment_id,validation_results").eq("status","preview_queued").not("preview_deployment_id","is",null).order("updated_at",{ascending:true}).limit(20);
   if(strandedPreviews.error)throw new ApiError("Preview reconciliation could not read pending executions.",500,"DATABASE_BINDING_FAILED");
   let previewJobsRecovered=0;
   for(const execution of strandedPreviews.data??[]){
     const deployment=await db.from("deployments").select("id,agency_id,automation_run_id,status,external_deployment_id,validation_summary").eq("id",execution.preview_deployment_id).eq("environment","preview").maybeSingle();
     if(deployment.error)throw new ApiError("Preview reconciliation could not read the deployment.",500,"DATABASE_BINDING_FAILED");
     if(!deployment.data||!["building","ready"].includes(deployment.data.status)||!deployment.data.external_deployment_id)continue;
-    const jobType=deployment.data.status==="ready"?"deployment.validate":"deployment.poll",idempotencyKey=`${jobType}:${deployment.data.id}`,existing=await db.from("background_jobs").select("id,status,lock_expires_at").eq("queue","deployments").eq("idempotency_key",idempotencyKey).maybeSingle();
+    const jobType=deployment.data.status==="ready"?"deployment.validate":"deployment.poll",idempotencyKey=`${jobType}:${deployment.data.id}`,existing=await db.from("background_jobs").select("id,status,lock_expires_at,available_at,attempt_count,max_attempts,updated_at,last_error_code,last_error_message").eq("queue","deployments").eq("idempotency_key",idempotencyKey).maybeSingle();
     if(existing.error)throw new ApiError("Preview reconciliation could not inspect the worker job.",500,"DATABASE_BINDING_FAILED");
-    const active=existing.data&&(["queued","retry_scheduled"].includes(existing.data.status)||(existing.data.status==="running"&&existing.data.lock_expires_at&&new Date(existing.data.lock_expires_at).getTime()>Date.now()));
+    const active=previewContinuationJobIsActive(existing.data as PreviewContinuationJobState|null);
     if(active)continue;
     const summary=(deployment.data.validation_summary&&typeof deployment.data.validation_summary==="object"?deployment.data.validation_summary:{}) as Record<string,unknown>,attempts=Number(summary.previewReconciliationAttempts??0);
-    if(attempts>=3){logEvent("preview_continuation_exhausted",{executionId:execution.id,agencyId:execution.agency_id,status:"blocked",stage:jobType});continue;}
+    if(attempts>=3){
+      const now=new Date().toISOString(),failureCode="PREVIEW_CONTINUATION_EXHAUSTED",failureMessage="HD SEO could not complete the preview safety checks after automatic retries. Nothing was published, the previous live website remains unchanged, and support has been alerted.";
+      await Promise.all([
+        db.from("seo_executions").update({status:"preview_failed",validation_results:{...(execution.validation_results&&typeof execution.validation_results==="object"?execution.validation_results:{}),continuationFailure:{code:failureCode,message:failureMessage,failedAt:now,lastWorkerErrorCode:existing.data?.last_error_code??null,lastWorkerErrorMessage:existing.data?.last_error_message??null}},updated_at:now}).eq("id",execution.id).eq("status","preview_queued"),
+        db.from("deployments").update({status:"failed",validation_summary:{...summary,previewContinuationFailure:{code:failureCode,message:failureMessage,failedAt:now}},completed_at:now,updated_at:now}).eq("id",deployment.data.id),
+        db.from("seo_campaign_jobs").update({status:"failed",error_code:failureCode,error_message:failureMessage,failed_at:now,worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:null,updated_at:now}).contains("result",{executionId:execution.id}),
+        execution.outcome_run_id?db.from("outcome_loop_runs").update({status:"failed",failure_code:failureCode,failure_message:failureMessage,completed_at:now,updated_at:now}).eq("id",execution.outcome_run_id):Promise.resolve({error:null}),
+        db.from("notifications").insert({agency_id:execution.agency_id,client_organization_id:execution.client_organization_id,project_id:execution.project_id,event_type:"seo.preview_continuation_exhausted",title:"Preview safety checks need attention",body:failureMessage,status:"sent",sent_at:now,client_visible:true,metadata:{executionId:execution.id,deploymentId:deployment.data.id,code:failureCode}}),
+      ]);
+      logEvent("preview_continuation_exhausted",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"failed",errorCode:failureCode,stage:jobType});
+      continue;
+    }
     const now=new Date().toISOString(),requeued=await db.from("background_jobs").upsert({queue:"deployments",job_type:jobType,agency_id:deployment.data.agency_id,automation_run_id:deployment.data.automation_run_id,deployment_id:deployment.data.id,payload:{source:"preview_reconciliation",executionId:execution.id},status:"queued",priority:90,available_at:now,attempt_count:0,worker_id:null,locked_at:null,lock_expires_at:null,fencing_token:null,last_error_code:null,last_error_message:null,completed_at:null,idempotency_key:idempotencyKey,updated_at:now},{onConflict:"queue,idempotency_key"});
     if(requeued.error)throw new ApiError("Preview continuation could not be restored.",500,"DATABASE_BINDING_FAILED");
     await db.from("deployments").update({validation_summary:{...summary,previewReconciliationAttempts:attempts+1,previewReconciledAt:now},updated_at:now}).eq("id",deployment.data.id);
@@ -211,7 +293,14 @@ async function validateDeployment(job:BackgroundJob){
   const executionContext=deployment.environment==="production"&&deployment.git_sha
     ?await executionQuery.eq("merge_commit_sha",deployment.git_sha).maybeSingle()
     :await executionQuery.eq("preview_deployment_id",deployment.id).maybeSingle();
-  const opportunity=executionContext.data?.opportunity_id?await db.from("seo_opportunities").select("target_url").eq("id",executionContext.data.opportunity_id).maybeSingle():{data:null},targetPath=opportunity.data?.target_url?new URL(opportunity.data.target_url,"https://hdseo.invalid").pathname:"/",providerMetadata=deployment.provider_metadata&&typeof deployment.provider_metadata==="object"?deployment.provider_metadata as Record<string,unknown>:{},configuredBase=deployment.environment==="production"&&typeof providerMetadata.validationBaseUrl==="string"?providerMetadata.validationBaseUrl:deployment.url,validationUrl=new URL(targetPath,configuredBase.startsWith("http")?configuredBase:`https://${configuredBase}`).toString();
+  const opportunity=executionContext.data?.opportunity_id?await db.from("seo_opportunities").select("target_url").eq("id",executionContext.data.opportunity_id).maybeSingle():{data:null};
+  let targetPath="/";
+  if(opportunity.data?.target_url)try{targetPath=new URL(opportunity.data.target_url,"https://hdseo.invalid").pathname;}catch{throw new ApiError("The approved SEO target URL is invalid.",409,"VALIDATION_ERROR");}
+  const providerMetadata=deployment.provider_metadata&&typeof deployment.provider_metadata==="object"?deployment.provider_metadata as Record<string,unknown>:{};
+  const validationTargets=deployment.environment==="production"
+    ?await loadProductionValidationTargets(db,{agencyId:job.agency_id,projectId:deployment.project_id,vercelProject:{id:project.id,connection_id:project.connection_id,vercel_project_id:project.vercel_project_id,production_domains:project.production_domains}})
+    :[{baseUrl:deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`,hostname:new URL(deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`).hostname,source:"configured_domain" as const}];
+  let validationTarget=validationTargets[0],validationUrl=new URL(targetPath,validationTarget.baseUrl).toString();
   const previous=await db.from("deployments").select("id").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
   const baselineChecks=previous.data?await db.from("deployment_checks").select("check_type,score,details").eq("deployment_id",previous.data.id):{data:[]};
   const baseline=previous.data?deploymentSnapshotFromChecks(baselineChecks.data??[]):null;
@@ -230,16 +319,32 @@ async function validateDeployment(job:BackgroundJob){
       await addLog(deployment.id,"hdseo","warn","Vercel preview access expired; HD SEO rotated it and retried validation.",{reason:"protection_bypass_rotation"});
       checks=await validateDeploymentUrl(validationUrl,{protectionBypassSecret:bypass.secret,environment:deployment.environment});
     }
-  }else checks=await validateDeploymentUrl(validationUrl,{environment:deployment.environment});
+  }else{
+    checks=[];
+    for(const [index,target] of validationTargets.entries()){
+      validationTarget=target;
+      validationUrl=new URL(targetPath,target.baseUrl).toString();
+      checks=await validateDeploymentUrl(validationUrl,{environment:deployment.environment});
+      if(!protectionRedirect(checks))break;
+      await addLog(deployment.id,"hdseo","warn","A protected Vercel hostname was excluded from production QA; HD SEO is trying the verified public domain.",{validationTarget:target.hostname,validationTargetSource:target.source});
+      if(index===validationTargets.length-1){
+        const previousSummary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{};
+        await db.from("deployments").update({status:"ready",validation_summary:{...previousSummary,retrying:true,reason:"production_domain_protected",lastTransientFailureAt:new Date().toISOString()},completed_at:null,updated_at:new Date().toISOString()}).eq("id",deployment.id);
+        throw new ApiError("The public production domain is still protected. HD SEO will retry automatically without treating the website as failed.",503,"PRODUCTION_VALIDATION_RETRY");
+      }
+    }
+    await db.from("deployments").update({provider_metadata:{...providerMetadata,validationBaseUrl:validationTarget.baseUrl,validationTargetSource:validationTarget.source,validationCandidates:validationTargets},updated_at:new Date().toISOString()}).eq("id",deployment.id);
+  }
   if(deployment.environment==="preview"&&transientPreviewFailure(checks)){
     const health=checks.find(check=>check.checkType==="health");
-    await db.from("deployments").update({status:"ready",validation_summary:{retrying:true,reason:"temporary_preview_access",health:health?.details??{}},completed_at:null,updated_at:new Date().toISOString()}).eq("id",deployment.id);
+    const previousSummary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{};
+    await db.from("deployments").update({status:"ready",validation_summary:{...previousSummary,retrying:true,reason:"temporary_preview_access",health:health?.details??{},lastTransientFailureAt:new Date().toISOString()},completed_at:null,updated_at:new Date().toISOString()}).eq("id",deployment.id);
     throw new ApiError("The preview is temporarily unavailable. HD SEO will retry automatically.",503,"PREVIEW_VALIDATION_RETRY");
   }
   const current=deploymentSnapshotFromChecks(checks),drift=compareSeoDrift(baseline,current);
   checks.push({checkType:"drift",status:drift.status,required:drift.required,details:{baselineDeploymentId:previous.data?.id??null,findings:drift.findings,baseline:drift.baseline,current:drift.current}});
   for(const check of checks){const saved=await db.from("deployment_checks").upsert({deployment_id:deployment.id,check_type:check.checkType,status:check.status,required:check.required,score:check.score??null,details:check.details,started_at:started,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()},{onConflict:"deployment_id,check_type"});if(saved.error)throw new ApiError(`The ${check.checkType} validation result could not be persisted.`,500,"DATABASE_BINDING_FAILED");}
-  const failed=checks.filter(check=>check.required&&check.status==="failed"),summary={passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId:previous.data?.id??null,validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v1",validatedUrl:validationUrl};
+  const failed=checks.filter(check=>check.required&&check.status==="failed"),priorSummary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{},summary={...priorSummary,retrying:false,passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId:previous.data?.id??null,validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v2",validatedUrl:validationUrl,validationTargetSource:validationTarget.source};
   await db.from("deployments").update({status:failed.length?"failed":"healthy",validation_summary:summary,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",deployment.id);
   const client=await db.from("clients").select("organization_id,automation_config").eq("id",deployment.client_id).single(),run=job.automation_run_id?await db.from("automation_runs").select("seo_job_id").eq("id",job.automation_run_id).single():null,seoJob=run?.data?await db.from("seo_jobs").select("requested_by").eq("id",run.data.seo_job_id).single():null;
   const execution=executionContext;

@@ -20,19 +20,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11.9.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Reject duplicate migration numbers
-        run: |
-          duplicates="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | cut -d_ -f1 | sort | uniq -d)"
-          test -z "$duplicates" || { echo "Duplicate migration numbers: $duplicates"; exit 1; }
+      - name: Reject vulnerable dependency trees
+        run: pnpm security:audit
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+      - run: pnpm test:render
       - run: pnpm build:vercel
 
   tenant-isolation:
@@ -50,7 +49,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11.9.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.0

@@ -322,8 +322,11 @@ export async function GET(request: Request) {
     const published = Boolean(
       pkg.implemented_at ||
         execution?.production_deployed_at ||
-        (deployment?.environment === "production" && ["ready", "healthy"].includes(deployment?.status)) ||
+        (deployment?.environment === "production" && deployment?.status === "healthy") ||
         ["monitoring", "completed"].includes(run?.status),
+    );
+    const productionChecksRunning = Boolean(
+      deployment?.environment === "production" && ["building", "ready", "validating"].includes(deployment?.status),
     );
     const verified = Boolean(
       verification?.status === "passed" || run?.status === "completed",
@@ -337,6 +340,8 @@ export async function GET(request: Request) {
       ? "verified"
       : published
         ? "monitoring"
+        : productionChecksRunning
+          ? "production checks"
         : previewQaPassed
           ? "release approval"
         : deployment
