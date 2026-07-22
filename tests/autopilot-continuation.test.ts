@@ -116,6 +116,9 @@ describe("Autopilot event-driven continuation", () => {
     expect(client).toContain("listVercelDeployments");
     expect(client).toContain('target?: "production" | "preview"');
     expect(worker).toContain("reconcileProductionDeployments");
+    expect(worker).toContain('.eq("status","awaiting_deployment")');
+    expect(worker).toContain("production_deployment_state_repaired");
+    expect(worker).toContain("getVercelDeployment(credentials,candidate.id)");
     expect(worker).toContain('source:"production_poll"');
     expect(worker).toContain('environment:"production"');
     expect(worker).toContain('status:failed.length?"production_failed":"production_deployed"');

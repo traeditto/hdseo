@@ -58,16 +58,37 @@ async function reconcileCampaignForExecution(db:ReturnType<typeof requireAdminDb
 }
 
 async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminDb>){
-  const pending=await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,repository_connection_id,merge_commit_sha,outcome_run_id,merged_at").eq("status","merged").not("merge_commit_sha","is",null).order("merged_at",{ascending:true}).limit(20);
+  const waitingCampaigns=await db.from("seo_campaign_jobs").select("id,agency_id,client_organization_id,project_id,outcome_run_id,result,status,current_stage").eq("status","awaiting_deployment").order("updated_at",{ascending:true}).limit(20);
+  if(waitingCampaigns.error)throw new ApiError("Production deployment reconciliation could not read the waiting campaign queue.",500,"DATABASE_BINDING_FAILED");
+  const waitingExecutionIds=[...new Set((waitingCampaigns.data??[]).map(campaign=>campaign.result&&typeof campaign.result==="object"?(campaign.result as Record<string,unknown>).executionId:null).filter((id):id is string=>typeof id==="string"&&Boolean(id)))];
+  const campaignExecutions=waitingExecutionIds.length?await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,repository_connection_id,merge_commit_sha,production_commit_sha,production_deployed_at,status,outcome_run_id,merged_at").in("id",waitingExecutionIds):{data:[],error:null};
+  if(campaignExecutions.error)throw new ApiError("Production deployment reconciliation could not read the waiting executions.",500,"DATABASE_BINDING_FAILED");
+  const legacyMerged=await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,repository_connection_id,merge_commit_sha,production_commit_sha,production_deployed_at,status,outcome_run_id,merged_at").eq("status","merged").not("merge_commit_sha","is",null).order("merged_at",{ascending:true}).limit(20);
+  if(legacyMerged.error)throw new ApiError("Production deployment reconciliation could not read merged executions.",500,"DATABASE_BINDING_FAILED");
+  const pending=[...(campaignExecutions.data??[]),...(legacyMerged.data??[])].filter((execution,index,all)=>all.findIndex(candidate=>candidate.id===execution.id)===index);
   let detected=0,queued=0;const errors:Array<{executionId:string;code:string;message:string}>=[];
-  for(const execution of pending.data??[]){
+  for(const execution of pending){
     try{
+      if(execution.production_deployed_at||execution.status==="production_deployed"){
+        const now=new Date().toISOString();
+        await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now,error_code:null,error_message:null,updated_at:now}).contains("result",{executionId:execution.id}).eq("status","awaiting_deployment");
+        logEvent("production_deployment_state_repaired",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"production_deployed",stage:"schedule_monitoring"});
+        continue;
+      }
+      if(!execution.merge_commit_sha){logEvent("production_deployment_reconciliation_waiting",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"waiting",stage:"merge_commit"});continue;}
       const vercelProject=await db.from("vercel_projects").select("id,client_id,repository_id,connection_id,vercel_project_id,production_branch,production_domains").eq("agency_id",execution.agency_id).eq("project_id",execution.project_id).eq("status","active").not("repository_id","is",null).order("updated_at",{ascending:false}).limit(1).maybeSingle();
       if(!vercelProject.data){logEvent("production_deployment_reconciliation_waiting",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"waiting",stage:"vercel_project_mapping"});continue;}
-      const credentials=await loadVercelCredentials(vercelProject.data.connection_id,execution.agency_id),provider=await listVercelDeployments(credentials,{projectId:vercelProject.data.vercel_project_id,target:"production",limit:20,since:execution.merged_at?new Date(execution.merged_at).getTime()-300_000:undefined}),matched=provider.deployments.find(item=>{
+      const credentials=await loadVercelCredentials(vercelProject.data.connection_id,execution.agency_id),provider=await listVercelDeployments(credentials,{projectId:vercelProject.data.vercel_project_id,target:"production",limit:20,since:execution.merged_at?new Date(execution.merged_at).getTime()-300_000:undefined});
+      let matched=provider.deployments.find(item=>{
         const sha=item.meta?.githubCommitSha??item.meta?.gitCommitSha;
-        return sha===execution.merge_commit_sha&&(item.target??"production")==="production";
+        return sha===execution.merge_commit_sha;
       });
+      if(!matched){
+        for(const candidate of provider.deployments.slice(0,5)){
+          const detail=await getVercelDeployment(credentials,candidate.id),sha=detail.meta?.githubCommitSha??detail.meta?.gitCommitSha;
+          if(sha===execution.merge_commit_sha){matched={...candidate,...detail};break;}
+        }
+      }
       if(!matched){logEvent("production_deployment_reconciliation_waiting",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"waiting",stage:"provider_deployment_match"});continue;}
       const state=(matched.readyState??"").toUpperCase();
       if(state==="ERROR"||state==="CANCELED"){
