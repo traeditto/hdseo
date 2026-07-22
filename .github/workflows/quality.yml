@@ -22,9 +22,7 @@ jobs:
         with:
           node-version: 22.13.0
       - name: Activate the pinned pnpm release
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.9.0 --activate
+        run: npm install --global --ignore-scripts pnpm@11.9.0
       - run: pnpm install --frozen-lockfile
       - name: Reject tracked credentials and private keys
         run: pnpm security:secrets
@@ -53,9 +51,7 @@ jobs:
         with:
           node-version: 22.13.0
       - name: Activate the pinned pnpm release
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.9.0 --activate
+        run: npm install --global --ignore-scripts pnpm@11.9.0
       - run: pnpm install --frozen-lockfile
       - name: Require disposable tenant-isolation fixture
         run: |
