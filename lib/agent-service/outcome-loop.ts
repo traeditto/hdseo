@@ -84,6 +84,28 @@ export async function commitOutcome(db:SupabaseClient,input:{
     p_delivery_proof:proof,
     p_outcome_digest:digest,
   });
-  if(result.error)throw new ApiError("The verified outcome could not be committed to the usage ledger.",503,"DATABASE_BINDING_FAILED");
-  return{committed:Boolean(result.data),digest};
+  if(!result.error)return{committed:Boolean(result.data),digest,recovered:false};
+
+  // A transient deployment failure may release capacity before an eventually
+  // successful provider deployment is reconciled. Only invoke the narrow,
+  // proof-enforcing recovery transaction for that exact ledger state.
+  const reservation=await db.from("billable_usage_reservations")
+    .select("status")
+    .eq("outcome_run_id",input.runId)
+    .maybeSingle();
+  if(reservation.error||reservation.data?.status!=="released"){
+    throw new ApiError("The verified outcome could not be committed to the usage ledger.",503,"DATABASE_BINDING_FAILED");
+  }
+  const recovered=await db.rpc("commit_verified_recovered_outcome",{
+    p_run_id:input.runId,
+    p_delivery_kind:input.deliveryKind,
+    p_delivery_proof:proof,
+    p_outcome_digest:digest,
+  });
+  if(recovered.error){
+    throw new ApiError("The verified recovered outcome could not be committed to the usage ledger.",503,"DATABASE_BINDING_FAILED");
+  }
+  const recovery=recovered.data&&typeof recovered.data==="object"
+    ?recovered.data as Record<string,unknown>:{};
+  return{committed:Boolean(recovery.committed),digest,recovered:true};
 }
