@@ -17,11 +17,14 @@ export async function reconcileHealthyProductionOutcome(db:SupabaseClient,input:
   deploymentId:string;
 }){
   const now=new Date().toISOString(),state=healthyProductionOutcomeState({...input,now});
+  const run=await db.from("outcome_loop_runs").select("enrollment_id").eq("id",input.outcomeRunId).maybeSingle();
+  if(run.error||!run.data?.enrollment_id)throw new ApiError("The healthy production workflow is missing its managed-service enrollment.",500,"DATABASE_BINDING_FAILED");
   const results=await Promise.all([
     db.from("outcome_loop_runs").update(state.run).eq("id",input.outcomeRunId),
     db.from("agent_service_cycles").update(state.cycle).eq("outcome_run_id",input.outcomeRunId),
     db.from("outcome_loop_steps").update(state.completedStep).eq("run_id",input.outcomeRunId).in("step_key",[...healthyProductionStepKeys]),
     db.from("outcome_loop_steps").update(state.monitorStep).eq("run_id",input.outcomeRunId).eq("step_key","monitor"),
+    db.from("agent_service_enrollments").update({next_cycle_at:now,updated_at:now}).eq("id",run.data.enrollment_id).eq("status","active"),
   ]);
   assertUpdates(results);
   return{outcomeRunId:input.outcomeRunId,executionId:input.executionId,deploymentId:input.deploymentId,reconciled:true};
@@ -38,12 +41,16 @@ export async function reconcileRecentHealthyProductionOutcomes(db:SupabaseClient
   const runIds=[...new Set((executions.data??[]).map(item=>item.outcome_run_id).filter((id):id is string=>typeof id==="string"&&Boolean(id)))];
   if(!runIds.length)return{inspected:0,reconciled:0};
   const [runs,deployments,cycles,steps]=await Promise.all([
-    db.from("outcome_loop_runs").select("id,status,current_step,failure_code").in("id",runIds),
+    db.from("outcome_loop_runs").select("id,enrollment_id,status,current_step,failure_code").in("id",runIds),
     db.from("deployments").select("id,outcome_run_id").in("outcome_run_id",runIds).eq("environment","production").eq("status","healthy").order("updated_at",{ascending:false}),
-    db.from("agent_service_cycles").select("outcome_run_id,status,stage,failure_code").in("outcome_run_id",runIds),
+    db.from("agent_service_cycles").select("outcome_run_id,enrollment_id,status,stage,failure_code").in("outcome_run_id",runIds),
     db.from("outcome_loop_steps").select("run_id,step_key,status").in("run_id",runIds).in("step_key",[...healthyProductionStepKeys,"monitor"]),
   ]);
   if(runs.error||deployments.error||cycles.error||steps.error)throw new ApiError("Healthy production reconciliation could not inspect the linked outcome ledgers.",500,"DATABASE_BINDING_FAILED");
+  const enrollmentIds=[...new Set((runs.data??[]).map(run=>run.enrollment_id).filter((id):id is string=>typeof id==="string"&&Boolean(id)))];
+  const enrollments=enrollmentIds.length?await db.from("agent_service_enrollments").select("id,status,next_cycle_at").in("id",enrollmentIds):{data:[],error:null};
+  if(enrollments.error)throw new ApiError("Healthy production reconciliation could not inspect the managed-service schedule.",500,"DATABASE_BINDING_FAILED");
+  const enrollmentById=new Map((enrollments.data??[]).map(enrollment=>[enrollment.id,enrollment]));
   const runById=new Map((runs.data??[]).map(run=>[run.id,run]));
   const deploymentByRun=new Map<string,{id:string}>();
   for(const deployment of deployments.data??[])if(deployment.outcome_run_id&&!deploymentByRun.has(deployment.outcome_run_id))deploymentByRun.set(deployment.outcome_run_id,{id:deployment.id});
@@ -57,8 +64,10 @@ export async function reconcileRecentHealthyProductionOutcomes(db:SupabaseClient
   for(const execution of executions.data??[]){
     const runId=execution.outcome_run_id as string|null,deployment=runId?deploymentByRun.get(runId):null;
     if(!runId||!deployment)continue;
-    const run=runById.get(runId),cycle=cycleByRun.get(runId),stepState=stepsByRun.get(runId),completedStepsAgree=healthyProductionStepKeys.every(key=>stepState?.get(key)==="succeeded"),monitorState=stepState?.get("monitor");
-    const agrees=run?.status==="monitoring"&&run.current_step==="monitor"&&!run.failure_code&&cycle?.status==="monitoring"&&cycle.stage==="monitor"&&!cycle.failure_code&&completedStepsAgree&&["running","succeeded"].includes(monitorState??"");
+    const run=runById.get(runId);
+    if(!run||!["publishing","monitoring"].includes(run.status))continue;
+    const cycle=cycleByRun.get(runId),enrollment=enrollmentById.get(run.enrollment_id),stepState=stepsByRun.get(runId),completedStepsAgree=healthyProductionStepKeys.every(key=>stepState?.get(key)==="succeeded"),monitorState=stepState?.get("monitor"),enrollmentIsDue=enrollment?.status==="active"&&new Date(enrollment.next_cycle_at).getTime()<=Date.now()+60_000;
+    const agrees=run.status==="monitoring"&&run.current_step==="monitor"&&!run.failure_code&&cycle?.status==="monitoring"&&cycle.stage==="monitor"&&!cycle.failure_code&&completedStepsAgree&&["running","succeeded"].includes(monitorState??"")&&enrollmentIsDue;
     if(agrees)continue;
     await reconcileHealthyProductionOutcome(db,{outcomeRunId:runId,executionId:execution.id,deploymentId:deployment.id});
     reconciled++;

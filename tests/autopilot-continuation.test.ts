@@ -157,6 +157,8 @@ describe("Autopilot event-driven continuation", () => {
     expect(reconciliation).toContain('eq("environment","production").eq("status","healthy")');
     expect(reconciliation).toContain('db.from("agent_service_cycles").update(state.cycle)');
     expect(reconciliation).toContain('db.from("outcome_loop_steps").update(state.completedStep)');
+    expect(reconciliation).toContain('db.from("agent_service_enrollments").update({next_cycle_at:now,updated_at:now})');
+    expect(reconciliation).toContain('!["publishing","monitoring"].includes(run.status)');
     expect(worker).toContain("const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db)");
     expect(worker).toContain("reconcileHealthyProductionOutcome(db,{outcomeRunId:execution.data.outcome_run_id");
   });
