@@ -92,6 +92,10 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain('deployment.environment==="preview"?"preview-aware-v2"');
     expect(worker).toContain("preview_indexing_policy_upgrade");
     expect(worker).toContain("validationUrl");
+    expect(worker).toContain('eq("status","preview_queued")');
+    expect(worker).toContain('source:"preview_reconciliation"');
+    expect(worker).toContain("previewReconciliationAttempts");
+    expect(worker).toContain("preview_continuation_recovered");
   });
 
   it("uses one exact-change approval for the unchanged QA-passed Autopilot release", () => {
