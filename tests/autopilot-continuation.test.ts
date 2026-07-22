@@ -157,6 +157,11 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("recoverMissingProductionRollbackBaselines");
     expect(worker).toContain("ensureProductionRollbackBaseline");
     expect(worker).toContain("production_rollback_baseline_ready");
+    expect(worker).toContain("deployment.external_deployment_id&&Date.now()-lastChecked");
+    const vercelClient=read("lib/vercel/client.ts");
+    expect(vercelClient).toContain("response.deployments.map(normalizeProviderDeployment)");
+    const deploymentShape=read("lib/vercel/deployment-shape.ts");
+    expect(deploymentShape).toContain("item.id ?? item.uid");
   });
 
   it("proves modern Autopilot acceptance without requiring a destructive rollback",()=>{

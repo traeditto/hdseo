@@ -1,8 +1,13 @@
 import {describe,expect,it} from "vitest";
 
 import {providerDeploymentIso,selectPriorProductionDeployment} from "../lib/automation/rollback-baseline";
+import {normalizeProviderDeployment} from "../lib/vercel/deployment-shape";
 
 describe("production rollback baseline selection",()=>{
+  it("normalizes the uid returned by Vercel's deployment list endpoint",()=>{
+    expect(normalizeProviderDeployment({uid:"dpl_previous",url:"previous.vercel.app",readyState:"READY",target:"production"})).toMatchObject({id:"dpl_previous",url:"previous.vercel.app"});
+  });
+
   it("selects the closest READY production deployment before the current release",()=>{
     const current={id:"current",url:"current.vercel.app",readyState:"READY",target:"production",createdAt:3_000};
     const selected=selectPriorProductionDeployment([

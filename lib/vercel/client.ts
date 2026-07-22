@@ -1,5 +1,6 @@
 import "server-only";
 import { ApiError } from "@/lib/api/errors";
+import { normalizeProviderDeployment } from "@/lib/vercel/deployment-shape";
 
 const API = "https://api.vercel.com";
 export interface VercelCredentials { token: string; teamId?: string | null; teamSlug?: string | null }
@@ -44,11 +45,13 @@ export function addVercelProjectDomain(credentials:VercelCredentials,projectId:s
 export function listVercelProjectDomains(credentials:VercelCredentials,projectId:string){return vercelRequest<{domains:Array<{name:string;verified:boolean;verification?:Array<{type:string;domain:string;value:string;reason:string}>}>}>(`/v9/projects/${encodeURIComponent(projectId)}/domains`,credentials)}
 
 export interface VercelDeployment { id: string; url: string; readyState?: string; target?: string; meta?: Record<string, string>; createdAt?: number; ready?: number }
-export function listVercelDeployments(credentials: VercelCredentials, input: { projectId: string; target?: "production" | "preview"; limit?: number; since?: number }) {
+type VercelDeploymentListItem=Omit<VercelDeployment,"id">&{id?:string;uid?:string};
+export async function listVercelDeployments(credentials: VercelCredentials, input: { projectId: string; target?: "production" | "preview"; limit?: number; since?: number }) {
   const query = new URLSearchParams({ projectId: input.projectId, limit: String(Math.max(1, Math.min(input.limit ?? 20, 100))) });
   if (input.target) query.set("target", input.target);
   if (input.since) query.set("since", String(input.since));
-  return vercelRequest<{ deployments: VercelDeployment[] }>(`/v6/deployments?${query.toString()}`, credentials);
+  const response=await vercelRequest<{deployments:VercelDeploymentListItem[]}>(`/v6/deployments?${query.toString()}`,credentials);
+  return{deployments:response.deployments.map(normalizeProviderDeployment)};
 }
 export function createVercelDeployment(credentials: VercelCredentials, input: { projectId: string; projectName: string; repositoryId: number|string; ref: string; sha?: string; environment: "preview" | "staging" | "production"; metadata: Record<string, string> }) {
   return vercelRequest<VercelDeployment>("/v13/deployments?forceNew=1&skipAutoDetectionConfirmation=1", credentials, { method: "POST", body: JSON.stringify({

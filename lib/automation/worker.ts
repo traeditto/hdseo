@@ -170,7 +170,7 @@ async function recoverMissingProductionRollbackBaselines(db:ReturnType<typeof re
   let inspected=0,repaired=0;const deferred:Array<{deploymentId:string;reason:string}>=[];
   for(const deployment of deployments.data??[]){
     const summary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{},lastChecked=typeof summary.rollbackCheckedAt==="string"?new Date(summary.rollbackCheckedAt).getTime():0;
-    if(summary.rollbackReady===false&&Date.now()-lastChecked<86_400_000)continue;
+    if(summary.rollbackReady===false&&deployment.external_deployment_id&&Date.now()-lastChecked<86_400_000)continue;
     inspected++;
     try{
       const project=await db.from("vercel_projects").select("connection_id,vercel_project_id,production_branch").eq("id",deployment.vercel_project_id).eq("agency_id",deployment.agency_id).eq("status","active").maybeSingle();
