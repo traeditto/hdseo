@@ -12,6 +12,7 @@ import {releaseAutopilotPreview} from "@/lib/execution/autopilot-release";
 import {previewContinuationJobIsActive,type PreviewContinuationJobState} from "./job-state";
 import {isGeneratedVercelHostname,productionValidationCandidates,verifiedProviderHostnames,type ProductionValidationCandidate,type ProviderDomain} from "./validation-target";
 import {reconcileHealthyProductionOutcome,reconcileRecentHealthyProductionOutcomes} from "./outcome-reconciliation";
+import {providerDeploymentIso,selectPriorProductionDeployment} from "./rollback-baseline";
 
 interface BackgroundJob{id:string;job_type:string;agency_id:string;automation_run_id:string|null;deployment_id:string|null;payload:Record<string,unknown>;attempt_count:number;max_attempts:number;fencing_token:string|null}
 type SafetyMetadata={mutationIntentId:string;actionDigest:string;traceId?:string;approvalPolicy?:string};
@@ -119,9 +120,72 @@ async function reconcileCampaignForExecution(db:ReturnType<typeof requireAdminDb
   if(outcomeRunId)await db.from("outcome_loop_runs").update({status:"failed",failure_code:"PREVIEW_QA_FAILED",failure_message:failureMessage,completed_at:now,updated_at:now}).eq("id",outcomeRunId);
 }
 
+async function ensureProductionRollbackBaseline(db:ReturnType<typeof requireAdminDb>,input:{
+  deployment:{id:string;agency_id:string;client_id:string;client_organization_id:string;project_id:string;vercel_project_id:string;repository_id:string|null;external_deployment_id:string|null;git_sha:string|null;previous_deployment_id:string|null;validation_summary?:unknown};
+  vercelProject:{connection_id:string;vercel_project_id:string;production_branch:string|null};
+  currentProvider?:import("@/lib/vercel/client").VercelDeployment|null;
+}){
+  if(input.deployment.previous_deployment_id)return{ready:true,baselineDeploymentId:input.deployment.previous_deployment_id,repaired:false};
+  const credentials=await loadVercelCredentials(input.vercelProject.connection_id,input.deployment.agency_id),provider=await listVercelDeployments(credentials,{projectId:input.vercelProject.vercel_project_id,target:"production",limit:50});
+  let current=input.currentProvider??provider.deployments.find(candidate=>candidate.id===input.deployment.external_deployment_id)??null;
+  if(!current&&input.deployment.git_sha){
+    current=provider.deployments.find(candidate=>(candidate.meta?.githubCommitSha??candidate.meta?.gitCommitSha)===input.deployment.git_sha)??null;
+    if(!current){
+      for(const candidate of provider.deployments.slice(0,10)){
+        const detail=await getVercelDeployment(credentials,candidate.id),sha=detail.meta?.githubCommitSha??detail.meta?.gitCommitSha;
+        if(sha===input.deployment.git_sha){current={...candidate,...detail};break;}
+      }
+    }
+  }
+  if(!current)return{ready:false,baselineDeploymentId:null,repaired:false,reason:"current_provider_deployment_not_found"};
+  if(!input.deployment.external_deployment_id){
+    const bound=await db.from("deployments").update({external_deployment_id:current.id,url:current.url,updated_at:new Date().toISOString()}).eq("id",input.deployment.id).eq("agency_id",input.deployment.agency_id);
+    if(bound.error)throw new ApiError("The current production deployment could not be bound to its provider record.",500,"DATABASE_BINDING_FAILED");
+  }
+  const previous=selectPriorProductionDeployment(provider.deployments,current);
+  const currentSummary=input.deployment.validation_summary&&typeof input.deployment.validation_summary==="object"?input.deployment.validation_summary as Record<string,unknown>:{};
+  if(!previous){
+    const metadata={...currentSummary,rollbackReady:false,rollbackReason:"no_prior_provider_production",rollbackCheckedAt:new Date().toISOString()};
+    await db.from("deployments").update({validation_summary:metadata,updated_at:new Date().toISOString()}).eq("id",input.deployment.id).eq("agency_id",input.deployment.agency_id);
+    return{ready:false,baselineDeploymentId:null,repaired:false,reason:"no_prior_provider_production"};
+  }
+  let baseline=await db.from("deployments").select("id,external_deployment_id").eq("vercel_project_id",input.deployment.vercel_project_id).eq("external_deployment_id",previous.id).maybeSingle();
+  if(baseline.error)throw new ApiError("The rollback baseline could not be inspected.",500,"DATABASE_BINDING_FAILED");
+  if(!baseline.data){
+    const now=new Date().toISOString(),sha=previous.meta?.githubCommitSha??previous.meta?.gitCommitSha??null,createdAt=providerDeploymentIso(previous.createdAt,now),readyAt=providerDeploymentIso(previous.ready,createdAt);
+    baseline=await db.from("deployments").insert({
+      agency_id:input.deployment.agency_id,client_id:input.deployment.client_id,client_organization_id:input.deployment.client_organization_id,project_id:input.deployment.project_id,vercel_project_id:input.deployment.vercel_project_id,repository_id:input.deployment.repository_id,external_deployment_id:previous.id,environment:"production",git_ref:input.vercelProject.production_branch??"main",git_sha:sha,url:previous.url,status:"ready",provider_metadata:{provider:previous,source:"production_baseline_import",importedForDeploymentId:input.deployment.id},validation_summary:{baselineImported:true,providerState:"READY",rollbackTargetVerifiedAt:now},started_at:createdAt,ready_at:readyAt,completed_at:readyAt,updated_at:now,
+    }).select("id,external_deployment_id").single();
+    if(baseline.error||!baseline.data)throw new ApiError("The prior production rollback baseline could not be recorded.",500,"DATABASE_BINDING_FAILED");
+  }
+  const now=new Date().toISOString(),linked=await db.from("deployments").update({previous_deployment_id:baseline.data.id,validation_summary:{...currentSummary,rollbackReady:true,rollbackBaselineDeploymentId:baseline.data.id,rollbackProviderDeploymentId:previous.id,rollbackCheckedAt:now},updated_at:now}).eq("id",input.deployment.id).eq("agency_id",input.deployment.agency_id);
+  if(linked.error)throw new ApiError("The verified rollback baseline could not be linked to this release.",500,"DATABASE_BINDING_FAILED");
+  logEvent("production_rollback_baseline_ready",{agencyId:input.deployment.agency_id,projectId:input.deployment.project_id,deploymentId:input.deployment.id,baselineDeploymentId:baseline.data.id,status:"ready",stage:"rollback_readiness"});
+  return{ready:true,baselineDeploymentId:baseline.data.id,repaired:true};
+}
+
+async function recoverMissingProductionRollbackBaselines(db:ReturnType<typeof requireAdminDb>){
+  const deployments=await db.from("deployments").select("id,agency_id,client_id,client_organization_id,project_id,vercel_project_id,repository_id,external_deployment_id,git_sha,previous_deployment_id,validation_summary,updated_at").eq("environment","production").eq("status","healthy").is("previous_deployment_id",null).order("updated_at",{ascending:false}).limit(10);
+  if(deployments.error)throw new ApiError("Rollback readiness recovery could not inspect healthy releases.",500,"DATABASE_BINDING_FAILED");
+  let inspected=0,repaired=0;const deferred:Array<{deploymentId:string;reason:string}>=[];
+  for(const deployment of deployments.data??[]){
+    const summary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{},lastChecked=typeof summary.rollbackCheckedAt==="string"?new Date(summary.rollbackCheckedAt).getTime():0;
+    if(summary.rollbackReady===false&&Date.now()-lastChecked<86_400_000)continue;
+    inspected++;
+    try{
+      const project=await db.from("vercel_projects").select("connection_id,vercel_project_id,production_branch").eq("id",deployment.vercel_project_id).eq("agency_id",deployment.agency_id).eq("status","active").maybeSingle();
+      if(!project.data){deferred.push({deploymentId:deployment.id,reason:"vercel_project_not_active"});continue;}
+      const result=await ensureProductionRollbackBaseline(db,{deployment,vercelProject:project.data});
+      if(result.repaired)repaired++;else if(!result.ready)deferred.push({deploymentId:deployment.id,reason:result.reason??"baseline_unavailable"});
+    }catch(error){const safe=safeError(error);deferred.push({deploymentId:deployment.id,reason:safe.body.error.code});logEvent("production_rollback_baseline_deferred",{agencyId:deployment.agency_id,projectId:deployment.project_id,deploymentId:deployment.id,status:"deferred",errorCode:safe.body.error.code,stage:"rollback_readiness"});}
+  }
+  return{inspected,repaired,deferred};
+}
+
 async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminDb>){
   const recovered=await recoverProtectedProductionValidations(db);
   const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db);
+  const rollbackBaselines=await recoverMissingProductionRollbackBaselines(db);
   const waitingCampaigns=await db.from("seo_campaign_jobs").select("id,agency_id,client_organization_id,project_id,outcome_run_id,result,status,current_stage").eq("status","awaiting_deployment").order("updated_at",{ascending:true}).limit(20);
   if(waitingCampaigns.error)throw new ApiError("Production deployment reconciliation could not read the waiting campaign queue.",500,"DATABASE_BINDING_FAILED");
   const waitingExecutionIds=[...new Set((waitingCampaigns.data??[]).map(campaign=>campaign.result&&typeof campaign.result==="object"?(campaign.result as Record<string,unknown>).executionId:null).filter((id):id is string=>typeof id==="string"&&Boolean(id)))];
@@ -167,9 +231,10 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
       if(state!=="READY")continue;
       detected++;
       const validationTargets=await loadProductionValidationTargets(db,{agencyId:execution.agency_id,projectId:execution.project_id,vercelProject:vercelProject.data,credentials}),validationTarget=validationTargets[0];
-      let existing=await db.from("deployments").select("id,status,provider_metadata").eq("vercel_project_id",vercelProject.data.id).eq("external_deployment_id",matched.id).maybeSingle();
-      if(!existing.data)existing=await db.from("deployments").select("id,status,provider_metadata").eq("vercel_project_id",vercelProject.data.id).eq("environment","production").eq("git_sha",execution.merge_commit_sha).order("updated_at",{ascending:false}).limit(1).maybeSingle();
+      let existing=await db.from("deployments").select("id,agency_id,client_id,client_organization_id,project_id,vercel_project_id,repository_id,external_deployment_id,git_sha,previous_deployment_id,status,provider_metadata,validation_summary").eq("vercel_project_id",vercelProject.data.id).eq("external_deployment_id",matched.id).maybeSingle();
+      if(!existing.data)existing=await db.from("deployments").select("id,agency_id,client_id,client_organization_id,project_id,vercel_project_id,repository_id,external_deployment_id,git_sha,previous_deployment_id,status,provider_metadata,validation_summary").eq("vercel_project_id",vercelProject.data.id).eq("environment","production").eq("git_sha",execution.merge_commit_sha).order("updated_at",{ascending:false}).limit(1).maybeSingle();
       if(existing.data){
+        await ensureProductionRollbackBaseline(db,{deployment:existing.data,vercelProject:vercelProject.data,currentProvider:matched});
         if(existing.data.status==="healthy"){
           const now=new Date().toISOString();
           await Promise.all([
@@ -189,9 +254,10 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
         continue;
       }
       const now=new Date().toISOString(),created=await db.from("deployments").insert({
-        agency_id:execution.agency_id,client_id:vercelProject.data.client_id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:vercelProject.data.repository_id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:validationTarget.baseUrl,validationTargetSource:validationTarget.source,validationCandidates:validationTargets},started_at:matched.createdAt?new Date(matched.createdAt).toISOString():now,ready_at:matched.ready?new Date(matched.ready).toISOString():now,updated_at:now,
-      }).select("id").single();
+        agency_id:execution.agency_id,client_id:vercelProject.data.client_id,client_organization_id:execution.client_organization_id,project_id:execution.project_id,vercel_project_id:vercelProject.data.id,repository_id:vercelProject.data.repository_id,outcome_run_id:execution.outcome_run_id,external_deployment_id:matched.id,environment:"production",git_ref:vercelProject.data.production_branch??"main",git_sha:execution.merge_commit_sha,url:matched.url,status:"ready",provider_metadata:{provider:matched,source:"production_poll",executionId:execution.id,validationBaseUrl:validationTarget.baseUrl,validationTargetSource:validationTarget.source,validationCandidates:validationTargets},started_at:providerDeploymentIso(matched.createdAt,now),ready_at:providerDeploymentIso(matched.ready,now),updated_at:now,
+      }).select("id,agency_id,client_id,client_organization_id,project_id,vercel_project_id,repository_id,external_deployment_id,git_sha,previous_deployment_id,validation_summary").single();
       if(created.error||!created.data)throw new ApiError("The detected production deployment could not be recorded.",500,"DATABASE_BINDING_FAILED");
+      await ensureProductionRollbackBaseline(db,{deployment:created.data,vercelProject:vercelProject.data,currentProvider:matched});
       const job=await db.from("background_jobs").upsert({queue:"deployments",job_type:"deployment.validate",agency_id:execution.agency_id,deployment_id:created.data.id,payload:{source:"production_poll",executionId:execution.id},status:"queued",priority:90,idempotency_key:`deployment.validate:${created.data.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});
       if(job.error)throw new ApiError("Production safety validation could not be queued.",500,"DATABASE_BINDING_FAILED");
       queued++;
@@ -201,7 +267,7 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
       logEvent("production_deployment_reconciliation_failed",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"deferred",errorCode:safe.body.error.code,stage:"production_poll"});
     }
   }
-  return{recovered,healthyOutcomes,detected,queued,errors};
+  return{recovered,healthyOutcomes,rollbackBaselines,detected,queued,errors};
 }
 
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
@@ -304,7 +370,9 @@ async function validateDeployment(job:BackgroundJob){
     ?await loadProductionValidationTargets(db,{agencyId:job.agency_id,projectId:deployment.project_id,vercelProject:{id:project.id,connection_id:project.connection_id,vercel_project_id:project.vercel_project_id,production_domains:project.production_domains}})
     :[{baseUrl:deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`,hostname:new URL(deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`).hostname,source:"configured_domain" as const}];
   let validationTarget=validationTargets[0],validationUrl=new URL(targetPath,validationTarget.baseUrl).toString();
-  const previous=await db.from("deployments").select("id").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
+  const previous=deployment.previous_deployment_id
+    ?await db.from("deployments").select("id").eq("id",deployment.previous_deployment_id).in("status",["ready","healthy","rolled_back"]).maybeSingle()
+    :await db.from("deployments").select("id").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
   const baselineChecks=previous.data?await db.from("deployment_checks").select("check_type,score,details").eq("deployment_id",previous.data.id):{data:[]};
   const baseline=previous.data?deploymentSnapshotFromChecks(baselineChecks.data??[]):null;
   await db.from("deployments").update({status:"validating",updated_at:new Date().toISOString()}).eq("id",deployment.id);

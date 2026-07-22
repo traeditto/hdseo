@@ -131,6 +131,7 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("getVercelDeployment(credentials,candidate.id)");
     expect(worker).toContain('source:"production_poll"');
     expect(worker).toContain('environment:"production"');
+    expect(worker).toContain('client_organization_id:execution.client_organization_id');
     expect(worker).toContain('status:failed.length?"production_failed":"production_deployed"');
     expect(worker).toContain('current_stage:"schedule_monitoring"');
     expect(worker).toContain('validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v2"');
@@ -151,6 +152,18 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("const db=requireAdminDb(),reconciliation=await reconcilePreviewCampaigns(db),claimed=");
     expect(worker).toContain("const recovered=await recoverProtectedProductionValidations(db)");
     expect(worker).toContain("const healthyOutcomes=await reconcileRecentHealthyProductionOutcomes(db)");
+    expect(worker).toContain("recoverMissingProductionRollbackBaselines");
+    expect(worker).toContain("ensureProductionRollbackBaseline");
+    expect(worker).toContain("production_rollback_baseline_ready");
+  });
+
+  it("proves modern Autopilot acceptance without requiring a destructive rollback",()=>{
+    const acceptance=read("lib/readiness/production-acceptance.ts");
+    expect(acceptance).toContain('db.from("outcome_loop_runs")');
+    expect(acceptance).toContain('db.from("outcome_loop_steps")');
+    expect(acceptance).toContain('db.from("deployment_checks")');
+    expect(acceptance).toContain('mode:actualRollback.data?"exercised":rollbackReady?"provider_baseline_ready":"unproven"');
+    expect(acceptance).toContain('stepSucceeded("report")');
   });
 
   it("self-heals every outcome ledger after healthy production QA", () => {
