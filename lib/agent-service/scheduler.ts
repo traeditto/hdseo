@@ -344,29 +344,39 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
 
 async function ensureDiscoveryCampaign(db:SupabaseClient,enrollment:Enrollment,requestedBy:string){
   const active=await db.from("seo_campaign_jobs").select("id,status").eq("project_id",enrollment.project_id).not("status","in","(completed,failed,cancelled,stale)").limit(1).maybeSingle();
-  if(active.data)return active.data.id as string;
+  if(active.data)return{id:active.data.id as string,wave:1,status:active.data.status as string};
   const [project,locations]=await Promise.all([
     db.from("seo_projects").select("primary_market").eq("id",enrollment.project_id).maybeSingle(),
     db.from("seo_locations").select("name").eq("project_id",enrollment.project_id).eq("status","active").order("priority",{ascending:false}).limit(25),
   ]);
   const serviceAreas=(locations.data??[]).map(row=>row.name),targetMarket=project.data?.primary_market||serviceAreas.join(", ")||"verified service area";
-  const idempotencyKey=`managed-discovery:${enrollment.project_id}:${new Date().toISOString().slice(0,10)}`;
+  const day=new Date().toISOString().slice(0,10),dayStart=`${day}T00:00:00.000Z`;
+  const prior=await db.from("seo_campaign_jobs").select("id,status,input,result,created_at")
+    .eq("project_id",enrollment.project_id)
+    .contains("input",{managedDiscoveryOnly:true})
+    .gte("created_at",dayStart)
+    .order("created_at",{ascending:true})
+    .limit(10);
+  if(prior.error)throw new ApiError("Prior evidence research could not be inspected.",503,"DATABASE_BINDING_FAILED");
+  const completedWaves=new Set((prior.data??[]).filter(item=>item.status==="completed").map(item=>Math.max(1,Number((item.input as Record<string,unknown> | null)?.adaptiveWave??1))));
+  const wave=Math.min(3,completedWaves.size+1),discoveryLimit=wave===1?100:wave===2?175:250;
+  const idempotencyKey=`managed-discovery:${enrollment.project_id}:${day}:wave-${wave}`;
   const inserted=await db.from("seo_campaign_jobs").insert({
     agency_id:enrollment.agency_id,client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,
     requested_by:requestedBy,status:"queued",current_stage:"discover",progress_percent:0,
-    input:{automationMode:"RECOMMEND",managedDiscoveryOnly:true,targetMarket,serviceAreas,discoveryLimit:100},
-    result:{managedDiscoveryOnly:true},idempotency_key:idempotencyKey,
+    input:{automationMode:"RECOMMEND",managedDiscoveryOnly:true,targetMarket,serviceAreas,discoveryLimit,adaptiveWave:wave,maxAdaptiveWaves:3,adaptiveReason:wave===1?"initial_research":"no_roi_qualified_move"},
+    result:{managedDiscoveryOnly:true,adaptiveWave:wave,maxAdaptiveWaves:3},idempotency_key:idempotencyKey,
     reference_id:crypto.randomUUID(),
   }).select("id").single();
   if(inserted.error&&inserted.error.code!=="23505")throw new ApiError("Evidence discovery could not be queued.",503,"DATABASE_BINDING_FAILED");
-  if(inserted.data?.id)return inserted.data.id as string;
+  if(inserted.data?.id)return{id:inserted.data.id as string,wave,status:"queued"};
   const existing=await db.from("seo_campaign_jobs").select("id,status").eq("idempotency_key",idempotencyKey).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).maybeSingle();
   if(existing.error||!existing.data)throw new ApiError("The existing evidence discovery workflow could not be recovered.",503,"DATABASE_BINDING_FAILED");
   if(["failed","stale"].includes(existing.data.status)){
     const recovered=await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"discover",last_completed_stage:null,progress_percent:0,attempt_count:0,error_code:null,error_message:null,error_details:{},failed_at:null,completed_at:null,next_attempt_at:now(),worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:now(),updated_at:now()}).eq("id",existing.data.id).in("status",["failed","stale"]).select("id").maybeSingle();
     if(recovered.error||!recovered.data)throw new ApiError("The stopped evidence discovery workflow could not be restarted safely.",503,"DATABASE_BINDING_FAILED");
   }
-  return existing.data.id as string;
+  return{id:existing.data.id as string,wave,status:["failed","stale"].includes(existing.data.status)?"queued":existing.data.status as string};
 }
 
 async function selectApprovedPackage(db:SupabaseClient,enrollment:Enrollment,packageId?:string|null):Promise<ApprovedPackageSelection|null>{
@@ -510,7 +520,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   const approved=await selectApprovedPackage(db,enrollment,input.approvedPackageId);
   const opportunityResult=approved
     ?await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_milestone,evidence,recommended_actions,status").eq("id",approved.pkg.opportunity_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).maybeSingle()
-    :await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_url,target_milestone,evidence,recommended_actions,status,reason_codes,cooldown_until").eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).in("status",["open","selected","approved"]).gte("opportunity_score",45).order("opportunity_score",{ascending:false}).order("confidence_score",{ascending:false}).limit(50);
+    :await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_url,target_milestone,evidence,recommended_actions,status,reason_codes,cooldown_until").eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).in("status",["open","selected","approved"]).order("opportunity_score",{ascending:false}).order("confidence_score",{ascending:false}).limit(100);
   if(opportunityResult.error)throw new ApiError("The selected SEO opportunity could not be loaded.",503,"DATABASE_BINDING_FAILED");
   const project=approved?null:await db.from("seo_projects").select("market_scope").eq("id",enrollment.project_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).maybeSingle();
   if(project?.error)throw new ApiError("The client market scope could not be verified.",503,"DATABASE_BINDING_FAILED");
@@ -524,6 +534,20 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
     ?opportunityResult.data as ManagedOpportunityCandidate|null
     :selectManagedOpportunity((opportunityResult.data??[]) as ManagedOpportunityCandidate[],project?.data?.market_scope==="nationwide"?"nationwide":"service_area",new Date(),investmentPolicy,remainingCapacity);
   const opportunity={data:opportunityData};
+  const portfolioEvidence=opportunity.data?.evidence&&typeof opportunity.data.evidence==="object"&&!Array.isArray(opportunity.data.evidence)
+    ?(opportunity.data.evidence as Record<string,unknown>).portfolioCampaign:null;
+  if(!approved&&opportunity.data&&portfolioEvidence&&typeof portfolioEvidence==="object"&&!Array.isArray(portfolioEvidence)&&(portfolioEvidence as Record<string,unknown>).active===true){
+    const persisted=await db.from("seo_opportunities").update({
+      opportunity_score:opportunity.data.opportunity_score,
+      confidence_score:opportunity.data.confidence_score,
+      reason_codes:opportunity.data.reason_codes,
+      recommended_actions:opportunity.data.recommended_actions,
+      evidence:opportunity.data.evidence,
+      scoring_version:"4.2-adaptive-portfolio",
+      updated_at:now(),
+    }).eq("id",opportunity.data.id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).select("id").maybeSingle();
+    if(persisted.error||!persisted.data)throw new ApiError("The focused campaign evidence could not be persisted safely.",503,"DATABASE_BINDING_FAILED");
+  }
   if(approved&&!opportunity.data)throw new ApiError("The exact approved package has lost its tenant-scoped opportunity evidence.",409,"CONFLICT");
   const cycleKey=approved?.cycleKey??`${new Date().toISOString().slice(0,13)}:${opportunity.data?.id??"evidence"}`;
   const priorCycle=approved
@@ -564,9 +588,9 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
     await releaseLease(db,enrollment,1);return{enrollmentId:enrollment.id,cycleId:cycleResult.data.id,packageId:approved.pkg.id,status:"connection_blocked",reason:"CONNECTION_REQUIRED"};
   }
   if(!opportunity.data){
-    const discoveryJobId=await ensureDiscoveryCampaign(db,enrollment,userId);
-    await db.from("agent_service_cycles").update({outcome_summary:{discoveryJobId,billable:false,reason:"Evidence collection is included and did not consume execution capacity."}}).eq("id",cycleResult.data.id);
-    await releaseLease(db,enrollment,1);return{enrollmentId:enrollment.id,cycleId:cycleResult.data.id,status:"evidence_queued",discoveryJobId};
+    const discovery=await ensureDiscoveryCampaign(db,enrollment,userId);
+    await db.from("agent_service_cycles").update({outcome_summary:{discoveryJobId:discovery.id,discoveryWave:discovery.wave,maxDiscoveryWaves:3,discoveryStatus:discovery.status,billable:false,reason:discovery.wave<3?"Autopilot is widening its research because the earlier candidates did not meet the customer ROI threshold. No execution capacity was used.":"Autopilot completed the broadest bounded research pass. It will keep watching fresh evidence without manufacturing low-value work."}}).eq("id",cycleResult.data.id);
+    await releaseLease(db,enrollment,discovery.status==="completed"?1:.25);return{enrollmentId:enrollment.id,cycleId:cycleResult.data.id,status:"evidence_queued",discoveryJobId:discovery.id,discoveryWave:discovery.wave};
   }
   const cycle=cycleResult.data as Cycle,runKey=`cycle:${cycle.id}`;
   const capacityUnits=executionCapacityForOpportunity({

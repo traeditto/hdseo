@@ -57,6 +57,20 @@ type ManagedServiceStatus = {
   approvals: unknown[];
   outcomeDecisions: ManagedDecision[];
   outcomeRuns: ManagedOutcomeRun[];
+  researchProgress: {
+    status: string;
+    stage: string;
+    progressPercent: number;
+    adaptiveWave: number;
+    maxAdaptiveWaves: number;
+    attemptsToday: number;
+    opportunitiesReviewed: number;
+    qualifiedCount: number;
+    strongestScore: number | null;
+    lastUpdatedAt: string;
+    completedAt: string | null;
+    nextCheckAt: string;
+  } | null;
   summary: { nextCycleAt: string; openEscalations: number } | null;
 };
 type ClientPackage = {
@@ -277,6 +291,17 @@ const friendlyStatus = (status: string) =>
   status
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+const shortDateTime = (value?: string | null) => {
+  if (!value) return "soon";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "soon";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+};
 
 type PostActionResult = {
   data: ClientData;
@@ -842,6 +867,21 @@ export function LiveClientBusinessDashboard({
   const managedDecision = effectiveManagedService?.outcomeDecisions?.[0] ?? null;
   const latestManagedRun = effectiveManagedService?.outcomeRuns?.[0] ?? null;
   const latestManagedCycle = effectiveManagedService?.cycles?.[0] ?? null;
+  const researchProgress = effectiveManagedService?.researchProgress ?? null;
+  const researchIsActive = Boolean(
+    researchProgress &&
+      !["completed", "failed", "cancelled", "stale"].includes(
+        researchProgress.status,
+      ),
+  );
+  const researchStageLabel =
+    {
+      discover: "collecting real searches",
+      validate: "checking evidence quality",
+      snapshot: "mapping pages and competitors",
+      score: "calculating customer value",
+      select: "testing candidates against the ROI guardrail",
+    }[researchProgress?.stage ?? ""] ?? "preparing the next research pass";
   const recoveryStarted =
     latestManagedRun?.status === "failed" &&
     latestManagedCycle &&
@@ -1200,7 +1240,9 @@ export function LiveClientBusinessDashboard({
                             ? "Evaluating next"
                             : topOpportunity
                               ? "Starting automatically"
-                              : "Researching"}
+                              : researchProgress
+                                ? `Research pass ${researchProgress.adaptiveWave} of ${researchProgress.maxAdaptiveWaves}`
+                                : "Researching"}
                     </span>
                   </header>
                   {managedDecision ? (
@@ -1317,6 +1359,47 @@ export function LiveClientBusinessDashboard({
                         See why Autopilot selected this →
                       </button>
                     </>
+                  ) : researchProgress ? (
+                    <>
+                      <h2>
+                        {researchIsActive
+                          ? `Autopilot is ${researchStageLabel}`
+                          : researchProgress.qualifiedCount > 0
+                            ? "A qualified opportunity is moving into planning"
+                            : `HD SEO reviewed ${researchProgress.opportunitiesReviewed} candidate${researchProgress.opportunitiesReviewed === 1 ? "" : "s"}`}
+                      </h2>
+                      <p>
+                        {researchIsActive
+                          ? `Research pass ${researchProgress.adaptiveWave} of ${researchProgress.maxAdaptiveWaves} is ${researchProgress.progressPercent}% complete.`
+                          : researchProgress.qualifiedCount > 0
+                            ? "The strongest evidence-backed move passed the value and safety gates. Autopilot will prepare the exact plan next."
+                            : researchProgress.adaptiveWave <
+                                researchProgress.maxAdaptiveWaves
+                              ? "The first candidates did not repay enough of your plan, so Autopilot is widening the search automatically. No execution capacity has been used."
+                              : "Nothing passed the customer ROI guardrail yet. HD SEO will keep watching fresh search evidence instead of spending your capacity on weak work."}
+                      </p>
+                      <div className="owner-why">
+                        <b>What has happened</b>
+                        <span>
+                          {researchProgress.opportunitiesReviewed} opportunities
+                          reviewed · strongest score{" "}
+                          {researchProgress.strongestScore ?? "pending"}/100 ·{" "}
+                          {researchProgress.qualifiedCount} currently qualified
+                        </span>
+                      </div>
+                      <div className="owner-why">
+                        <b>What happens next</b>
+                        <span>
+                          {researchProgress.adaptiveWave <
+                          researchProgress.maxAdaptiveWaves
+                            ? "HD SEO expands the bounded evidence set and combines closely related searches into one focused page campaign when the conservative combined value qualifies."
+                            : `The next automatic evidence check is scheduled for ${shortDateTime(researchProgress.nextCheckAt)}.`}
+                        </span>
+                      </div>
+                      <button onClick={() => setTab("autopilot")}>
+                        See live research progress →
+                      </button>
+                    </>
                   ) : (
                     <div className="owner-empty">
                       <i>◎</i>
@@ -1376,6 +1459,26 @@ export function LiveClientBusinessDashboard({
                         </p>
                       </div>
                       <span>Automatic</span>
+                    </article>
+                  ) : researchProgress ? (
+                    <article>
+                      <i className={researchIsActive ? "running" : "queued"} />
+                      <div>
+                        <strong>Research Agent</strong>
+                        <p>
+                          {researchIsActive
+                            ? `Pass ${researchProgress.adaptiveWave} of ${researchProgress.maxAdaptiveWaves}: ${researchStageLabel}.`
+                            : researchProgress.adaptiveWave <
+                                researchProgress.maxAdaptiveWaves
+                              ? "The next broader research pass is scheduled automatically."
+                              : `Watching for stronger evidence; next check ${shortDateTime(researchProgress.nextCheckAt)}.`}
+                        </p>
+                      </div>
+                      <span>
+                        {researchIsActive
+                          ? `${researchProgress.progressPercent}%`
+                          : "Automatic"}
+                      </span>
                     </article>
                   ) : (
                     <div className="owner-empty">

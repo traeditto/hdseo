@@ -149,6 +149,61 @@ describe("managed Autopilot opportunity selection", () => {
     expect(selected?.id).toBe("focus");
   });
 
+  it("combines related weak queries into one conservative page campaign", () => {
+    const selected = selectManagedOpportunity(
+      [
+        candidate({
+          id: "roof-repair",
+          opportunity_score: 50,
+          evidence: {
+            keyword: "roof repair jacksonville",
+            businessValue: {
+              expectedMonthlyProfit: 350,
+              implementationCost: 350,
+              paybackMonths: 1,
+            },
+            currentRank: 18,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+        candidate({
+          id: "emergency-roof-repair",
+          opportunity_score: 48,
+          evidence: {
+            keyword: "emergency roof repair jacksonville",
+            businessValue: {
+              expectedMonthlyProfit: 350,
+              implementationCost: 350,
+              paybackMonths: 1,
+            },
+            currentRank: 22,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+      ],
+      "service_area",
+    );
+
+    expect(selected?.id).toBe("roof-repair");
+    expect(
+      (
+        selected?.evidence as {
+          portfolioCampaign?: { active?: boolean; capacityUnits?: number };
+          businessValue?: { expectedMonthlyProfit?: number };
+        }
+      ).portfolioCampaign,
+    ).toMatchObject({ active: true, capacityUnits: 2 });
+    expect(
+      (
+        selected?.evidence as {
+          businessValue?: { expectedMonthlyProfit?: number };
+        }
+      ).businessValue?.expectedMonthlyProfit,
+    ).toBe(525);
+  });
+
   it("permits verified nationwide work without a local relevance marker", () => {
     const selected = selectManagedOpportunity(
       [candidate({ id: "national", reason_codes: ["COMMERCIAL_INTENT"] })],

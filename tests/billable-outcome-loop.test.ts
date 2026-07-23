@@ -83,7 +83,7 @@ describe("billable managed outcome loop",()=>{
 
   it("does not bill discovery, specialist handoffs, delivery workers, QA, retries, or reporting separately",()=>{
     const scheduler=read("lib/agent-service/scheduler.ts");
-    expect(scheduler).toContain("Evidence collection is included and did not consume execution capacity.");
+    expect(scheduler).toContain("No execution capacity was used.");
     expect(scheduler).toContain("resumeEvidenceBlockedAgentWork");
     expect(scheduler).toContain("upgradeLegacyManagedTools");
     expect(scheduler).toContain('customerCharge:`${capacityUnits} execution capacity unit');

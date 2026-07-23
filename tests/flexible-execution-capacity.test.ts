@@ -35,6 +35,16 @@ describe("flexible execution capacity", () => {
     ).toBe(5);
   });
 
+  it("honors a qualified page-portfolio capacity allocation", () => {
+    expect(
+      executionCapacityForOpportunity({
+        actionType: "IMPROVE",
+        evidence: { portfolioCampaign: { active: true, capacityUnits: 3 } },
+        monthlyCapacity: 6,
+      }),
+    ).toBe(3);
+  });
+
   it("combines remaining included and prepaid capacity", () => {
     expect(
       availableExecutionCapacity({

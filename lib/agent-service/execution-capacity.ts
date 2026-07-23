@@ -34,8 +34,14 @@ export function executionCapacityForOpportunity(
   const monthlyCapacity = Math.max(1, Math.floor(input.monthlyCapacity));
   const evidence = record(input.evidence);
   const focusCampaign = record(evidence.focusCampaign);
+  const portfolioCapacity = Number(
+    record(evidence.portfolioCampaign).capacityUnits,
+  );
   const actionType = String(input.actionType ?? "").toUpperCase();
 
+  if (Number.isFinite(portfolioCapacity) && portfolioCapacity > 0) {
+    return Math.min(monthlyCapacity, Math.max(1, Math.floor(portfolioCapacity)));
+  }
   if (focusCampaign.active === true) return monthlyCapacity;
 
   let units = baseCapacityByAction[actionType] ?? 2;
