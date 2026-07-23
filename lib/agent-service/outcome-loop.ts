@@ -19,6 +19,7 @@ export type OutcomeReservation={
   actionsUsed?:number;
   actionLimit?:number;
   purchasedActionBalance?:number;
+  capacityUnits?:number;
 };
 
 const migrationMessage="The billable outcome ledger is not installed. Apply migration 0038 before running managed agents.";
@@ -26,9 +27,9 @@ const migrationMessage="The billable outcome ledger is not installed. Apply migr
 export async function reserveOutcome(db:SupabaseClient,input:{
   enrollmentId:string;cycleId:string;opportunityId:string;requestedBy:string|null;
   runKey:string;triggerType:"scheduled"|"manual"|"onboarding"|"recovery";
-  expectedValue:number|null;planSnapshot:Record<string,unknown>;
+  expectedValue:number|null;capacityUnits:number;planSnapshot:Record<string,unknown>;
 }){
-  const result=await db.rpc("start_outcome_loop_run",{
+  const result=await db.rpc("start_outcome_loop_run_v2",{
     p_enrollment_id:input.enrollmentId,
     p_cycle_id:input.cycleId,
     p_opportunity_id:input.opportunityId,
@@ -36,6 +37,7 @@ export async function reserveOutcome(db:SupabaseClient,input:{
     p_run_key:input.runKey,
     p_trigger_type:input.triggerType,
     p_expected_value:input.expectedValue,
+    p_capacity_units:input.capacityUnits,
     p_plan_snapshot:input.planSnapshot,
   });
   if(result.error)throw new ApiError(migrationMessage,503,"DATABASE_BINDING_FAILED");

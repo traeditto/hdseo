@@ -43,6 +43,7 @@ type InvestmentInput = {
   economicsConfidence?: number | null;
   opportunityScore?: number | null;
   strategicFocus?: boolean;
+  capacityUnits?: number | null;
 };
 
 const directPlanKeys = new Set<RetailBillingPlanKey>([
@@ -153,9 +154,18 @@ export function evaluateSeoInvestment(
       : expectedMonthlyProfit > 0
         ? Number.POSITIVE_INFINITY
         : 0;
-  const allocatedMonthlyPlanCost = input.strategicFocus
-    ? policy.monthlyPlanPrice
-    : policy.monthlyPlanPrice / Math.max(1, policy.includedOutcomes);
+  const capacityUnits = input.strategicFocus
+    ? policy.includedOutcomes
+    : Math.max(
+        1,
+        Math.min(
+          policy.includedOutcomes,
+          Math.floor(finite(input.capacityUnits) ?? 1),
+        ),
+      );
+  const allocatedMonthlyPlanCost =
+    policy.monthlyPlanPrice *
+    (capacityUnits / Math.max(1, policy.includedOutcomes));
   const requiredMonthlyProfit = Math.max(
     policy.minimumMonthlyProfit,
     allocatedMonthlyPlanCost *
@@ -255,6 +265,7 @@ export function evaluateSeoInvestment(
     customerTwelveMonthRoiPercent:
       +customerTwelveMonthRoiPercent.toFixed(0),
     currentRank,
+    capacityUnits,
     policy,
   };
 }

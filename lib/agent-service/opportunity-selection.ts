@@ -4,6 +4,7 @@ import {
   investmentPolicyForPlan,
   type SeoInvestmentPolicy,
 } from "../seo/investment-policy";
+import { executionCapacityForOpportunity } from "./execution-capacity";
 
 export type ManagedOpportunityCandidate = {
   id: string;
@@ -12,6 +13,7 @@ export type ManagedOpportunityCandidate = {
   action_type: string | null;
   target_url: string | null;
   reason_codes: string[] | null;
+  recommended_actions?: unknown;
   evidence: unknown;
   status: string;
   cooldown_until?: string | null;
@@ -61,7 +63,52 @@ export function selectManagedOpportunity(
   marketScope: "service_area" | "nationwide",
   now = new Date(),
   policy: SeoInvestmentPolicy = investmentPolicyForPlan("pro"),
+  availableCapacity = policy.includedOutcomes,
 ) {
+  const evaluate = (candidate: ManagedOpportunityCandidate) => {
+    const evidence = record(candidate.evidence);
+    const value = record(evidence.businessValue);
+    const capacityUnits = executionCapacityForOpportunity({
+      actionType: candidate.action_type,
+      evidence,
+      recommendedActions: candidate.recommended_actions,
+      monthlyCapacity: policy.includedOutcomes,
+    });
+    const investment = evaluateSeoInvestment(
+      {
+        expectedMonthlyProfit: metricNumber(value.expectedMonthlyProfit),
+        implementationCost: metricNumber(value.implementationCost),
+        paybackMonths: metricNumber(value.paybackMonths),
+        confidenceScore: candidate.confidence_score,
+        currentRank: metricNumber(evidence.currentRank),
+        actionType: candidate.action_type,
+        economicsConfidence: metricNumber(evidence.economicsConfidence),
+        opportunityScore: candidate.opportunity_score,
+        strategicFocus: record(evidence.focusCampaign).active === true,
+        capacityUnits,
+      },
+      policy,
+    );
+    const confidence = Math.max(
+      0,
+      Math.min(1, Number(candidate.confidence_score ?? 0) / 100),
+    );
+    const confidenceAdjustedMonthlyProfit =
+      investment.expectedMonthlyProfit * confidence;
+    const monthlyNetValue =
+      confidenceAdjustedMonthlyProfit -
+      investment.allocatedMonthlyPlanCost -
+      investment.implementationCost / 12;
+    return {
+      investment,
+      capacityUnits,
+      portfolioScore:
+        monthlyNetValue * 10 +
+        investment.focusScore +
+        Number(candidate.opportunity_score ?? 0),
+    };
+  };
+
   return (
     candidates
       .filter((candidate) => {
@@ -86,24 +133,8 @@ export function selectManagedOpportunity(
           return false;
 
         const evidence = record(candidate.evidence);
-        const businessValue = record(evidence.businessValue);
-        const investment = evaluateSeoInvestment(
-          {
-            expectedMonthlyProfit: metricNumber(
-              businessValue.expectedMonthlyProfit,
-            ),
-            implementationCost: metricNumber(businessValue.implementationCost),
-            paybackMonths: metricNumber(businessValue.paybackMonths),
-            confidenceScore: candidate.confidence_score,
-            currentRank: metricNumber(evidence.currentRank),
-            actionType: candidate.action_type,
-            economicsConfidence: metricNumber(evidence.economicsConfidence),
-            opportunityScore: candidate.opportunity_score,
-            strategicFocus:
-              record(evidence.focusCampaign).active === true,
-          },
-          policy,
-        );
+        const { investment, capacityUnits } = evaluate(candidate);
+        if (capacityUnits > availableCapacity) return false;
         if (!investment.qualified) return false;
         if (investment.focusScore < 55) return false;
         if (
@@ -114,26 +145,7 @@ export function selectManagedOpportunity(
         return true;
       })
       .sort((a, b) => {
-        const evaluate = (candidate: ManagedOpportunityCandidate) => {
-          const evidence = record(candidate.evidence);
-          const value = record(evidence.businessValue);
-          return evaluateSeoInvestment(
-            {
-              expectedMonthlyProfit: metricNumber(value.expectedMonthlyProfit),
-              implementationCost: metricNumber(value.implementationCost),
-              paybackMonths: metricNumber(value.paybackMonths),
-              confidenceScore: candidate.confidence_score,
-              currentRank: metricNumber(evidence.currentRank),
-              actionType: candidate.action_type,
-              economicsConfidence: metricNumber(evidence.economicsConfidence),
-              opportunityScore: candidate.opportunity_score,
-              strategicFocus:
-                record(evidence.focusCampaign).active === true,
-            },
-            policy,
-          ).focusScore;
-        };
-        return evaluate(b) - evaluate(a);
+        return evaluate(b).portfolioScore - evaluate(a).portfolioScore;
       })[0] ?? null
   );
 }

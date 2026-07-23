@@ -108,6 +108,47 @@ describe("managed Autopilot opportunity selection", () => {
     expect(selected?.id).toBe("stronger-roi");
   });
 
+  it("uses the whole month only for a plan-level focus campaign", () => {
+    const selected = selectManagedOpportunity(
+      [
+        candidate({
+          id: "small",
+          opportunity_score: 78,
+          action_type: "LINK",
+          evidence: {
+            businessValue: {
+              expectedMonthlyProfit: 450,
+              implementationCost: 150,
+              paybackMonths: 0.33,
+            },
+            currentRank: 12,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+        candidate({
+          id: "focus",
+          opportunity_score: 72,
+          action_type: "BUILD",
+          evidence: {
+            businessValue: {
+              expectedMonthlyProfit: 2_200,
+              implementationCost: 1_200,
+              paybackMonths: 0.55,
+            },
+            focusCampaign: { active: true },
+            currentRank: 18,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+      ],
+      "service_area",
+    );
+
+    expect(selected?.id).toBe("focus");
+  });
+
   it("permits verified nationwide work without a local relevance marker", () => {
     const selected = selectManagedOpportunity(
       [candidate({ id: "national", reason_codes: ["COMMERCIAL_INTENT"] })],

@@ -6,6 +6,7 @@ import {ApiError} from "@/lib/api/errors";
 import {enqueueAgentWorkItem,resumeEvidenceBlockedAgentWork} from "@/lib/agents/control-plane";
 import {upgradeLegacyManagedTools} from "@/lib/agent-service/catalog";
 import {commitOutcome,releaseOutcome,reserveOutcome,setOutcomeStep,type OutcomeStepKey} from "@/lib/agent-service/outcome-loop";
+import {availableExecutionCapacity,executionCapacityForOpportunity} from "@/lib/agent-service/execution-capacity";
 import {selectManagedOpportunity,type ManagedOpportunityCandidate} from "@/lib/agent-service/opportunity-selection";
 import {getLiveAdminClient} from "@/lib/live/identity";
 import {investmentPolicyForPlan} from "@/lib/seo/investment-policy";
@@ -14,6 +15,7 @@ type Enrollment={
   id:string;agency_id:string;client_organization_id:string;client_id:string;project_id:string;
   created_by:string|null;approval_owner:"agency"|"client"|"both";monthly_action_limit:number;
   actions_used:number;monthly_provider_budget:number;provider_spend_used:number;cycle_cadence_hours:number;
+  purchased_action_balance:number;
   status:string;risk_ceiling:"low"|"medium"|"high";allowed_tools:string[];external_spend_requires_approval:boolean;
 };
 type Cycle={id:string;outcome_run_id:string|null;campaign_job_id:string|null;implementation_package_id?:string|null;work_item_ids:string[];selected_opportunity_id:string|null;status:string};
@@ -512,9 +514,15 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   if(opportunityResult.error)throw new ApiError("The selected SEO opportunity could not be loaded.",503,"DATABASE_BINDING_FAILED");
   const project=approved?null:await db.from("seo_projects").select("market_scope").eq("id",enrollment.project_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).maybeSingle();
   if(project?.error)throw new ApiError("The client market scope could not be verified.",503,"DATABASE_BINDING_FAILED");
+  const investmentPolicy=investmentPolicyForPlan(String(subscription.data?.plan_key??"agency_core"));
+  const remainingCapacity=availableExecutionCapacity({
+    monthlyCapacity:enrollment.monthly_action_limit,
+    usedCapacity:enrollment.actions_used,
+    prepaidCapacity:enrollment.purchased_action_balance,
+  });
   const opportunityData:ManagedOpportunityCandidate|null=approved
     ?opportunityResult.data as ManagedOpportunityCandidate|null
-    :selectManagedOpportunity((opportunityResult.data??[]) as ManagedOpportunityCandidate[],project?.data?.market_scope==="nationwide"?"nationwide":"service_area",new Date(),investmentPolicyForPlan(String(subscription.data?.plan_key??"agency_core")));
+    :selectManagedOpportunity((opportunityResult.data??[]) as ManagedOpportunityCandidate[],project?.data?.market_scope==="nationwide"?"nationwide":"service_area",new Date(),investmentPolicy,remainingCapacity);
   const opportunity={data:opportunityData};
   if(approved&&!opportunity.data)throw new ApiError("The exact approved package has lost its tenant-scoped opportunity evidence.",409,"CONFLICT");
   const cycleKey=approved?.cycleKey??`${new Date().toISOString().slice(0,13)}:${opportunity.data?.id??"evidence"}`;
@@ -557,10 +565,16 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   }
   if(!opportunity.data){
     const discoveryJobId=await ensureDiscoveryCampaign(db,enrollment,userId);
-    await db.from("agent_service_cycles").update({outcome_summary:{discoveryJobId,billable:false,reason:"Evidence collection is included and did not consume an outcome action."}}).eq("id",cycleResult.data.id);
+    await db.from("agent_service_cycles").update({outcome_summary:{discoveryJobId,billable:false,reason:"Evidence collection is included and did not consume execution capacity."}}).eq("id",cycleResult.data.id);
     await releaseLease(db,enrollment,1);return{enrollmentId:enrollment.id,cycleId:cycleResult.data.id,status:"evidence_queued",discoveryJobId};
   }
   const cycle=cycleResult.data as Cycle,runKey=`cycle:${cycle.id}`;
+  const capacityUnits=executionCapacityForOpportunity({
+    actionType:opportunity.data.action_type,
+    evidence:opportunity.data.evidence,
+    recommendedActions:opportunity.data.recommended_actions,
+    monthlyCapacity:enrollment.monthly_action_limit,
+  });
   const activeCampaign=approved?await existingApprovedCampaign(db,enrollment,approved.pkg.id):null;
   if(approved&&!activeCampaign){
     const other=await db.from("seo_campaign_jobs").select("id,status").eq("project_id",enrollment.project_id).not("status","in","(completed,failed,cancelled,stale)").order("created_at",{ascending:false}).limit(1).maybeSingle();
@@ -572,10 +586,10 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
       await releaseLease(db,enrollment,1);return{enrollmentId:enrollment.id,cycleId:cycle.id,packageId:approved.pkg.id,status:"waiting_for_active_work",reason:"ACTIVE_WORK"};
     }
   }
-  const reservation=await reserveOutcome(db,{enrollmentId:enrollment.id,cycleId:cycle.id,opportunityId:opportunity.data.id,requestedBy:userId,runKey,triggerType:input.triggerType??"scheduled",expectedValue:expectedValue(opportunity.data.evidence),planSnapshot:{planDefinition:"one verified customer-visible outcome",opportunityScore:opportunity.data.opportunity_score,confidenceScore:opportunity.data.confidence_score,actionType:opportunity.data.action_type,internalStepsIncluded:true,...(approved?{approvedPackageId:approved.pkg.id,approvalDigest:approved.pkg.approval_digest,approvalRecordedAt:approved.pkg.approved_at}: {})}});
+  const reservation=await reserveOutcome(db,{enrollmentId:enrollment.id,cycleId:cycle.id,opportunityId:opportunity.data.id,requestedBy:userId,runKey,triggerType:input.triggerType??"scheduled",expectedValue:expectedValue(opportunity.data.evidence),capacityUnits,planSnapshot:{planDefinition:"flexible weighted execution capacity committed only after verified delivery",capacityUnits,portfolioAllocation:capacityUnits===enrollment.monthly_action_limit?"monthly_focus":"weighted_project",opportunityScore:opportunity.data.opportunity_score,confidenceScore:opportunity.data.confidence_score,actionType:opportunity.data.action_type,internalStepsIncluded:true,...(approved?{approvedPackageId:approved.pkg.id,approvalDigest:approved.pkg.approval_digest,approvalRecordedAt:approved.pkg.approved_at}: {})}});
   if(!reservation.allowed){
     const reason=reservation.reason??"CHECKOUT_REQUIRED";
-    await escalate(db,enrollment,cycle.id,"capacity","Managed SEO capacity reached","The next evidence-backed outcome is ready. Buy a prepaid $15 outcome action or wait for the plan to renew; no work or charge was created.",enrollment.approval_owner!=="agency");
+    await escalate(db,enrollment,cycle.id,"capacity","Managed SEO capacity reached",`The next evidence-backed campaign needs ${capacityUnits} execution capacity unit${capacityUnits===1?"":"s"}. Add prepaid capacity or wait for the plan to renew; no work or charge was created.`,enrollment.approval_owner!=="agency");
     await releaseLease(db,enrollment,24);return{enrollmentId:enrollment.id,cycleId:cycle.id,status:"capacity_blocked",reason};
   }
   if(approved&&approvedPath){
@@ -598,7 +612,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   for(const [index,workType] of workTypes.entries()){
     const queued=await enqueueAgentWorkItem(db,{agencyId:enrollment.agency_id,clientId:enrollment.client_organization_id,projectId:enrollment.project_id,userId},{
       workType,evidence:{outcomeRunId:reservation.runId,cycleId:cycle.id,opportunity:opportunity.data},
-      proposedPlan:{serviceMode:"managed_agent",billable:false,noMakeWorkRule:true,customerCharge:"one outcome only after verified delivery"},
+      proposedPlan:{serviceMode:"managed_agent",billable:false,noMakeWorkRule:true,customerCharge:`${capacityUnits} execution capacity unit${capacityUnits===1?"":"s"} only after verified delivery`},
       spendingLimit:0,priority:95-index*5,idempotencyKey:`outcome:${reservation.runId}:${workType}`,
       sourceType:"outcome_loop",sourceId:reservation.runId,approvalOwner:enrollment.approval_owner,
       allowedTools:enrollment.allowed_tools,riskCeiling:enrollment.risk_ceiling,

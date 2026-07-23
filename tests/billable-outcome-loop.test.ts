@@ -83,10 +83,10 @@ describe("billable managed outcome loop",()=>{
 
   it("does not bill discovery, specialist handoffs, delivery workers, QA, retries, or reporting separately",()=>{
     const scheduler=read("lib/agent-service/scheduler.ts");
-    expect(scheduler).toContain("Evidence collection is included and did not consume an outcome action.");
+    expect(scheduler).toContain("Evidence collection is included and did not consume execution capacity.");
     expect(scheduler).toContain("resumeEvidenceBlockedAgentWork");
     expect(scheduler).toContain("upgradeLegacyManagedTools");
-    expect(scheduler).toContain('proposedPlan:{serviceMode:"managed_agent",billable:false,noMakeWorkRule:true,customerCharge:"one outcome only after verified delivery"}');
+    expect(scheduler).toContain('customerCharge:`${capacityUnits} execution capacity unit');
     expect(scheduler).toContain('proposedPlan:{serviceMode:"managed_agent",billable:false,exactPackageApproved:true}');
     expect(scheduler).toContain('proposedPlan:{serviceMode:"managed_agent",billable:false,reason:"Reporting is included in the completed outcome."}');
     expect(scheduler).toContain("spendingLimit:0");
