@@ -10,7 +10,8 @@ export type ManagedAgentWakeReason =
   | "discovery_completed"
   | "specialist_completed"
   | "approval_decided"
-  | "workflow_recovered";
+  | "workflow_recovered"
+  | "workflow_failed";
 
 /**
  * Moves an active Autopilot enrollment onto the next scheduler tick.

@@ -22,7 +22,21 @@ export async function processOneCampaignJob(workerId=crypto.randomUUID()){
     return{jobId:job.id,...result};
   }
   catch(error){
-    const safe=safeError(error),waitingForEvidence=safe.body.error.code==="EVIDENCE_REFRESH_REQUIRED",nextAttempt=waitingForEvidence?job.attempt_count:job.attempt_count+1,retryable=!waitingForEvidence&&safe.status>=500&&nextAttempt<job.max_attempts,status=waitingForEvidence?"awaiting_evidence_refresh":retryable?"retry_scheduled":"failed";
+    const safe=safeError(error),repositoryDrift=job.input.managedOutcome===true&&job.current_stage==="create_pr"&&safe.body.error.code==="CONFLICT"&&safe.body.error.message.includes("repository changed after review")&&Number(job.input.repositoryDriftRecoveryAttempts??0)<1;
+    if(repositoryDrift){
+      const timestamp=new Date().toISOString();
+      await db.from("seo_campaign_jobs").update({
+        status:"queued",current_stage:"inspect_repository",
+        input:{...job.input,repositoryDriftRecoveryAttempts:1},
+        attempt_count:0,error_code:null,error_message:null,
+        error_details:{automaticRecovery:"repository_drift",previousReferenceId:safe.body.error.referenceId},
+        next_attempt_at:timestamp,failed_at:null,worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:timestamp,updated_at:timestamp,
+      }).eq("id",job.id);
+      await wakeManagedAgentService(db,{agencyId:job.agency_id,clientId:job.client_organization_id,projectId:job.project_id,reason:"workflow_recovered"});
+      logEvent("repository_drift_regeneration_queued",{jobId:job.id,stage:job.current_stage,status:"queued",errorCode:safe.body.error.code,referenceId:job.reference_id});
+      return{jobId:job.id,status:"retry_scheduled",recovery:"repository_drift_regeneration"};
+    }
+    const waitingForEvidence=safe.body.error.code==="EVIDENCE_REFRESH_REQUIRED",nextAttempt=waitingForEvidence?job.attempt_count:job.attempt_count+1,retryable=!waitingForEvidence&&safe.status>=500&&nextAttempt<job.max_attempts,status=waitingForEvidence?"awaiting_evidence_refresh":retryable?"retry_scheduled":"failed";
     await db.from("seo_campaign_jobs").update({status,attempt_count:nextAttempt,error_code:safe.body.error.code,error_message:safe.body.error.message,error_details:{referenceId:safe.body.error.referenceId},next_attempt_at:new Date(Date.now()+Math.min(300_000,30_000*Math.max(1,nextAttempt))).toISOString(),failed_at:waitingForEvidence||retryable?null:new Date().toISOString(),worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:new Date().toISOString()}).eq("id",job.id);
     logEvent(waitingForEvidence?"job_stage_waiting_for_evidence":"job_stage_failed",{jobId:job.id,stage:job.current_stage,status,errorCode:safe.body.error.code,referenceId:job.reference_id});
     return{jobId:job.id,status,error:safe.body.error};

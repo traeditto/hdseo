@@ -29,6 +29,12 @@ type ApprovedDeliveryPath={kind:"repository"|"cms";provider?:string};
 
 const terminal=new Set(["succeeded","blocked","failed","cancelled","dead_letter"]);
 const failedStatuses=new Set(["blocked","failed","dead_letter"]);
+const automaticallyRecoverableEscalationTitles=[
+  "Managed SEO outcome did not ship",
+  "Managed SEO research needs attention",
+  "Managed SEO analysis handoff was incomplete",
+  "Managed SEO cycle failed",
+];
 const now=()=>new Date().toISOString();
 const object=(value:unknown)=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const number=(value:unknown)=>Number.isFinite(Number(value))?Number(value):0;
@@ -47,12 +53,56 @@ async function releaseLease(db:SupabaseClient,enrollment:Enrollment,hours=enroll
 }
 
 async function escalate(db:SupabaseClient,enrollment:Enrollment,cycleId:string|null,type:string,title:string,summary:string,requiresClient=false){
+  const existing=await db.from("agent_service_escalations").select("id")
+    .eq("enrollment_id",enrollment.id).eq("escalation_type",type).eq("title",title)
+    .in("status",["open","in_progress","waiting"]).limit(1).maybeSingle();
+  if(existing.error)throw new ApiError("The managed-service escalation ledger could not be inspected.",503,"DATABASE_BINDING_FAILED");
+  if(existing.data)return existing.data.id as string;
   await db.from("agent_service_escalations").insert({
     enrollment_id:enrollment.id,cycle_id:cycleId,agency_id:enrollment.agency_id,
     client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,
     escalation_type:type,title,summary,risk_level:type==="billing"?"high":"medium",requires_client:requiresClient,
     metadata:{source:"agent_service_outcome_loop"},
   });
+}
+
+async function recordAutomaticRecovery(
+  db:SupabaseClient,
+  enrollment:Enrollment,
+  cycleId:string|null,
+  summary:string,
+){
+  const timestamp=now(),resolution="Autopilot returned the reserved capacity, excluded the stopped move, and immediately continued to the next qualified opportunity.";
+  const recovered=await db.from("agent_service_escalations").update({
+    status:"resolved",resolution,resolved_at:timestamp,updated_at:timestamp,
+  }).eq("enrollment_id",enrollment.id)
+    .in("status",["open","in_progress","waiting"])
+    .in("title",automaticallyRecoverableEscalationTitles)
+    .select("id");
+  if(recovered.error)throw new ApiError("The automatic recovery record could not be reconciled.",503,"DATABASE_BINDING_FAILED");
+  if((recovered.data??[]).length)return;
+  const inserted=await db.from("agent_service_escalations").insert({
+    enrollment_id:enrollment.id,cycle_id:cycleId,agency_id:enrollment.agency_id,
+    client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,
+    escalation_type:"worker",title:"Autopilot safely replaced a stopped outcome",summary,
+    risk_level:"low",status:"resolved",requires_client:false,
+    metadata:{source:"agent_service_outcome_loop",automaticRecovery:true},
+    resolution,resolved_at:timestamp,updated_at:timestamp,
+  });
+  if(inserted.error)throw new ApiError("The automatic recovery history could not be recorded.",503,"DATABASE_BINDING_FAILED");
+}
+
+async function closeObsoleteRecoveryAlerts(db:SupabaseClient,enrollment:Enrollment,cycleId:string){
+  const timestamp=now();
+  const result=await db.from("agent_service_escalations").update({
+    status:"resolved",
+    resolution:"Autopilot started a replacement cycle; this prior safety alert no longer requires attention.",
+    resolved_at:timestamp,updated_at:timestamp,
+  }).eq("enrollment_id",enrollment.id)
+    .in("status",["open","in_progress","waiting"])
+    .in("title",automaticallyRecoverableEscalationTitles)
+    .or(`cycle_id.neq.${cycleId},cycle_id.is.null`);
+  if(result.error)throw new ApiError("The previous automatic recovery alert could not be closed.",503,"DATABASE_BINDING_FAILED");
 }
 
 async function accountableUser(db:SupabaseClient,enrollment:Enrollment,requestedBy?:string|null){
@@ -249,8 +299,8 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
         cooldown_until:new Date(Date.now()+7*86_400_000).toISOString(),
         updated_at:now(),
       }).eq("id",cycle.selected_opportunity_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id);
-      await escalate(db,enrollment,cycle.id,"worker","Managed SEO outcome did not ship",campaign.error_message??"The protected workflow stopped before delivery; the reserved action was returned.");
-      await releaseLease(db,enrollment,0.1);return true;
+      await recordAutomaticRecovery(db,enrollment,cycle.id,campaign.error_message??"The protected workflow stopped before delivery; the reserved action was returned.");
+      await releaseLease(db,enrollment,0);return true;
     }
     if(campaign.status==="awaiting_manual_completion"&&await continueApprovedActiveCampaign(db,enrollment,cycle,run,campaign,userId))return true;
     if(campaign.status==="awaiting_manual_completion"&&await ensureDirectCmsExecution(db,enrollment,cycle,run,campaign,userId))return true;
@@ -276,14 +326,14 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
   const failed=items.filter(item=>failedStatuses.has(item.status)),cancelled=items.some(item=>item.status==="cancelled");
   if(failed.length||cancelled){
     await releaseOutcome(db,{runId:run.id,reason:cancelled?"Managed analysis was cancelled before delivery.":`${failed.length} specialist task${failed.length===1?"":"s"} failed before an outcome was prepared.`,status:cancelled?"cancelled":"failed"});
-    if(failed.length)await escalate(db,enrollment,cycle.id,"worker","Managed SEO research needs attention","No action was charged because the specialist work did not produce a deliverable.");
-    await releaseLease(db,enrollment);return true;
+    if(failed.length)await recordAutomaticRecovery(db,enrollment,cycle.id,"No action was charged because the specialist work did not produce a deliverable.");
+    await releaseLease(db,enrollment,0);return true;
   }
   const required=specialistWorkTypes(selectedOpportunity.data?.action_type),present=new Set(items.map(item=>item.work_type)),missing=required.filter(workType=>!present.has(workType));
   if(missing.length){
     await releaseOutcome(db,{runId:run.id,reason:`The protected analysis handoff was incomplete (${missing.join(", ")}); capacity was returned before any implementation.`,status:"failed"});
-    await escalate(db,enrollment,cycle.id,"worker","Managed SEO analysis handoff was incomplete","No action was charged because every required specialist assignment was not durably created.");
-    await releaseLease(db,enrollment);return true;
+    await recordAutomaticRecovery(db,enrollment,cycle.id,"No action was charged because every required specialist assignment was not durably created.");
+    await releaseLease(db,enrollment,0);return true;
   }
   if(items.length)return createCampaignHandoff(db,enrollment,cycle,run,userId);
   await releaseOutcome(db,{runId:run.id,reason:"No specialist work was created; the reserved action was returned.",status:"failed"});
@@ -497,6 +547,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
     return{enrollmentId:enrollment.id,cycleId:concurrent.data?.id,status:"already_running"};
   }
   if(cycleResult.error||!cycleResult.data)throw new ApiError("The managed-service cycle could not be created. Apply migration 0026.",503,"DATABASE_BINDING_FAILED");
+  await closeObsoleteRecoveryAlerts(db,enrollment,cycleResult.data.id);
   if(approved&&!approvedPath){
     const message="Connect and verify GitHub + Vercel, WordPress, Shopify, or Webflow before HD SEO can implement this approved work. No outcome capacity has been used.";
     const blocked=await db.from("agent_service_cycles").update({status:"blocked",stage:"connection",implementation_package_id:approved.pkg.id,failure_code:"CONNECTION_REQUIRED",failure_message:message,completed_at:null,updated_at:now()}).eq("id",cycleResult.data.id).select("id").maybeSingle();
@@ -582,7 +633,7 @@ export async function processAgentServiceBatch(size=10,workerId=`agent-service:$
     try{results.push(await beginCycle(db,enrollment));}
     catch(error){
       const message=error instanceof Error?error.message:"Managed cycle failed";
-      await db.from("agent_service_enrollments").update({worker_id:null,locked_at:null,lock_expires_at:null,next_cycle_at:new Date(Date.now()+3_600_000).toISOString(),updated_at:now()}).eq("id",enrollment.id);
+      await db.from("agent_service_enrollments").update({worker_id:null,locked_at:null,lock_expires_at:null,next_cycle_at:new Date(Date.now()+5*60_000).toISOString(),updated_at:now()}).eq("id",enrollment.id);
       await escalate(db,enrollment,null,"worker","Managed SEO cycle failed",message);
       results.push({enrollmentId:enrollment.id,status:"failed"});
     }

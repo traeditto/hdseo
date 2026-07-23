@@ -13,6 +13,7 @@ import {previewContinuationJobIsActive,type PreviewContinuationJobState} from ".
 import {isGeneratedVercelHostname,productionValidationCandidates,verifiedProviderHostnames,type ProductionValidationCandidate,type ProviderDomain} from "./validation-target";
 import {reconcileHealthyProductionOutcome,reconcileRecentHealthyProductionOutcomes} from "./outcome-reconciliation";
 import {providerDeploymentIso,selectPriorProductionDeployment} from "./rollback-baseline";
+import {wakeManagedAgentService} from "@/lib/agent-service/wake";
 
 interface BackgroundJob{id:string;job_type:string;agency_id:string;automation_run_id:string|null;deployment_id:string|null;payload:Record<string,unknown>;attempt_count:number;max_attempts:number;fencing_token:string|null}
 type SafetyMetadata={mutationIntentId:string;actionDigest:string;traceId?:string;approvalPolicy?:string};
@@ -489,6 +490,7 @@ async function validateDeployment(job:BackgroundJob){
       if(failed.length){
         await db.from("seo_campaign_jobs").update({status:"failed",error_code:"PRODUCTION_QA_FAILED",error_message:failureMessage,failed_at:now,updated_at:now}).contains("result",{executionId:execution.data.id});
         if(execution.data.outcome_run_id)await db.from("outcome_loop_runs").update({status:"failed",failure_code:"PRODUCTION_QA_FAILED",failure_message:failureMessage,completed_at:now,updated_at:now}).eq("id",execution.data.outcome_run_id);
+        if(client.data?.organization_id)await wakeManagedAgentService(db,{agencyId:deployment.agency_id,clientId:client.data.organization_id,projectId:deployment.project_id,reason:"workflow_failed"});
       }else{
         await db.from("seo_campaign_jobs").update({status:"queued",current_stage:"schedule_monitoring",next_attempt_at:now,error_code:null,error_message:null,updated_at:now}).contains("result",{executionId:execution.data.id});
         if(execution.data.outcome_run_id)await reconcileHealthyProductionOutcome(db,{outcomeRunId:execution.data.outcome_run_id,executionId:execution.data.id,deploymentId:deployment.id});

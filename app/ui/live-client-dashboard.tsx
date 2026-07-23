@@ -52,7 +52,7 @@ type ManagedOutcomeRun = {
 type ManagedServiceStatus = {
   enrollment: { status: string; next_cycle_at?: string } | null;
   cycles: Array<{ id: string; stage: string; created_at: string; updated_at: string }>;
-  escalations: Array<{ id: string; status: string; title: string; summary: string; created_at: string }>;
+  escalations: Array<{ id: string; status: string; escalation_type: string; requires_client: boolean; title: string; summary: string; created_at: string }>;
   activeWork: Array<{ id: string; status: string; goal: string; assigned_agent_key: string }>;
   approvals: unknown[];
   outcomeDecisions: ManagedDecision[];
@@ -851,16 +851,24 @@ export function LiveClientBusinessDashboard({
     latestManagedRun && managedActiveStatuses.has(latestManagedRun.status)
       ? latestManagedRun
       : null;
-  const managedOpenEscalation =
+  const openManagedEscalations =
     recoveryStarted
-      ? null
-      : effectiveManagedService?.escalations?.find((item) =>
+      ? []
+      : effectiveManagedService?.escalations?.filter((item) =>
           ["open", "in_progress", "waiting"].includes(item.status),
-        ) ?? null;
+        ) ?? [];
+  const managedActionEscalation =
+    openManagedEscalations.find((item) =>
+      item.requires_client ||
+      ["approval","billing","capacity","connection"].includes(item.escalation_type),
+    ) ?? null;
+  const managedRecoveryEscalation =
+    openManagedEscalations.find((item) => item.escalation_type==="worker") ?? null;
   const managedFailure =
     latestManagedRun?.status === "failed" && !recoveryStarted
       ? latestManagedRun
       : null;
+  const automaticRecoveryPending=Boolean(managedFailure||managedRecoveryEscalation);
   const executableOpportunities = company.opportunities.filter(
     (item) =>
       item.targetUrl &&
@@ -950,8 +958,10 @@ export function LiveClientBusinessDashboard({
     ? "We need one quick decision"
     : activeManagedRun
       ? "Autopilot is moving your plan forward"
-    : managedFailure || managedOpenEscalation
-      ? "HD SEO protected your website"
+    : managedActionEscalation
+      ? "One setup item needs your attention"
+    : automaticRecoveryPending
+      ? "Autopilot is evaluating the next opportunity"
     : evidenceBlocked
       ? "Research needs a safe restart"
     : profile?.onboardingStatus !== "active"
@@ -971,8 +981,10 @@ export function LiveClientBusinessDashboard({
     ? "Autopilot has already done the research and preparation. Review the one customer-visible safety decision so it can continue."
     : activeManagedRun
       ? `No action is needed. HD SEO is ${managedStep} and will continue automatically through its next safe stage.`
-    : managedFailure || managedOpenEscalation
-      ? "A proposed change did not pass a protected check. The previous safe version stayed live, and Autopilot is excluding that move before researching another."
+    : managedActionEscalation
+      ? managedActionEscalation.summary
+    : automaticRecoveryPending
+      ? "The previous safe version stayed live. HD SEO returned the unused capacity, excluded that move, and is immediately evaluating the next qualified opportunity."
     : evidenceBlocked
       ? "The first keyword evidence run did not start correctly. Restarting will collect it before the strategy is built."
     : profile?.onboardingStatus !== "active"
@@ -1182,8 +1194,10 @@ export function LiveClientBusinessDashboard({
                         ? "Your approval"
                         : activeManagedRun
                           ? "Autopilot working"
-                          : managedFailure || managedOpenEscalation
-                            ? "Protected"
+                          : managedActionEscalation
+                            ? "Action needed"
+                          : automaticRecoveryPending
+                            ? "Evaluating next"
                             : topOpportunity
                               ? "Starting automatically"
                               : "Researching"}
@@ -1228,24 +1242,39 @@ export function LiveClientBusinessDashboard({
                         See live Autopilot status →
                       </button>
                     </>
-                  ) : managedFailure || managedOpenEscalation ? (
+                  ) : managedActionEscalation ? (
                     <>
-                      <h2>The previous safe version stayed live</h2>
+                      <h2>{managedActionEscalation.title}</h2>
+                      <p>{managedActionEscalation.summary}</p>
+                      <div className="owner-why">
+                        <b>One setup step needs you</b>
+                        <span>
+                          HD SEO will continue automatically after this required
+                          connection, billing, or approval item is completed.
+                        </span>
+                      </div>
+                      <button onClick={() => setTab("business")}>
+                        Finish the required setup →
+                      </button>
+                    </>
+                  ) : automaticRecoveryPending ? (
+                    <>
+                      <h2>Autopilot is evaluating the next opportunity</h2>
                       <p>
                         A proposed move did not pass HD SEO&apos;s protected
-                        checks. It was not counted as completed work, and
-                        Autopilot is excluding it before choosing another.
+                        checks. The previous safe version stayed live, unused
+                        capacity was returned, and the stopped move was excluded.
                       </p>
                       <div className="owner-why">
                         <b>No action required</b>
                         <span>
-                          This is a safety record, not SEO homework. Temporary
-                          failures retry automatically; unsafe opportunities
-                          are cooled down and replaced.
+                          The Supervisor Agent is moving directly to the next
+                          qualified opportunity. This page refreshes
+                          automatically when the replacement cycle starts.
                         </span>
                       </div>
                       <button onClick={() => setTab("autopilot")}>
-                        View the safety record →
+                        See live Autopilot status →
                       </button>
                     </>
                   ) : topOpportunity ? (
@@ -1327,18 +1356,26 @@ export function LiveClientBusinessDashboard({
                       </div>
                       <span>{friendlyStatus(activeManagedRun.status)}</span>
                     </article>
-                  ) : managedFailure || managedOpenEscalation ? (
+                  ) : managedActionEscalation ? (
                     <article>
                       <i className="blocked" />
                       <div>
-                        <strong>Protected recovery</strong>
+                        <strong>{managedActionEscalation.title}</strong>
+                        <p>{managedActionEscalation.summary}</p>
+                      </div>
+                      <span>Needs you</span>
+                    </article>
+                  ) : automaticRecoveryPending ? (
+                    <article>
+                      <i className="running" />
+                      <div>
+                        <strong>Supervisor Agent</strong>
                         <p>
-                          {managedOpenEscalation?.summary ??
-                            managedFailure?.failure_message ??
-                            "The previous safe version remains live while Autopilot selects another move."}
+                          Evaluating the next qualified opportunity after safely
+                          excluding the previous move.
                         </p>
                       </div>
-                      <span>Safe</span>
+                      <span>Automatic</span>
                     </article>
                   ) : (
                     <div className="owner-empty">

@@ -148,7 +148,9 @@ describe("Autopilot event-driven continuation", () => {
     const vercel = JSON.parse(read("vercel.json")) as { crons: Array<{ path: string; schedule: string }> };
     const worker = read("lib/automation/worker.ts");
     const automation = vercel.crons.find((cron) => cron.path === "/api/cron/automation");
+    const agentService = vercel.crons.find((cron) => cron.path === "/api/cron/agent-service");
     expect(automation?.schedule).toBe("* * * * *");
+    expect(agentService?.schedule).toBe("* * * * *");
     expect(worker).toContain("reconciliation={ok:true,...await reconcilePreviewCampaigns(db)}");
     expect(worker).toContain("deployment_reconciliation_deferred");
     expect(worker).toContain('const claimed=await db.rpc("claim_background_jobs"');
@@ -168,6 +170,25 @@ describe("Autopilot event-driven continuation", () => {
     expect(vercelClient).toContain("response.deployments.map(normalizeProviderDeployment)");
     const deploymentShape=read("lib/vercel/deployment-shape.ts");
     expect(deploymentShape).toContain("item.id ?? item.uid");
+  });
+
+  it("replaces failed managed outcomes immediately without leaving stale customer alerts",()=>{
+    const scheduler=read("lib/agent-service/scheduler.ts");
+    const portal=read("app/ui/live-client-dashboard.tsx");
+    expect(scheduler).toContain("recordAutomaticRecovery");
+    expect(scheduler).toContain("closeObsoleteRecoveryAlerts");
+    expect(scheduler).toContain("await releaseLease(db,enrollment,0);return true");
+    expect(scheduler).toContain("Autopilot returned the reserved capacity, excluded the stopped move, and immediately continued");
+    expect(portal).toContain("Autopilot is evaluating the next opportunity");
+    expect(portal).not.toContain("<strong>Protected recovery</strong>");
+  });
+
+  it("re-inspects and regenerates once when the repository changes after approval",()=>{
+    const runner=read("lib/jobs/runner.ts");
+    expect(runner).toContain("repositoryDriftRecoveryAttempts");
+    expect(runner).toContain('current_stage:"inspect_repository"');
+    expect(runner).toContain("repository_drift_regeneration_queued");
+    expect(runner).toContain('reason:"workflow_recovered"');
   });
 
   it("does not swallow an atomic preview queue failure or mislabel it as missing setup", () => {
