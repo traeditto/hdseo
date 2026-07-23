@@ -271,6 +271,26 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
 }
 
 async function recoverMissingPreviewQueues(db:ReturnType<typeof requireAdminDb>){
+  const failedCreates=await db.from("seo_executions")
+    .select("id,preview_deployment_id,validation_results")
+    .eq("status","preview_queued")
+    .not("preview_deployment_id","is",null)
+    .order("updated_at",{ascending:true})
+    .limit(20);
+  if(failedCreates.error)throw new ApiError("Preview queue recovery could not inspect failed preview creation jobs.",500,"DATABASE_BINDING_FAILED");
+  let failedCreatesRestored=0;
+  for(const execution of failedCreates.data??[]){
+    const deployment=await db.from("deployments").select("status,external_deployment_id").eq("id",execution.preview_deployment_id).maybeSingle();
+    if(deployment.error)throw new ApiError("Preview queue recovery could not inspect a queued deployment.",500,"DATABASE_BINDING_FAILED");
+    if(deployment.data?.status!=="queued"||deployment.data.external_deployment_id)continue;
+    const failedJob=await db.from("background_jobs").select("id").eq("deployment_id",execution.preview_deployment_id).eq("job_type","deployment.create").in("status",["failed","dead_letter"]).maybeSingle();
+    if(failedJob.error)throw new ApiError("Preview queue recovery could not inspect the failed creation job.",500,"DATABASE_BINDING_FAILED");
+    if(!failedJob.data)continue;
+    const now=new Date().toISOString(),validation=execution.validation_results&&typeof execution.validation_results==="object"?execution.validation_results as Record<string,unknown>:{},preview=validation.preview&&typeof validation.preview==="object"?validation.preview as Record<string,unknown>:{};
+    const restored=await db.from("seo_executions").update({status:"pr_created",preview_deployment_id:null,validation_results:{...validation,preview:{...preview,status:"recovery_queued",previousDeploymentId:execution.preview_deployment_id,recoveredAt:now}},updated_at:now}).eq("id",execution.id).eq("status","preview_queued").eq("preview_deployment_id",execution.preview_deployment_id).select("id").maybeSingle();
+    if(restored.error)throw new ApiError("The failed preview creation could not be returned to the protected queue.",500,"DATABASE_BINDING_FAILED");
+    if(restored.data)failedCreatesRestored++;
+  }
   const executions=await db.from("seo_executions")
     .select("id,agency_id,client_organization_id,project_id,repository_connection_id,outcome_run_id,validation_results")
     .eq("status","pr_created")
@@ -289,7 +309,7 @@ async function recoverMissingPreviewQueues(db:ReturnType<typeof requireAdminDb>)
     const vercelProject=repository.data?await db.from("vercel_projects").select("id").eq("agency_id",execution.agency_id).eq("project_id",execution.project_id).eq("repository_id",repository.data.id).eq("status","active").order("updated_at",{ascending:false}).limit(1).maybeSingle():{data:null,error:null};
     if(vercelProject.error)throw new ApiError("Preview queue recovery could not inspect the Vercel mapping.",500,"DATABASE_BINDING_FAILED");
     if(!repository.data||!vercelProject.data){waitingForConnection.push(execution.id);continue;}
-    const campaign=await db.from("seo_campaign_jobs").select("id,result").eq("agency_id",execution.agency_id).eq("client_organization_id",execution.client_organization_id).eq("project_id",execution.project_id).contains("result",{executionId:execution.id}).in("status",["awaiting_deployment","failed","retry_scheduled"]).order("updated_at",{ascending:false}).limit(1).maybeSingle();
+    const campaign=await db.from("seo_campaign_jobs").select("id,result").eq("agency_id",execution.agency_id).eq("client_organization_id",execution.client_organization_id).eq("project_id",execution.project_id).contains("result",{executionId:execution.id}).in("status",["awaiting_deployment","awaiting_preview_validation","failed","retry_scheduled"]).order("updated_at",{ascending:false}).limit(1).maybeSingle();
     if(campaign.error)throw new ApiError("Preview queue recovery could not inspect the campaign handoff.",500,"DATABASE_BINDING_FAILED");
     if(!campaign.data)continue;
     const now=new Date().toISOString(),result=campaign.data.result&&typeof campaign.data.result==="object"?campaign.data.result as Record<string,unknown>:{},preview=validation.preview&&typeof validation.preview==="object"?validation.preview as Record<string,unknown>:{};
@@ -302,7 +322,7 @@ async function recoverMissingPreviewQueues(db:ReturnType<typeof requireAdminDb>)
     recovered++;
     logEvent("missing_preview_queue_recovered",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"queued",stage:"create_pr"});
   }
-  return{recovered,waitingForConnection};
+  return{failedCreatesRestored,recovered,waitingForConnection};
 }
 
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){

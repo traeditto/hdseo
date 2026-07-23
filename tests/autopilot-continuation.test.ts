@@ -159,6 +159,9 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("production_rollback_baseline_ready");
     expect(worker).toContain("recoverMissingPreviewQueues");
     expect(worker).toContain("missing_preview_queue_recovered");
+    expect(worker).toContain("failedCreatesRestored");
+    expect(worker).toContain('in("status",["failed","dead_letter"])');
+    expect(worker).toContain('"awaiting_preview_validation"');
     expect(worker).toContain('previewStatus:"Automatic preview queue recovery scheduled"');
     expect(worker).toContain("deployment.external_deployment_id&&Date.now()-lastChecked");
     const vercelClient=read("lib/vercel/client.ts");
