@@ -408,6 +408,7 @@ export async function GET(request: Request) {
         actionType: opportunity?.action_type,
         economicsConfidence: number(evidence.economicsConfidence),
         opportunityScore: number(opportunity?.opportunity_score),
+        strategicFocus: record(evidence.focusCampaign).active === true,
       },
       investmentPolicyForPlan(
         text(subscriptionResult.data?.plan_key, "agency_core"),

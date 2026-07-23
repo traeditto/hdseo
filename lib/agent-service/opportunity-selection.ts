@@ -68,7 +68,6 @@ export function selectManagedOpportunity(
         if (!["open", "selected", "approved"].includes(candidate.status))
           return false;
         if (!hasUsableTarget(candidate.target_url)) return false;
-        if (Number(candidate.opportunity_score ?? 0) < 55) return false;
         if (Number(candidate.confidence_score ?? 0) < 55) return false;
         if (
           candidate.cooldown_until &&
@@ -100,10 +99,13 @@ export function selectManagedOpportunity(
             actionType: candidate.action_type,
             economicsConfidence: metricNumber(evidence.economicsConfidence),
             opportunityScore: candidate.opportunity_score,
+            strategicFocus:
+              record(evidence.focusCampaign).active === true,
           },
           policy,
         );
         if (!investment.qualified) return false;
+        if (investment.focusScore < 55) return false;
         if (
           Array.isArray(evidence.missingEvidence) &&
           evidence.missingEvidence.length > 3
@@ -125,6 +127,8 @@ export function selectManagedOpportunity(
               actionType: candidate.action_type,
               economicsConfidence: metricNumber(evidence.economicsConfidence),
               opportunityScore: candidate.opportunity_score,
+              strategicFocus:
+                record(evidence.focusCampaign).active === true,
             },
             policy,
           ).focusScore;

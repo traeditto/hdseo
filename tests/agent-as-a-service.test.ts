@@ -35,7 +35,8 @@ describe("Agent-as-a-Service",()=>{
 
   it("runs only evidence-backed cycles and refuses make-work",()=>{
     const scheduler=read("lib/agent-service/scheduler.ts");
-    expect(scheduler).toContain('.gte("opportunity_score",55)');
+    expect(scheduler).toContain('.gte("opportunity_score",45)');
+    expect(scheduler).toContain("investmentPolicyForPlan");
     expect(scheduler).toContain('status:opportunity.data?"running":"no_action"');
     expect(scheduler).toContain('recommendation:opportunity.data?null:"NO_ACTION"');
     expect(scheduler).toContain("ensureDiscoveryCampaign");

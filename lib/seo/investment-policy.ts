@@ -28,6 +28,7 @@ export type SeoInvestmentPolicy = {
   minimumTwelveMonthRoiPercent: number;
   minimumConfidence: number;
   maximumExistingPageRank: number;
+  maximumStrategicFocusRank: number;
 };
 
 type InvestmentInput = {
@@ -39,6 +40,7 @@ type InvestmentInput = {
   actionType?: string | null;
   economicsConfidence?: number | null;
   opportunityScore?: number | null;
+  strategicFocus?: boolean;
 };
 
 const directPlanKeys = new Set<RetailBillingPlanKey>([
@@ -91,6 +93,7 @@ export function investmentPolicyForPlan(planKey: string): SeoInvestmentPolicy {
       minimumTwelveMonthRoiPercent: 200,
       minimumConfidence: 60,
       maximumExistingPageRank: 40,
+      maximumStrategicFocusRank: 75,
     };
   }
 
@@ -107,6 +110,7 @@ export function investmentPolicyForPlan(planKey: string): SeoInvestmentPolicy {
     minimumTwelveMonthRoiPercent: 200,
     minimumConfidence: 60,
     maximumExistingPageRank: 40,
+    maximumStrategicFocusRank: 75,
   };
 }
 
@@ -158,7 +162,10 @@ export function evaluateSeoInvestment(
     reasons.push("TWELVE_MONTH_ROI_BELOW_THRESHOLD");
   if (
     currentRank != null &&
-    currentRank > policy.maximumExistingPageRank &&
+    currentRank >
+      (input.strategicFocus
+        ? policy.maximumStrategicFocusRank
+        : policy.maximumExistingPageRank) &&
     existingPageActions.has(String(input.actionType ?? "").toUpperCase())
   )
     reasons.push("RANKING_DISTANCE_EXCEEDS_FOCUS_RANGE");
@@ -187,6 +194,9 @@ export function evaluateSeoInvestment(
           ? 80
           : currentRank <= policy.maximumExistingPageRank
             ? 60
+            : input.strategicFocus &&
+                currentRank <= policy.maximumStrategicFocusRank
+              ? 50
             : 15;
   const focusScore = Math.round(
     Math.max(
