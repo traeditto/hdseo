@@ -105,6 +105,8 @@ export const pricingAddOns = [
 
 export const pricingFaq = [
   ["What does my subscription pay for?", "The platform, research, automation, approved implementation capacity, validation, and reporting included in your plan."],
+  ["What is included in the Founding Beta?", "The beta keeps the plan's completed-action limits, includes a bounded HD SEO data and AI allowance, and measures delivery for 90 days. The discounted price applies to the first monthly billing period; normal renewal pricing is shown before checkout."],
+  ["What happens if HD SEO reaches its internal delivery-cost limit?", "The system stops new included provider charges before they can erase the beta's protected delivery margin. It will use remaining no-cost work, wait for the next period, or present an optional separately priced action. It never creates an unapproved customer charge."],
   ["Is my monthly SEO spending budget included?", "No. Optional third-party spending is separate from your subscription and is used only after you approve it."],
   ["Will HD SEO spend money without asking?", "No. HD SEO never spends an external budget automatically. Overages and external services require approval."],
   ["Does HD SEO guarantee rankings?", "No. Rankings, leads, revenue, and profit depend on factors outside any SEO provider’s control."],
