@@ -549,7 +549,11 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
     if(persisted.error||!persisted.data)throw new ApiError("The focused campaign evidence could not be persisted safely.",503,"DATABASE_BINDING_FAILED");
   }
   if(approved&&!opportunity.data)throw new ApiError("The exact approved package has lost its tenant-scoped opportunity evidence.",409,"CONFLICT");
-  const cycleKey=approved?.cycleKey??`${new Date().toISOString().slice(0,13)}:${opportunity.data?.id??"evidence"}`;
+  const cycleTime=new Date();
+  const evidenceWindow=`${cycleTime.toISOString().slice(0,13)}:${String(
+    Math.floor(cycleTime.getUTCMinutes()/5),
+  ).padStart(2,"0")}`;
+  const cycleKey=approved?.cycleKey??`${opportunity.data?cycleTime.toISOString().slice(0,13):evidenceWindow}:${opportunity.data?.id??"evidence"}`;
   const priorCycle=approved
     ?{data:approved.priorCycle,error:null}
     :await db.from("agent_service_cycles").select("*").eq("enrollment_id",enrollment.id).eq("cycle_key",cycleKey).maybeSingle();
