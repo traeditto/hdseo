@@ -52,7 +52,7 @@ type ManagedOutcomeRun = {
 type ManagedServiceStatus = {
   enrollment: { status: string; next_cycle_at?: string } | null;
   cycles: Array<{ id: string; stage: string; created_at: string; updated_at: string }>;
-  escalations: Array<{ id: string; status: string; title: string; summary: string }>;
+  escalations: Array<{ id: string; status: string; title: string; summary: string; created_at: string }>;
   activeWork: Array<{ id: string; status: string; goal: string; assigned_agent_key: string }>;
   approvals: unknown[];
   outcomeDecisions: ManagedDecision[];
@@ -835,16 +835,26 @@ export function LiveClientBusinessDashboard({
   const effectiveManagedService = !project?.id || isFreeTrial ? null : managedService;
   const managedDecision = effectiveManagedService?.outcomeDecisions?.[0] ?? null;
   const latestManagedRun = effectiveManagedService?.outcomeRuns?.[0] ?? null;
+  const latestManagedCycle = effectiveManagedService?.cycles?.[0] ?? null;
+  const recoveryStarted =
+    latestManagedRun?.status === "failed" &&
+    latestManagedCycle &&
+    new Date(latestManagedCycle.created_at).getTime() >
+      new Date(latestManagedRun.updated_at).getTime();
   const activeManagedRun =
     latestManagedRun && managedActiveStatuses.has(latestManagedRun.status)
       ? latestManagedRun
       : null;
   const managedOpenEscalation =
-    effectiveManagedService?.escalations?.find((item) =>
-      ["open", "in_progress", "waiting"].includes(item.status),
-    ) ?? null;
+    recoveryStarted
+      ? null
+      : effectiveManagedService?.escalations?.find((item) =>
+          ["open", "in_progress", "waiting"].includes(item.status),
+        ) ?? null;
   const managedFailure =
-    latestManagedRun?.status === "failed" ? latestManagedRun : null;
+    latestManagedRun?.status === "failed" && !recoveryStarted
+      ? latestManagedRun
+      : null;
   const executableOpportunities = company.opportunities.filter(
     (item) =>
       item.targetUrl &&
