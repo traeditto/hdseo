@@ -29,8 +29,17 @@ describe("customer-visible accountable work receipts", () => {
     expect(receipt).toContain("No outcome is finally charged until a customer-visible delivery is independently verified");
     expect(route).toContain("const previewQaPassed");
     expect(route).toContain("const previewFailed");
+    expect(route).toContain("const previewSetupRequired");
+    expect(route).toContain('previewState === "setup_required"');
     expect(route).toContain('failureCode === "PREVIEW_QA_FAILED"');
     expect(route).toContain("HD SEO automatically retries temporary hosting and access failures");
+  });
+
+  it("never promises automatic progress when no preview was actually queued", () => {
+    const route = read("app/api/work-receipts/route.ts");
+    expect(route).toContain("previewSetupRequired ||");
+    expect(route).toContain('? "CONNECTION_REQUIRED"');
+    expect(route).toContain("no preview deployment was queued");
   });
 
   it("refreshes active receipts automatically without requiring SEO or queue knowledge", () => {

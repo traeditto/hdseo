@@ -331,11 +331,23 @@ export async function GET(request: Request) {
     const verified = Boolean(
       verification?.status === "passed" || run?.status === "completed",
     );
-    const blocked = previewFailed || [run?.status, cycle?.status].includes("blocked");
-    const failureCode = run?.failure_code ?? cycle?.failure_code ?? (previewFailed ? "PREVIEW_QA_FAILED" : null);
+    const previewState = text(record(execution?.validation_results).preview?.status);
+    const previewSetupRequired = Boolean(
+      execution?.status === "pr_created" &&
+        !deployment &&
+        previewState === "setup_required",
+    );
+    const blocked = previewFailed || previewSetupRequired || [run?.status, cycle?.status].includes("blocked");
+    const failureCode = run?.failure_code ?? cycle?.failure_code ?? (previewFailed
+      ? "PREVIEW_QA_FAILED"
+      : previewSetupRequired
+        ? "CONNECTION_REQUIRED"
+        : null);
     const failureMessage = run?.failure_message ?? cycle?.failure_message ?? (previewFailed
       ? `The preview stopped because ${failedPreviewChecks.length ? failedPreviewChecks.join(", ") : "a required safety check"} failed. Nothing was published. HD SEO automatically retries temporary hosting and access failures; a genuine page problem is returned for revision.`
-      : null);
+      : previewSetupRequired
+        ? "The approved change and GitHub pull request are safe, but no preview deployment was queued. HD SEO will automatically retry when the project has an active Vercel mapping; nothing was published or charged."
+        : null);
     const stage = verified
       ? "verified"
       : published

@@ -71,6 +71,7 @@ function expectedValue(evidence:unknown){
 function campaignStep(campaign:Campaign):{runStatus:string;cycleStatus:string;step:OutcomeStepKey;stepStatus:string}{
   if(campaign.status==="awaiting_creative_evidence")return{runStatus:"awaiting_approval",cycleStatus:"awaiting_approval",step:"content",stepStatus:"waiting"};
   if(campaign.status==="awaiting_opportunity_review"||campaign.status==="awaiting_human_approval"||campaign.status==="awaiting_creative_review"||campaign.status==="awaiting_release_approval")return{runStatus:"awaiting_approval",cycleStatus:"awaiting_approval",step:"approval",stepStatus:"awaiting_approval"};
+  if(campaign.status==="awaiting_deployment"&&campaign.current_stage==="create_pr")return{runStatus:"blocked",cycleStatus:"blocked",step:"implementation",stepStatus:"waiting"};
   if(campaign.status==="awaiting_preview_validation"||campaign.current_stage==="create_pr")return{runStatus:"preview",cycleStatus:"running",step:"preview",stepStatus:"running"};
   if(campaign.status==="awaiting_manual_completion")return{runStatus:"implementing",cycleStatus:"awaiting_approval",step:"implementation",stepStatus:"waiting"};
   if(campaign.status==="awaiting_deployment")return{runStatus:"publishing",cycleStatus:"monitoring",step:"publish",stepStatus:"waiting"};

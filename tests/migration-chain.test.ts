@@ -39,4 +39,16 @@ describe("Supabase migration chain", () => {
     expect(sql).toContain("create table public.audit_ledger");
     expect(sql).toContain("enable row level security");
   });
+
+  it("keeps atomic deployment and rollback queues tenant-complete", () => {
+    const sql = readFileSync(
+      join(migrationsDirectory, "0047_tenant_safe_deployment_queue.sql"),
+      "utf8",
+    );
+    expect(sql).toContain("create or replace function public.enqueue_deployment_job");
+    expect(sql).toContain("create or replace function public.enqueue_rollback_job");
+    expect(sql.match(/client_organization_id/g)?.length).toBeGreaterThanOrEqual(8);
+    expect(sql).toContain("p_client_organization_id");
+    expect(sql).toContain("v_source.client_organization_id");
+  });
 });

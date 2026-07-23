@@ -157,11 +157,23 @@ describe("Autopilot event-driven continuation", () => {
     expect(worker).toContain("recoverMissingProductionRollbackBaselines");
     expect(worker).toContain("ensureProductionRollbackBaseline");
     expect(worker).toContain("production_rollback_baseline_ready");
+    expect(worker).toContain("recoverMissingPreviewQueues");
+    expect(worker).toContain("missing_preview_queue_recovered");
+    expect(worker).toContain('previewStatus:"Automatic preview queue recovery scheduled"');
     expect(worker).toContain("deployment.external_deployment_id&&Date.now()-lastChecked");
     const vercelClient=read("lib/vercel/client.ts");
     expect(vercelClient).toContain("response.deployments.map(normalizeProviderDeployment)");
     const deploymentShape=read("lib/vercel/deployment-shape.ts");
     expect(deploymentShape).toContain("item.id ?? item.uid");
+  });
+
+  it("does not swallow an atomic preview queue failure or mislabel it as missing setup", () => {
+    const execution = read("lib/jobs/stages/execution.ts");
+    const scheduler = read("lib/agent-service/scheduler.ts");
+    expect(execution).toContain('if(queued.error||!result?.deploymentId||!result.runId)');
+    expect(execution).toContain("The protected preview job could not be queued");
+    expect(scheduler).toContain('campaign.status==="awaiting_deployment"&&campaign.current_stage==="create_pr"');
+    expect(scheduler).toContain('runStatus:"blocked"');
   });
 
   it("proves modern Autopilot acceptance without requiring a destructive rollback",()=>{

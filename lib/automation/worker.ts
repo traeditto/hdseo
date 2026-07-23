@@ -270,7 +270,43 @@ async function reconcileProductionDeployments(db:ReturnType<typeof requireAdminD
   return{recovered,healthyOutcomes,rollbackBaselines,detected,queued,errors};
 }
 
+async function recoverMissingPreviewQueues(db:ReturnType<typeof requireAdminDb>){
+  const executions=await db.from("seo_executions")
+    .select("id,agency_id,client_organization_id,project_id,repository_connection_id,outcome_run_id,validation_results")
+    .eq("status","pr_created")
+    .is("preview_deployment_id",null)
+    .order("updated_at",{ascending:true})
+    .limit(20);
+  if(executions.error)throw new ApiError("Preview queue recovery could not inspect stranded executions.",500,"DATABASE_BINDING_FAILED");
+  let recovered=0;const waitingForConnection:string[]=[];
+  for(const execution of executions.data??[]){
+    const validation=execution.validation_results&&typeof execution.validation_results==="object"?execution.validation_results as Record<string,unknown>:{},write=validation.repositoryWrite&&typeof validation.repositoryWrite==="object"?validation.repositoryWrite as Record<string,unknown>:{};
+    if(typeof write.commitSha!=="string"||!write.commitSha)continue;
+    const connection=await db.from("repository_connections").select("repository_owner,repository_name").eq("id",execution.repository_connection_id).eq("agency_id",execution.agency_id).eq("project_id",execution.project_id).eq("status","connected").maybeSingle();
+    if(connection.error)throw new ApiError("Preview queue recovery could not inspect the repository connection.",500,"DATABASE_BINDING_FAILED");
+    const repository=connection.data?await db.from("repositories").select("id").eq("agency_id",execution.agency_id).eq("project_id",execution.project_id).eq("owner",connection.data.repository_owner).eq("name",connection.data.repository_name).eq("status","active").eq("repository_execution_enabled",true).maybeSingle():{data:null,error:null};
+    if(repository.error)throw new ApiError("Preview queue recovery could not inspect the repository mapping.",500,"DATABASE_BINDING_FAILED");
+    const vercelProject=repository.data?await db.from("vercel_projects").select("id").eq("agency_id",execution.agency_id).eq("project_id",execution.project_id).eq("repository_id",repository.data.id).eq("status","active").order("updated_at",{ascending:false}).limit(1).maybeSingle():{data:null,error:null};
+    if(vercelProject.error)throw new ApiError("Preview queue recovery could not inspect the Vercel mapping.",500,"DATABASE_BINDING_FAILED");
+    if(!repository.data||!vercelProject.data){waitingForConnection.push(execution.id);continue;}
+    const campaign=await db.from("seo_campaign_jobs").select("id,result").eq("agency_id",execution.agency_id).eq("client_organization_id",execution.client_organization_id).eq("project_id",execution.project_id).contains("result",{executionId:execution.id}).in("status",["awaiting_deployment","failed","retry_scheduled"]).order("updated_at",{ascending:false}).limit(1).maybeSingle();
+    if(campaign.error)throw new ApiError("Preview queue recovery could not inspect the campaign handoff.",500,"DATABASE_BINDING_FAILED");
+    if(!campaign.data)continue;
+    const now=new Date().toISOString(),result=campaign.data.result&&typeof campaign.data.result==="object"?campaign.data.result as Record<string,unknown>:{},preview=validation.preview&&typeof validation.preview==="object"?validation.preview as Record<string,unknown>:{};
+    const restored=await Promise.all([
+      db.from("seo_campaign_jobs").update({status:"queued",current_stage:"create_pr",result:{...result,previewStatus:"Automatic preview queue recovery scheduled"},attempt_count:0,next_attempt_at:now,error_code:null,error_message:null,error_details:{},failed_at:null,completed_at:null,worker_id:null,locked_at:null,lock_expires_at:null,heartbeat_at:null,updated_at:now}).eq("id",campaign.data.id),
+      db.from("seo_executions").update({validation_results:{...validation,preview:{...preview,status:"recovery_queued",recoveredAt:now}},updated_at:now}).eq("id",execution.id).eq("status","pr_created"),
+      execution.outcome_run_id?db.from("outcome_loop_runs").update({status:"implementing",current_step:"implementation",failure_code:null,failure_message:null,completed_at:null,updated_at:now}).eq("id",execution.outcome_run_id):Promise.resolve({error:null}),
+    ]);
+    if(restored.some(item=>item.error))throw new ApiError("The stranded preview could not be returned to the protected queue.",500,"DATABASE_BINDING_FAILED");
+    recovered++;
+    logEvent("missing_preview_queue_recovered",{executionId:execution.id,agencyId:execution.agency_id,projectId:execution.project_id,status:"queued",stage:"create_pr"});
+  }
+  return{recovered,waitingForConnection};
+}
+
 async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
+  const missingPreviewQueues=await recoverMissingPreviewQueues(db);
   const strandedPreviews=await db.from("seo_executions").select("id,agency_id,client_organization_id,project_id,outcome_run_id,preview_deployment_id,validation_results").eq("status","preview_queued").not("preview_deployment_id","is",null).order("updated_at",{ascending:true}).limit(20);
   if(strandedPreviews.error)throw new ApiError("Preview reconciliation could not read pending executions.",500,"DATABASE_BINDING_FAILED");
   let previewJobsRecovered=0;
@@ -347,7 +383,7 @@ async function reconcilePreviewCampaigns(db:ReturnType<typeof requireAdminDb>){
     policyRecovered+=1;
   }
   const production=await reconcileProductionDeployments(db);
-  return{previewJobsRecovered,recovered,policyRecovered,advanced,autopilotReleased,releaseErrors,production};
+  return{missingPreviewQueues,previewJobsRecovered,recovered,policyRecovered,advanced,autopilotReleased,releaseErrors,production};
 }
 
 async function createDeployment(job:BackgroundJob){if(!job.deployment_id)throw new ApiError("Deployment job is incomplete.",500,"OPERATION_FAILED");const{db,deployment,project,repository}=await deploymentContext(job.deployment_id);if(!repository)throw new ApiError("Repository record not found.",404,"NOT_FOUND");const safety=safetyMetadata(job,deployment);await claimStoredMutationIntent(db,{intentId:safety.mutationIntentId,agencyId:job.agency_id,projectId:deployment.project_id,toolKey:"vercel.deploy",expectedDigest:safety.actionDigest,executionRef:job.id});const credentials=await loadVercelCredentials(project.connection_id,job.agency_id),now=new Date().toISOString();await db.from("deployments").update({status:"creating",started_at:now,updated_at:now}).eq("id",deployment.id);await setRun(job.automation_run_id,"running","deployment.create");const created=await createVercelDeployment(credentials,{projectId:project.vercel_project_id,projectName:project.name,repositoryId:String(repository.github_repository_id),ref:deployment.git_ref,sha:deployment.git_sha??undefined,environment:deployment.environment,metadata:{hdSeoDeploymentId:deployment.id,hdSeoRunId:job.automation_run_id??"",githubCommitSha:deployment.git_sha??"",projectId:project.vercel_project_id,hdSeoMutationIntentId:safety.mutationIntentId,hdSeoActionDigest:safety.actionDigest}});const saved=await db.from("deployments").update({external_deployment_id:created.id,url:created.url,status:created.readyState==="READY"?"ready":"building",provider_metadata:{...created,safety},updated_at:new Date().toISOString()}).eq("id",deployment.id);if(saved.error)throw new ApiError("The Vercel deployment succeeded but reconciliation must complete before retrying.",503,"DATABASE_BINDING_FAILED");await settleMutationIntent(db,{intentId:safety.mutationIntentId,executionRef:job.id,status:"succeeded"});await addLog(deployment.id,"vercel","info","Vercel deployment created.",{providerDeploymentId:created.id,url:created.url});await db.from("background_jobs").upsert({queue:"deployments",job_type:created.readyState==="READY"?"deployment.validate":"deployment.poll",agency_id:job.agency_id,automation_run_id:job.automation_run_id,deployment_id:deployment.id,payload:{},status:"queued",priority:created.readyState==="READY"?80:60,available_at:new Date(Date.now()+(created.readyState==="READY"?0:20_000)).toISOString(),idempotency_key:`${created.readyState==="READY"?"deployment.validate":"deployment.poll"}:${deployment.id}`},{onConflict:"queue,idempotency_key",ignoreDuplicates:true});}
