@@ -38,7 +38,11 @@ type Receipt = {
       paybackMonths: number | null;
       twelveMonthNetValue: number;
       twelveMonthRoiPercent: number | null;
-      minimumMonthlyProfit: number;
+      allocatedMonthlyPlanCost: number;
+      requiredMonthlyProfit: number;
+      customerTwelveMonthNetValue: number;
+      customerTwelveMonthRoiPercent: number;
+      minimumCustomerRoiPercent: number;
       maximumPaybackMonths: number;
       minimumTwelveMonthRoiPercent: number;
       planLabel: string;
@@ -343,11 +347,13 @@ export function WorkReceipt({
                     : `HD SEO would not select, implement, or bill this move today. It remains visible only as historical evidence while Autopilot searches for a materially stronger objective.`}
                 </p>
                 <span>
-                  Required monthly profit ≥ {money(receipt.proposal.investment.minimumMonthlyProfit)}
+                  Required monthly profit ≥ {money(receipt.proposal.investment.requiredMonthlyProfit)}
+                  {" · "}plan capacity allocated {money(receipt.proposal.investment.allocatedMonthlyPlanCost)}/month
+                  {" · "}customer 12-month ROI ≥ {receipt.proposal.investment.minimumCustomerRoiPercent}%
                   {" · "}payback ≤ {receipt.proposal.investment.maximumPaybackMonths} months
                   {" · "}12-month ROI ≥ {receipt.proposal.investment.minimumTwelveMonthRoiPercent}%
                   {" · "}modeled payback {receipt.proposal.investment.paybackMonths == null ? "unconfirmed" : `${receipt.proposal.investment.paybackMonths} months`}
-                  {" · "}modeled 12-month ROI {receipt.proposal.investment.twelveMonthRoiPercent == null ? "unconfirmed" : `${receipt.proposal.investment.twelveMonthRoiPercent}%`}
+                  {" · "}modeled customer ROI {receipt.proposal.investment.customerTwelveMonthRoiPercent}%
                 </span>
               </aside>
               <details>

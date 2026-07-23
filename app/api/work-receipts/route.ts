@@ -487,7 +487,14 @@ export async function GET(request: Request) {
             paybackMonths: investment.paybackMonths,
             twelveMonthNetValue: investment.twelveMonthNetValue,
             twelveMonthRoiPercent: investment.twelveMonthRoiPercent,
-            minimumMonthlyProfit: investment.policy.minimumMonthlyProfit,
+            allocatedMonthlyPlanCost: investment.allocatedMonthlyPlanCost,
+            requiredMonthlyProfit: investment.requiredMonthlyProfit,
+            customerTwelveMonthNetValue:
+              investment.customerTwelveMonthNetValue,
+            customerTwelveMonthRoiPercent:
+              investment.customerTwelveMonthRoiPercent,
+            minimumCustomerRoiPercent:
+              investment.policy.minimumCustomerRoiPercent,
             maximumPaybackMonths: investment.policy.maximumPaybackMonths,
             minimumTwelveMonthRoiPercent:
               investment.policy.minimumTwelveMonthRoiPercent,

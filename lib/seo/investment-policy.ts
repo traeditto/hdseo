@@ -9,6 +9,7 @@ import {
 
 export const investmentBlockingReasonCodes = [
   "VALUE_BELOW_PLAN_THRESHOLD",
+  "CUSTOMER_PLAN_ROI_BELOW_THRESHOLD",
   "PAYBACK_EXCEEDS_FOCUS_LIMIT",
   "TWELVE_MONTH_ROI_BELOW_THRESHOLD",
   "RANKING_DISTANCE_EXCEEDS_FOCUS_RANGE",
@@ -24,6 +25,7 @@ export type SeoInvestmentPolicy = {
   monthlyPlanPrice: number;
   includedOutcomes: number;
   minimumMonthlyProfit: number;
+  minimumCustomerRoiPercent: number;
   maximumPaybackMonths: number;
   minimumTwelveMonthRoiPercent: number;
   minimumConfidence: number;
@@ -89,6 +91,7 @@ export function investmentPolicyForPlan(planKey: string): SeoInvestmentPolicy {
       minimumMonthlyProfit: Math.ceil(
         Math.max(150, (monthlyPlanPrice / includedOutcomes) * 2),
       ),
+      minimumCustomerRoiPercent: 50,
       maximumPaybackMonths: 6,
       minimumTwelveMonthRoiPercent: 200,
       minimumConfidence: 60,
@@ -106,6 +109,7 @@ export function investmentPolicyForPlan(planKey: string): SeoInvestmentPolicy {
     monthlyPlanPrice: agency.monthlyPrice,
     includedOutcomes: agency.outcomes,
     minimumMonthlyProfit: agency.minimumMonthlyProfit,
+    minimumCustomerRoiPercent: 50,
     maximumPaybackMonths: 6,
     minimumTwelveMonthRoiPercent: 200,
     minimumConfidence: 60,
@@ -149,10 +153,29 @@ export function evaluateSeoInvestment(
       : expectedMonthlyProfit > 0
         ? Number.POSITIVE_INFINITY
         : 0;
+  const allocatedMonthlyPlanCost = input.strategicFocus
+    ? policy.monthlyPlanPrice
+    : policy.monthlyPlanPrice / Math.max(1, policy.includedOutcomes);
+  const requiredMonthlyProfit = Math.max(
+    policy.minimumMonthlyProfit,
+    allocatedMonthlyPlanCost *
+      (1 + policy.minimumCustomerRoiPercent / 100),
+  );
+  const customerTwelveMonthCost = allocatedMonthlyPlanCost * 12;
+  const customerTwelveMonthNetValue =
+    twelveMonthGrossProfit - customerTwelveMonthCost;
+  const customerTwelveMonthRoiPercent =
+    customerTwelveMonthCost > 0
+      ? (customerTwelveMonthNetValue / customerTwelveMonthCost) * 100
+      : 0;
   const reasons: InvestmentBlockingReasonCode[] = [];
 
-  if (expectedMonthlyProfit < policy.minimumMonthlyProfit)
+  if (expectedMonthlyProfit < requiredMonthlyProfit)
     reasons.push("VALUE_BELOW_PLAN_THRESHOLD");
+  if (
+    customerTwelveMonthRoiPercent < policy.minimumCustomerRoiPercent
+  )
+    reasons.push("CUSTOMER_PLAN_ROI_BELOW_THRESHOLD");
   if (
     paybackMonths == null ||
     paybackMonths > policy.maximumPaybackMonths
@@ -177,7 +200,7 @@ export function evaluateSeoInvestment(
 
   const valueStrength = Math.min(
     100,
-    (expectedMonthlyProfit / Math.max(1, policy.minimumMonthlyProfit)) * 50,
+    (expectedMonthlyProfit / Math.max(1, requiredMonthlyProfit)) * 50,
   );
   const roiStrength = Math.min(
     100,
@@ -225,6 +248,12 @@ export function evaluateSeoInvestment(
     twelveMonthRoiPercent: Number.isFinite(twelveMonthRoiPercent)
       ? +twelveMonthRoiPercent.toFixed(0)
       : null,
+    allocatedMonthlyPlanCost: +allocatedMonthlyPlanCost.toFixed(2),
+    requiredMonthlyProfit: +requiredMonthlyProfit.toFixed(2),
+    customerTwelveMonthCost: +customerTwelveMonthCost.toFixed(2),
+    customerTwelveMonthNetValue: +customerTwelveMonthNetValue.toFixed(2),
+    customerTwelveMonthRoiPercent:
+      +customerTwelveMonthRoiPercent.toFixed(0),
     currentRank,
     policy,
   };

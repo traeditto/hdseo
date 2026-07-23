@@ -51,7 +51,7 @@ describe("SEO investment policy", () => {
     expect(decision.twelveMonthRoiPercent).toBeGreaterThan(1_000);
   });
 
-  it("permits a bounded multi-phase focus campaign beyond the tactical rank range", () => {
+  it("rejects a focus campaign that cannot repay the customer's full plan", () => {
     const decision = evaluateSeoInvestment(
       {
         expectedMonthlyProfit: 340,
@@ -67,13 +67,42 @@ describe("SEO investment policy", () => {
       autopilot,
     );
 
+    expect(decision.qualified).toBe(false);
+    expect(decision.reasons).toEqual(
+      expect.arrayContaining([
+        "VALUE_BELOW_PLAN_THRESHOLD",
+        "CUSTOMER_PLAN_ROI_BELOW_THRESHOLD",
+      ]),
+    );
+    expect(decision.requiredMonthlyProfit).toBe(1_498.5);
+    expect(decision.customerTwelveMonthRoiPercent).toBeLessThan(0);
+  });
+
+  it("permits a strategic focus only when it can create plan-level ROI", () => {
+    const decision = evaluateSeoInvestment(
+      {
+        expectedMonthlyProfit: 1_600,
+        implementationCost: 2_100,
+        paybackMonths: 1.31,
+        confidenceScore: 80,
+        economicsConfidence: 0.4,
+        currentRank: 74,
+        actionType: "IMPROVE",
+        opportunityScore: 70,
+        strategicFocus: true,
+      },
+      autopilot,
+    );
+
     expect(decision.qualified).toBe(true);
+    expect(decision.customerTwelveMonthRoiPercent).toBeGreaterThanOrEqual(50);
     expect(decision.focusScore).toBeGreaterThanOrEqual(55);
   });
 
   it("uses the standard plan price to protect long-term customer value", () => {
     expect(autopilot.monthlyPlanPrice).toBe(999);
     expect(autopilot.minimumMonthlyProfit).toBe(333);
+    expect(autopilot.minimumCustomerRoiPercent).toBe(50);
     expect(autopilot.maximumPaybackMonths).toBe(6);
   });
 });
