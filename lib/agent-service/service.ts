@@ -3,7 +3,9 @@ import "server-only";
 import type {SupabaseClient} from "@supabase/supabase-js";
 import {ApiError} from "@/lib/api/errors";
 import {agentServicePlans,defaultManagedTools,isAgentServicePlanKey,planEntitlements,upgradeLegacyManagedTools,type AgentApprovalOwner,type AgentServiceMode} from "@/lib/agent-service/catalog";
+import {buildGrowthRunway} from "@/lib/agent-service/growth-runway";
 import {agencyBillingPlans,isAgencyBillingPlanKey} from "@/lib/billing/agency-catalog";
+import {investmentPolicyForPlan} from "@/lib/seo/investment-policy";
 
 export type AgentServiceTenant={agencyId:string;clientId:string;projectId:string;userId:string};
 type EnrollmentInput={serviceMode:AgentServiceMode;planKey:string;approvalOwner:AgentApprovalOwner;operatorBrand:"hdseo"|"agency";billingOwner:"agency"|"client";allowedTools?:string[];resalePriceCents?:number};
@@ -122,8 +124,8 @@ export async function updateAgentServiceSettings(db:SupabaseClient,tenant:AgentS
 export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentServiceTenant,"userId">){
   const enrollment=await db.from("agent_service_enrollments").select("*").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle();
   if(enrollment.error)throw new ApiError("The managed agent service database is not ready. Apply migration 0026.",503,"DATABASE_BINDING_FAILED");
-  if(!enrollment.data)return{tenant,enrollment:null,cycles:[],usage:[],escalations:[],activeWork:[],approvals:[],outcomeDecisions:[],outcomeRuns:[],summary:null};
-  const [cycles,usage,escalations,client,outcomeRuns,campaignDecisions,executionDecisions,releaseDecisions,researchJobs]=await Promise.all([
+  if(!enrollment.data)return{tenant,enrollment:null,cycles:[],usage:[],escalations:[],activeWork:[],approvals:[],outcomeDecisions:[],outcomeRuns:[],researchProgress:null,growthRunway:[],summary:null};
+  const [cycles,usage,escalations,client,outcomeRuns,campaignDecisions,executionDecisions,releaseDecisions,researchJobs,projectPolicy,runwayOpportunities]=await Promise.all([
     db.from("agent_service_cycles").select("*").eq("enrollment_id",enrollment.data.id).order("created_at",{ascending:false}).limit(30),
     db.from("agent_service_usage").select("*").eq("enrollment_id",enrollment.data.id).gte("occurred_at",enrollment.data.current_period_start).order("occurred_at",{ascending:false}).limit(100),
     db.from("agent_service_escalations").select("*").eq("enrollment_id",enrollment.data.id).order("created_at",{ascending:false}).limit(50),
@@ -133,6 +135,8 @@ export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentSe
     db.from("seo_executions").select("id,status,outcome_run_id,updated_at").eq("project_id",tenant.projectId).not("outcome_run_id","is",null).eq("status","awaiting_review").order("updated_at",{ascending:false}).limit(20),
     db.from("seo_executions").select("id,status,pull_request_url,preview_url,preview_deployment_id,validation_results,outcome_run_id,updated_at").eq("project_id",tenant.projectId).not("outcome_run_id","is",null).eq("status","preview_ready").order("updated_at",{ascending:false}).limit(20),
     db.from("seo_campaign_jobs").select("id,status,current_stage,progress_percent,input,result,created_at,updated_at,completed_at").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).contains("input",{managedDiscoveryOnly:true}).order("created_at",{ascending:false}).limit(10),
+    db.from("seo_projects").select("market_scope").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("id",tenant.projectId).maybeSingle(),
+    db.from("seo_opportunities").select("id,status,action_type,target_url,opportunity_score,confidence_score,reason_codes,evidence").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).in("status",["open","selected","approved"]).order("opportunity_score",{ascending:false}).limit(100),
   ]);
   const [activeWork,approvals]=client.data?await Promise.all([
     db.from("agent_work_items").select("id,work_type,goal,assigned_agent_key,status,risk_level,spending_limit,spent_amount,final_outcome,updated_at").eq("agency_id",tenant.agencyId).eq("client_id",client.data.id).eq("project_id",tenant.projectId).not("status","in","(succeeded,cancelled,failed,dead_letter)").order("priority",{ascending:false}).limit(30),
@@ -182,7 +186,12 @@ export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentSe
     completedAt:latestResearch.completed_at,
     nextCheckAt:enrollment.data.next_cycle_at,
   }:null;
-  return{tenant,enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],outcomeDecisions:decisions,outcomeRuns:outcomeRuns.data??[],researchProgress,summary:{capacityRemaining,capacityLimit:Number(enrollment.data.monthly_action_limit),capacityUsed:Number(enrollment.data.actions_used),reservedCapacity,actionsRemaining:capacityRemaining,reservedActions:reservedCapacity,completedOutcomes:(outcomeRuns.data??[]).filter(item=>item.status==="completed").length,majorPagesRemaining:Math.max(0,Number(enrollment.data.monthly_major_page_limit??0)-majorPagesUsed),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
+  const growthRunway=buildGrowthRunway(
+    runwayOpportunities.data??[],
+    projectPolicy.data?.market_scope==="nationwide"?"nationwide":"service_area",
+    investmentPolicyForPlan(String(enrollment.data.plan_key)),
+  );
+  return{tenant,enrollment:enrollment.data,cycles:cycles.data??[],usage:usage.data??[],escalations:escalations.data??[],activeWork:activeWork.data??[],approvals:approvals.data??[],outcomeDecisions:decisions,outcomeRuns:outcomeRuns.data??[],researchProgress,growthRunway,summary:{capacityRemaining,capacityLimit:Number(enrollment.data.monthly_action_limit),capacityUsed:Number(enrollment.data.actions_used),reservedCapacity,actionsRemaining:capacityRemaining,reservedActions:reservedCapacity,completedOutcomes:(outcomeRuns.data??[]).filter(item=>item.status==="completed").length,majorPagesRemaining:Math.max(0,Number(enrollment.data.monthly_major_page_limit??0)-majorPagesUsed),providerBudgetRemaining:Math.max(0,Number(enrollment.data.monthly_provider_budget)-Number(enrollment.data.provider_spend_used))+Number(enrollment.data.purchased_provider_balance??0),openEscalations:(escalations.data??[]).filter(item=>["open","in_progress","waiting"].includes(item.status)).length,nextCycleAt:enrollment.data.next_cycle_at}};
 }
 
 export async function resolveAgentServiceEscalation(db:SupabaseClient,tenant:AgentServiceTenant,id:string,resolution:string){

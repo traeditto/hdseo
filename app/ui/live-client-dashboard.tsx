@@ -49,6 +49,22 @@ type ManagedOutcomeRun = {
   failure_message: string | null;
   updated_at: string;
 };
+type GrowthRunwayItem = {
+  id: string;
+  targetUrl: string;
+  actionType: string;
+  keywords: string[];
+  currentMonthlyProfit: number;
+  requiredMonthlyProfit: number;
+  monthlyProfitGap: number;
+  valueCoveragePercent: number;
+  confidenceScore: number;
+  currentRank: number | null;
+  capacityUnits: number;
+  blockingReasons: string[];
+  milestones: string[];
+  explanation: string;
+};
 type ManagedServiceStatus = {
   enrollment: { status: string; next_cycle_at?: string } | null;
   cycles: Array<{ id: string; stage: string; created_at: string; updated_at: string }>;
@@ -71,6 +87,7 @@ type ManagedServiceStatus = {
     completedAt: string | null;
     nextCheckAt: string;
   } | null;
+  growthRunway: GrowthRunwayItem[];
   summary: { nextCycleAt: string; openEscalations: number } | null;
 };
 type ClientPackage = {
@@ -868,6 +885,7 @@ export function LiveClientBusinessDashboard({
   const latestManagedRun = effectiveManagedService?.outcomeRuns?.[0] ?? null;
   const latestManagedCycle = effectiveManagedService?.cycles?.[0] ?? null;
   const researchProgress = effectiveManagedService?.researchProgress ?? null;
+  const growthRunway = effectiveManagedService?.growthRunway ?? [];
   const researchIsActive = Boolean(
     researchProgress &&
       !["completed", "failed", "cancelled", "stale"].includes(
@@ -1492,6 +1510,54 @@ export function LiveClientBusinessDashboard({
                   )}
                 </section>
               </div>
+              {!!growthRunway.length && (
+                <section className="owner-growth-runway">
+                  <header>
+                    <div>
+                      <small>COMPOUND GROWTH RUNWAY</small>
+                      <h2>Promising opportunities HD SEO is building toward</h2>
+                    </div>
+                    <span>No capacity used yet</span>
+                  </header>
+                  <p>
+                    These searches do not justify implementation today. HD SEO
+                    is tracking the evidence and can combine related work into
+                    one focused campaign only after its conservative forecast
+                    clears your ROI guardrail.
+                  </p>
+                  <div>
+                    {growthRunway.map((item) => (
+                      <article key={item.id}>
+                        <div className="owner-runway-score">
+                          <strong>{item.valueCoveragePercent}%</strong>
+                          <small>of value threshold</small>
+                        </div>
+                        <div>
+                          <small>WATCHED CAMPAIGN</small>
+                          <h3>{item.keywords.slice(0, 3).join(" + ")}</h3>
+                          <p>
+                            Current conservative value{" "}
+                            <strong>{money(item.currentMonthlyProfit)}/mo</strong>
+                            {" · "}needed{" "}
+                            <strong>{money(item.requiredMonthlyProfit)}/mo</strong>
+                            {" · "}gap{" "}
+                            <strong>{money(item.monthlyProfitGap)}/mo</strong>
+                          </p>
+                          <ol>
+                            {item.milestones.map((milestone) => (
+                              <li key={milestone}>{milestone}</li>
+                            ))}
+                          </ol>
+                          <details>
+                            <summary>How this becomes an investable campaign</summary>
+                            <p>{item.explanation}</p>
+                          </details>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
               <section className="owner-connection-strip">
                 <div>
                   <small>CONNECTIONS</small>
