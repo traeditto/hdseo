@@ -28,6 +28,36 @@ type Opportunity = {
   currentRank: number | null;
   targetRank: number;
   estimatedMonthlyValue: number | null;
+  targetUrl: string | null;
+  confidenceScore: number;
+  reasonCodes: string[];
+};
+type ManagedDecision = {
+  kind: string;
+  id: string;
+  title: string;
+  summary: string;
+  question: string;
+  riskLevel: string;
+};
+type ManagedOutcomeRun = {
+  id: string;
+  opportunity_id: string | null;
+  status: string;
+  current_step: string;
+  failure_code: string | null;
+  failure_message: string | null;
+  updated_at: string;
+};
+type ManagedServiceStatus = {
+  enrollment: { status: string; next_cycle_at?: string } | null;
+  cycles: Array<{ id: string; stage: string; created_at: string; updated_at: string }>;
+  escalations: Array<{ id: string; status: string; title: string; summary: string }>;
+  activeWork: Array<{ id: string; status: string; goal: string; assigned_agent_key: string }>;
+  approvals: unknown[];
+  outcomeDecisions: ManagedDecision[];
+  outcomeRuns: ManagedOutcomeRun[];
+  summary: { nextCycleAt: string; openEscalations: number } | null;
 };
 type ClientPackage = {
   id: string;
@@ -161,6 +191,44 @@ const completedStatuses = new Set([
   "implemented_unverified",
   "verified",
 ]);
+const managedActiveStatuses = new Set([
+  "reserved",
+  "analyzing",
+  "awaiting_approval",
+  "implementing",
+  "preview",
+  "qa",
+  "publishing",
+  "monitoring",
+]);
+const blockedOpportunityReasons = new Set([
+  "ACTIVE_DUPLICATE",
+  "CONFIDENCE_BELOW_THRESHOLD",
+  "COOLDOWN_ACTIVE",
+  "LOCATION_EXCLUDED",
+  "MARKET_SCOPE_MISMATCH",
+  "NO_EXPECTED_BUSINESS_VALUE",
+  "PAGE_OWNERSHIP_CONFLICT",
+  "PAYBACK_EXCEEDS_AUTOPILOT_LIMIT",
+  "QUERY_TOO_BROAD",
+  "QUERY_TOO_LONG",
+  "REDUNDANT_QUERY",
+  "REQUIRED_EVIDENCE_MISSING",
+  "SERVICE_CAPACITY_UNAVAILABLE",
+  "SERVICE_NOT_VERIFIED",
+]);
+const managedStepLabels: Record<string, string> = {
+  reservation: "reserving the best qualified move",
+  evidence: "checking search and business evidence",
+  research: "researching the opportunity",
+  strategy: "building the safest plan",
+  creative: "preparing the exact content",
+  implementation: "preparing the exact website change",
+  preview: "building and checking a protected preview",
+  qa: "running safety and SEO checks",
+  publishing: "publishing the approved change",
+  monitoring: "measuring rankings, traffic, and leads",
+};
 const agentNames: Record<string, string> = {
   onboarding: "Onboarding Agent",
   research: "Research Agent",
@@ -632,6 +700,7 @@ export function LiveClientBusinessDashboard({
   const [message, setMessage] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [managedDecisionCount, setManagedDecisionCount] = useState(0);
+  const [managedService, setManagedService] = useState<ManagedServiceStatus | null>(null);
   const [deploymentSetupProject, setDeploymentSetupProject] = useState<Project | null>(null);
   const [receiptPackageId, setReceiptPackageId] = useState<string | null>(null);
   const [selectedClientId, setSelectedClientId] = useState(
@@ -711,8 +780,7 @@ export function LiveClientBusinessDashboard({
     ),
     completed = company.packages.filter((item) =>
       completedStatuses.has(item.status),
-    ),
-    topOpportunity = company.opportunities[0] ?? null;
+    );
   const evidenceBlocked = company.agentWork.some(
     (item) =>
       item.status === "blocked" &&
@@ -733,21 +801,68 @@ export function LiveClientBusinessDashboard({
       return;
     }
     let active = true;
-    fetch(`/api/agent-service/status?projectId=${encodeURIComponent(project.id)}`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Managed decisions could not be loaded.");
-        return response.json() as Promise<{service?:{approvals?:unknown[];outcomeDecisions?:unknown[]}}>;
+    const load = () =>
+      fetch(`/api/agent-service/status?projectId=${encodeURIComponent(project.id)}`, {
+        cache: "no-store",
       })
-      .then((payload) => {
-        if (active) setManagedDecisionCount((payload.service?.approvals?.length ?? 0) + (payload.service?.outcomeDecisions?.length ?? 0));
-      })
-      .catch(() => {
-        if (active) setManagedDecisionCount(0);
-      });
-    return () => { active = false; };
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Managed SEO status could not be loaded.");
+          return response.json() as Promise<{service?:ManagedServiceStatus}>;
+        })
+        .then((payload) => {
+          if (!active) return;
+          const service = payload.service ?? null;
+          setManagedService(service);
+          setManagedDecisionCount(
+            (service?.approvals?.length ?? 0) +
+              (service?.outcomeDecisions?.length ?? 0),
+          );
+        })
+        .catch(() => {
+          if (!active) return;
+          setManagedService(null);
+          setManagedDecisionCount(0);
+        });
+    void load();
+    const timer = window.setInterval(() => void load(), 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [project?.id, isFreeTrial]);
 
   const effectiveManagedDecisionCount = !project?.id || isFreeTrial ? 0 : managedDecisionCount;
+  const effectiveManagedService = !project?.id || isFreeTrial ? null : managedService;
+  const managedDecision = effectiveManagedService?.outcomeDecisions?.[0] ?? null;
+  const latestManagedRun = effectiveManagedService?.outcomeRuns?.[0] ?? null;
+  const activeManagedRun =
+    latestManagedRun && managedActiveStatuses.has(latestManagedRun.status)
+      ? latestManagedRun
+      : null;
+  const managedOpenEscalation =
+    effectiveManagedService?.escalations?.find((item) =>
+      ["open", "in_progress", "waiting"].includes(item.status),
+    ) ?? null;
+  const managedFailure =
+    latestManagedRun?.status === "failed" ? latestManagedRun : null;
+  const executableOpportunities = company.opportunities.filter(
+    (item) =>
+      item.targetUrl &&
+      item.score >= 55 &&
+      item.confidenceScore >= 55 &&
+      !item.reasonCodes.some((reason) => blockedOpportunityReasons.has(reason)),
+  );
+  const activeOpportunity = activeManagedRun?.opportunity_id
+    ? company.opportunities.find(
+        (item) => item.id === activeManagedRun.opportunity_id,
+      ) ?? null
+    : null;
+  const topOpportunity = activeOpportunity ?? executableOpportunities[0] ?? null;
+  const managedStep =
+    managedStepLabels[activeManagedRun?.current_step ?? ""] ??
+    (activeManagedRun
+      ? friendlyStatus(activeManagedRun.current_step)
+      : "researching the next qualified move");
 
   if (!data.clients.length)
     return (
@@ -817,6 +932,10 @@ export function LiveClientBusinessDashboard({
         : "Your free website crawl is in progress"
     : approvals.length+effectiveManagedDecisionCount>0
     ? "We need one quick decision"
+    : activeManagedRun
+      ? "Autopilot is moving your plan forward"
+    : managedFailure || managedOpenEscalation
+      ? "HD SEO protected your website"
     : evidenceBlocked
       ? "Research needs a safe restart"
     : profile?.onboardingStatus !== "active"
@@ -833,7 +952,11 @@ export function LiveClientBusinessDashboard({
         ? "Explore your results and the full workspace. Ongoing crawling, paid data, agents, and publishing stay off until you choose a plan."
         : "The crawl is queued safely. You can explore every product area while the worker collects public website evidence."
     : approvals.length+effectiveManagedDecisionCount>0
-    ? "Approving or requesting changes keeps the highest-value work moving."
+    ? "Autopilot has already done the research and preparation. Review the one customer-visible safety decision so it can continue."
+    : activeManagedRun
+      ? `No action is needed. HD SEO is ${managedStep} and will continue automatically through its next safe stage.`
+    : managedFailure || managedOpenEscalation
+      ? "A proposed change did not pass a protected check. The previous safe version stayed live, and Autopilot is excluding that move before researching another."
     : evidenceBlocked
       ? "The first keyword evidence run did not start correctly. Restarting will collect it before the strategy is built."
     : profile?.onboardingStatus !== "active"
@@ -1039,16 +1162,80 @@ export function LiveClientBusinessDashboard({
                   <header>
                     <small>BEST NEXT MOVE</small>
                     <span>
-                      {topOpportunity ? "Recommended" : "Researching"}
+                      {managedDecision
+                        ? "Your approval"
+                        : activeManagedRun
+                          ? "Autopilot working"
+                          : managedFailure || managedOpenEscalation
+                            ? "Protected"
+                            : topOpportunity
+                              ? "Starting automatically"
+                              : "Researching"}
                     </span>
                   </header>
-                  {topOpportunity ? (
+                  {managedDecision ? (
+                    <>
+                      <h2>{managedDecision.title}</h2>
+                      <p>{managedDecision.summary}</p>
+                      <div className="owner-why">
+                        <b>Why you are seeing this</b>
+                        <span>
+                          Autopilot handles research, preparation, previews, QA,
+                          publishing, and monitoring. It pauses only before a
+                          customer-visible or high-risk decision.
+                        </span>
+                      </div>
+                      <button onClick={() => setTab("approvals")}>
+                        Review the exact change →
+                      </button>
+                    </>
+                  ) : activeManagedRun ? (
+                    <>
+                      <h2>Autopilot is {managedStep}</h2>
+                      <p>
+                        No action is needed. HD SEO will advance this work,
+                        retry temporary failures, validate every change, and
+                        stop only if a real business decision needs you.
+                      </p>
+                      {topOpportunity && (
+                        <details>
+                          <summary>Show the opportunity being worked</summary>
+                          <p>
+                            Target search: <strong>{topOpportunity.keyword}</strong>
+                          </p>
+                          <p>
+                            Target page: <strong>{topOpportunity.targetUrl}</strong>
+                          </p>
+                        </details>
+                      )}
+                      <button onClick={() => setTab("autopilot")}>
+                        See live Autopilot status →
+                      </button>
+                    </>
+                  ) : managedFailure || managedOpenEscalation ? (
+                    <>
+                      <h2>The previous safe version stayed live</h2>
+                      <p>
+                        A proposed move did not pass HD SEO&apos;s protected
+                        checks. It was not counted as completed work, and
+                        Autopilot is excluding it before choosing another.
+                      </p>
+                      <div className="owner-why">
+                        <b>No action required</b>
+                        <span>
+                          This is a safety record, not SEO homework. Temporary
+                          failures retry automatically; unsafe opportunities
+                          are cooled down and replaced.
+                        </span>
+                      </div>
+                      <button onClick={() => setTab("autopilot")}>
+                        View the safety record →
+                      </button>
+                    </>
+                  ) : topOpportunity ? (
                     <>
                       <h2>
-                        Help more {profile?.marketScope === "nationwide" ? "customers" : "nearby customers"} find{" "}
-                        {profile?.priorityServices[0] ??
-                          profile?.services[0] ??
-                          "your services"}
+                        Autopilot is preparing: {topOpportunity.keyword}
                       </h2>
                       <p>
                         {topOpportunity.reason ||
@@ -1082,7 +1269,7 @@ export function LiveClientBusinessDashboard({
                         )}
                       </details>
                       <button onClick={() => setTab("plan")}>
-                        See where this fits in my plan →
+                        See why Autopilot selected this →
                       </button>
                     </>
                   ) : (
@@ -1115,11 +1302,36 @@ export function LiveClientBusinessDashboard({
                         <span>{friendlyStatus(item.status)}</span>
                       </article>
                     ))
+                  ) : activeManagedRun ? (
+                    <article>
+                      <i className={activeManagedRun.status} />
+                      <div>
+                        <strong>Supervisor Agent</strong>
+                        <p>HD SEO is {managedStep}.</p>
+                      </div>
+                      <span>{friendlyStatus(activeManagedRun.status)}</span>
+                    </article>
+                  ) : managedFailure || managedOpenEscalation ? (
+                    <article>
+                      <i className="blocked" />
+                      <div>
+                        <strong>Protected recovery</strong>
+                        <p>
+                          {managedOpenEscalation?.summary ??
+                            managedFailure?.failure_message ??
+                            "The previous safe version remains live while Autopilot selects another move."}
+                        </p>
+                      </div>
+                      <span>Safe</span>
+                    </article>
                   ) : (
                     <div className="owner-empty">
                       <i>✓</i>
-                      <strong>No work is blocked</strong>
-                      <p>The next scheduled run will appear here.</p>
+                      <strong>Autopilot is watching for the next qualified move</strong>
+                      <p>
+                        Nothing needs your attention. The scheduler will start
+                        automatically when the evidence supports worthwhile work.
+                      </p>
                     </div>
                   )}
                 </section>

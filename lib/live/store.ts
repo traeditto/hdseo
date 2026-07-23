@@ -159,6 +159,9 @@ export type LiveOpportunity = {
   estimatedEffort: number | null;
   valuePerDollar: number | null;
   source: string;
+  targetUrl: string | null;
+  confidenceScore: number;
+  reasonCodes: string[];
   createdAt: string;
 };
 
@@ -508,6 +511,12 @@ function mapOpportunity(row: DatabaseRow): LiveOpportunity {
           ? businessValue.expectedMonthlyProfit / businessValue.implementationCost
         : null,
     source: (evidence.source as string) ?? "autonomous_evidence",
+    targetUrl: rowText(row, "target_url") || null,
+    confidenceScore:
+      typeof row.confidence_score === "number" ? row.confidence_score : 0,
+    reasonCodes: Array.isArray(row.reason_codes)
+      ? row.reason_codes.map(String)
+      : [],
     createdAt: toIso(row.created_at),
   };
 }

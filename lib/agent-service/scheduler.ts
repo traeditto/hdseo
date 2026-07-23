@@ -6,6 +6,7 @@ import {ApiError} from "@/lib/api/errors";
 import {enqueueAgentWorkItem,resumeEvidenceBlockedAgentWork} from "@/lib/agents/control-plane";
 import {upgradeLegacyManagedTools} from "@/lib/agent-service/catalog";
 import {commitOutcome,releaseOutcome,reserveOutcome,setOutcomeStep,type OutcomeStepKey} from "@/lib/agent-service/outcome-loop";
+import {selectManagedOpportunity,type ManagedOpportunityCandidate} from "@/lib/agent-service/opportunity-selection";
 import {getLiveAdminClient} from "@/lib/live/identity";
 
 type Enrollment={
@@ -242,8 +243,13 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
     if(campaign.status==="completed")return completeCampaignOutcome(db,enrollment,cycle,run,campaign,userId);
     if(["failed","cancelled","stale"].includes(campaign.status)){
       await releaseOutcome(db,{runId:run.id,reason:campaign.error_message??`The campaign ended as ${campaign.status} before delivery.`,status:campaign.status==="cancelled"?"cancelled":"failed"});
+      if(cycle.selected_opportunity_id)await db.from("seo_opportunities").update({
+        status:"open",
+        cooldown_until:new Date(Date.now()+7*86_400_000).toISOString(),
+        updated_at:now(),
+      }).eq("id",cycle.selected_opportunity_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id);
       await escalate(db,enrollment,cycle.id,"worker","Managed SEO outcome did not ship",campaign.error_message??"The protected workflow stopped before delivery; the reserved action was returned.");
-      await releaseLease(db,enrollment);return true;
+      await releaseLease(db,enrollment,0.1);return true;
     }
     if(campaign.status==="awaiting_manual_completion"&&await continueApprovedActiveCampaign(db,enrollment,cycle,run,campaign,userId))return true;
     if(campaign.status==="awaiting_manual_completion"&&await ensureDirectCmsExecution(db,enrollment,cycle,run,campaign,userId))return true;
@@ -449,10 +455,16 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   }
   const userId=await accountableUser(db,enrollment,input.requestedBy);
   const approved=await selectApprovedPackage(db,enrollment,input.approvedPackageId);
-  const opportunity=approved
+  const opportunityResult=approved
     ?await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_milestone,evidence,recommended_actions,status").eq("id",approved.pkg.opportunity_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).maybeSingle()
-    :await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_milestone,evidence,recommended_actions,status").eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).in("status",["open","selected","approved"]).gte("opportunity_score",55).order("opportunity_score",{ascending:false}).order("confidence_score",{ascending:false}).limit(1).maybeSingle();
-  if(opportunity.error)throw new ApiError("The selected SEO opportunity could not be loaded.",503,"DATABASE_BINDING_FAILED");
+    :await db.from("seo_opportunities").select("id,opportunity_score,confidence_score,action_type,target_url,target_milestone,evidence,recommended_actions,status,reason_codes,cooldown_until").eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).in("status",["open","selected","approved"]).gte("opportunity_score",55).order("opportunity_score",{ascending:false}).order("confidence_score",{ascending:false}).limit(50);
+  if(opportunityResult.error)throw new ApiError("The selected SEO opportunity could not be loaded.",503,"DATABASE_BINDING_FAILED");
+  const project=approved?null:await db.from("seo_projects").select("market_scope").eq("id",enrollment.project_id).eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).maybeSingle();
+  if(project?.error)throw new ApiError("The client market scope could not be verified.",503,"DATABASE_BINDING_FAILED");
+  const opportunityData:ManagedOpportunityCandidate|null=approved
+    ?opportunityResult.data as ManagedOpportunityCandidate|null
+    :selectManagedOpportunity((opportunityResult.data??[]) as ManagedOpportunityCandidate[],project?.data?.market_scope==="nationwide"?"nationwide":"service_area");
+  const opportunity={data:opportunityData};
   if(approved&&!opportunity.data)throw new ApiError("The exact approved package has lost its tenant-scoped opportunity evidence.",409,"CONFLICT");
   const cycleKey=approved?.cycleKey??`${new Date().toISOString().slice(0,13)}:${opportunity.data?.id??"evidence"}`;
   const priorCycle=approved

@@ -427,10 +427,16 @@ async function validateDeployment(job:BackgroundJob){
     :[{baseUrl:deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`,hostname:new URL(deployment.url.startsWith("http")?deployment.url:`https://${deployment.url}`).hostname,source:"configured_domain" as const}];
   let validationTarget=validationTargets[0],validationUrl=new URL(targetPath,validationTarget.baseUrl).toString();
   const previous=deployment.previous_deployment_id
-    ?await db.from("deployments").select("id").eq("id",deployment.previous_deployment_id).in("status",["ready","healthy","rolled_back"]).maybeSingle()
-    :await db.from("deployments").select("id").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
-  const baselineChecks=previous.data?await db.from("deployment_checks").select("check_type,score,details").eq("deployment_id",previous.data.id):{data:[]};
-  const baseline=previous.data?deploymentSnapshotFromChecks(baselineChecks.data??[]):null;
+    ?await db.from("deployments").select("id,validation_summary").eq("id",deployment.previous_deployment_id).in("status",["ready","healthy","rolled_back"]).maybeSingle()
+    :await db.from("deployments").select("id,validation_summary").eq("vercel_project_id",deployment.vercel_project_id).eq("environment",deployment.environment).eq("status","healthy").neq("id",deployment.id).order("completed_at",{ascending:false}).limit(1).maybeSingle();
+  const previousSummary=previous.data?.validation_summary&&typeof previous.data.validation_summary==="object"
+    ?previous.data.validation_summary as Record<string,unknown>
+    :{};
+  const previousValidatedUrl=typeof previousSummary.validatedUrl==="string"?previousSummary.validatedUrl:null;
+  const normalizePath=(value:string)=>{try{const path=new URL(value,"https://hdseo.invalid").pathname.replace(/\/+$/,"");return path||"/";}catch{return null;}};
+  const baselineDeploymentId=previous.data&&previousValidatedUrl&&normalizePath(previousValidatedUrl)===normalizePath(targetPath)?previous.data.id:null;
+  const baselineChecks=baselineDeploymentId?await db.from("deployment_checks").select("check_type,score,details").eq("deployment_id",baselineDeploymentId):{data:[]};
+  const baseline=baselineDeploymentId?deploymentSnapshotFromChecks(baselineChecks.data??[]):null;
   await db.from("deployments").update({status:"validating",updated_at:new Date().toISOString()}).eq("id",deployment.id);
   await setRun(job.automation_run_id,"running","deployment.validate");
   const started=new Date().toISOString();
@@ -469,9 +475,9 @@ async function validateDeployment(job:BackgroundJob){
     throw new ApiError("The preview is temporarily unavailable. HD SEO will retry automatically.",503,"PREVIEW_VALIDATION_RETRY");
   }
   const current=deploymentSnapshotFromChecks(checks),drift=compareSeoDrift(baseline,current);
-  checks.push({checkType:"drift",status:drift.status,required:drift.required,details:{baselineDeploymentId:previous.data?.id??null,findings:drift.findings,baseline:drift.baseline,current:drift.current}});
+  checks.push({checkType:"drift",status:drift.status,required:drift.required,details:{baselineDeploymentId,baselineSkippedReason:previous.data&&!baselineDeploymentId?"target_path_changed":null,findings:drift.findings,baseline:drift.baseline,current:drift.current}});
   for(const check of checks){const saved=await db.from("deployment_checks").upsert({deployment_id:deployment.id,check_type:check.checkType,status:check.status,required:check.required,score:check.score??null,details:check.details,started_at:started,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()},{onConflict:"deployment_id,check_type"});if(saved.error)throw new ApiError(`The ${check.checkType} validation result could not be persisted.`,500,"DATABASE_BINDING_FAILED");}
-  const failed=checks.filter(check=>check.required&&check.status==="failed"),priorSummary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{},summary={...priorSummary,retrying:false,passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId:previous.data?.id??null,validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v2",validatedUrl:validationUrl,validationTargetSource:validationTarget.source};
+  const failed=checks.filter(check=>check.required&&check.status==="failed"),priorSummary=deployment.validation_summary&&typeof deployment.validation_summary==="object"?deployment.validation_summary as Record<string,unknown>:{},summary={...priorSummary,retrying:false,passed:checks.filter(c=>c.status==="passed").length,warnings:checks.filter(c=>c.status==="warning").length,failed:failed.map(c=>c.checkType),checks:checks.length,baselineDeploymentId,validationModelVersion:deployment.environment==="preview"?"preview-aware-v2":"production-aware-v2",validatedUrl:validationUrl,validationTargetSource:validationTarget.source};
   await db.from("deployments").update({status:failed.length?"failed":"healthy",validation_summary:summary,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",deployment.id);
   const client=await db.from("clients").select("organization_id,automation_config").eq("id",deployment.client_id).single(),run=job.automation_run_id?await db.from("automation_runs").select("seo_job_id").eq("id",job.automation_run_id).single():null,seoJob=run?.data?await db.from("seo_jobs").select("requested_by").eq("id",run.data.seo_job_id).single():null;
   const execution=executionContext;
