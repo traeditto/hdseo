@@ -6,6 +6,10 @@ import "server-only";
 import { z } from "zod";
 import { ApiError, jsonError } from "@/lib/api/errors";
 import { requireLiveAgencyProject } from "@/lib/auth/live-tenant";
+import {
+  evaluateSeoInvestment,
+  investmentPolicyForPlan,
+} from "@/lib/seo/investment-policy";
 
 const querySchema = z.object({
   projectId: z.string().uuid(),
@@ -110,7 +114,7 @@ export async function GET(request: Request) {
     const metric = data(metricResult as any) as any;
     const ranking = data(rankingResult as any) as any;
 
-    const [draftResult, runResult, cycleResult, verificationResult, proofResult, creativeResult, assetsResult, budgetResult] =
+    const [draftResult, runResult, cycleResult, verificationResult, proofResult, creativeResult, assetsResult, budgetResult, subscriptionResult] =
       await Promise.all([
         pkg.action_draft_id
           ? scope(
@@ -187,6 +191,11 @@ export async function GET(request: Request) {
           context.db
             .from("project_budget_accounts")
             .select("id,currency,monthly_limit,hard_stop,status"),
+        ).maybeSingle(),
+        scope(
+          context.db
+            .from("client_subscriptions")
+            .select("plan_key,status,price_cents"),
         ).maybeSingle(),
       ]);
 
@@ -291,6 +300,7 @@ export async function GET(request: Request) {
     const assets = (data(assetsResult as any) ?? []) as any[];
     const transactions = (data(transactionResult as any) ?? []) as any[];
     const evidence = record(opportunity?.evidence);
+    const businessValue = record(evidence.businessValue);
     const packageData = record(pkg.package_data);
     const metadata = record(packageData.metadata);
     const draft = data(draftResult as any) as any;
@@ -379,6 +389,30 @@ export async function GET(request: Request) {
       keyword?.keyword,
       text(evidence.keyword, text(creative?.target_keyword, "SEO opportunity")),
     );
+    const expectedMonthlyProfit = number(
+      run?.expected_value ??
+        businessValue.expectedMonthlyProfit ??
+        evidence.expectedMonthlyProfit ??
+        evidence.estimatedMonthlyValue,
+    );
+    const currentPosition = number(
+      ranking?.position ?? evidence.currentRank ?? evidence.current_position,
+    );
+    const investment = evaluateSeoInvestment(
+      {
+        expectedMonthlyProfit,
+        implementationCost: number(businessValue.implementationCost),
+        paybackMonths: number(businessValue.paybackMonths),
+        confidenceScore: number(opportunity?.confidence_score),
+        currentRank: currentPosition,
+        actionType: opportunity?.action_type,
+        economicsConfidence: number(evidence.economicsConfidence),
+        opportunityScore: number(opportunity?.opportunity_score),
+      },
+      investmentPolicyForPlan(
+        text(subscriptionResult.data?.plan_key, "agency_core"),
+      ),
+    );
     const needsCreative = ["BUILD", "CONTENT", "LOCALIZE", "CTR_WIN", "CONVERSION"].includes(
       text(opportunity?.action_type).toUpperCase(),
     );
@@ -438,9 +472,26 @@ export async function GET(request: Request) {
           searchVolume: number(metric?.search_volume ?? evidence.searchVolume ?? evidence.search_volume),
           cpc: number(metric?.cpc ?? evidence.cpc),
           difficulty: number(metric?.difficulty ?? evidence.difficulty),
-          currentPosition: number(ranking?.position ?? evidence.currentRank ?? evidence.current_position),
+          currentPosition,
           targetUrl: text(draft?.target_url, text(keyword?.target_url, text(ranking?.ranking_url, text(evidence.targetUrl)))) || null,
-          expectedValue: number(run?.expected_value ?? evidence.expectedMonthlyProfit ?? evidence.estimatedMonthlyValue),
+          expectedValue: expectedMonthlyProfit,
+          investment: {
+            qualified: investment.qualified,
+            verdict: investment.qualified
+              ? "qualified_focus_investment"
+              : "historical_below_threshold",
+            reasons: investment.reasons,
+            focusScore: investment.focusScore,
+            implementationCost: investment.implementationCost,
+            paybackMonths: investment.paybackMonths,
+            twelveMonthNetValue: investment.twelveMonthNetValue,
+            twelveMonthRoiPercent: investment.twelveMonthRoiPercent,
+            minimumMonthlyProfit: investment.policy.minimumMonthlyProfit,
+            maximumPaybackMonths: investment.policy.maximumPaybackMonths,
+            minimumTwelveMonthRoiPercent:
+              investment.policy.minimumTwelveMonthRoiPercent,
+            planLabel: investment.policy.planLabel,
+          },
           recommendations: list(opportunity?.recommended_actions),
           exactChange: draft
             ? {

@@ -8,6 +8,7 @@ import {upgradeLegacyManagedTools} from "@/lib/agent-service/catalog";
 import {commitOutcome,releaseOutcome,reserveOutcome,setOutcomeStep,type OutcomeStepKey} from "@/lib/agent-service/outcome-loop";
 import {selectManagedOpportunity,type ManagedOpportunityCandidate} from "@/lib/agent-service/opportunity-selection";
 import {getLiveAdminClient} from "@/lib/live/identity";
+import {investmentPolicyForPlan} from "@/lib/seo/investment-policy";
 
 type Enrollment={
   id:string;agency_id:string;client_organization_id:string;client_id:string;project_id:string;
@@ -448,7 +449,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   }
   await resumeEvidenceBlockedAgentWork(db,{agencyId:enrollment.agency_id,projectId:enrollment.project_id,recoveryKey:`managed-cycle:${new Date().toISOString().slice(0,13)}`,allowedTools:enrollment.allowed_tools});
   if(await reconcileActiveCycle(db,enrollment,input.requestedBy))return{enrollmentId:enrollment.id,status:"reconciled"};
-  const subscription=await db.from("client_subscriptions").select("status").eq("project_id",enrollment.project_id).maybeSingle();
+  const subscription=await db.from("client_subscriptions").select("status,plan_key").eq("project_id",enrollment.project_id).maybeSingle();
   if(subscription.data&&!['active','trialing'].includes(subscription.data.status)){
     await db.from("agent_service_enrollments").update({status:subscription.data.status==="past_due"?"past_due":"paused",pause_reason:"Billing is not active",worker_id:null,locked_at:null,lock_expires_at:null,updated_at:now()}).eq("id",enrollment.id);
     await escalate(db,enrollment,null,"billing","Managed SEO is paused","Billing must be active before the next agent cycle can run.",true);return{enrollmentId:enrollment.id,status:"billing_blocked"};
@@ -463,7 +464,7 @@ async function beginCycle(db:SupabaseClient,enrollment:Enrollment,input:{trigger
   if(project?.error)throw new ApiError("The client market scope could not be verified.",503,"DATABASE_BINDING_FAILED");
   const opportunityData:ManagedOpportunityCandidate|null=approved
     ?opportunityResult.data as ManagedOpportunityCandidate|null
-    :selectManagedOpportunity((opportunityResult.data??[]) as ManagedOpportunityCandidate[],project?.data?.market_scope==="nationwide"?"nationwide":"service_area");
+    :selectManagedOpportunity((opportunityResult.data??[]) as ManagedOpportunityCandidate[],project?.data?.market_scope==="nationwide"?"nationwide":"service_area",new Date(),investmentPolicyForPlan(String(subscription.data?.plan_key??"agency_core")));
   const opportunity={data:opportunityData};
   if(approved&&!opportunity.data)throw new ApiError("The exact approved package has lost its tenant-scoped opportunity evidence.",409,"CONFLICT");
   const cycleKey=approved?.cycleKey??`${new Date().toISOString().slice(0,13)}:${opportunity.data?.id??"evidence"}`;

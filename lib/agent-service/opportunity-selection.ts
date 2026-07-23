@@ -1,3 +1,10 @@
+import {
+  evaluateSeoInvestment,
+  investmentBlockingReasonCodes,
+  investmentPolicyForPlan,
+  type SeoInvestmentPolicy,
+} from "../seo/investment-policy";
+
 export type ManagedOpportunityCandidate = {
   id: string;
   opportunity_score: number | null;
@@ -19,6 +26,7 @@ const blockingReasonCodes = new Set([
   "NO_EXPECTED_BUSINESS_VALUE",
   "PAGE_OWNERSHIP_CONFLICT",
   "PAYBACK_EXCEEDS_AUTOPILOT_LIMIT",
+  ...investmentBlockingReasonCodes,
   "QUERY_TOO_BROAD",
   "QUERY_TOO_LONG",
   "REDUNDANT_QUERY",
@@ -31,6 +39,8 @@ const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+const metricNumber = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
 
 function hasUsableTarget(value: string | null) {
   if (!value) return false;
@@ -50,6 +60,7 @@ export function selectManagedOpportunity(
   candidates: ManagedOpportunityCandidate[],
   marketScope: "service_area" | "nationwide",
   now = new Date(),
+  policy: SeoInvestmentPolicy = investmentPolicyForPlan("pro"),
 ) {
   return (
     candidates
@@ -77,10 +88,22 @@ export function selectManagedOpportunity(
 
         const evidence = record(candidate.evidence);
         const businessValue = record(evidence.businessValue);
-        const expectedProfit = Number(businessValue.expectedMonthlyProfit);
-        const paybackMonths = Number(businessValue.paybackMonths);
-        if (!Number.isFinite(expectedProfit) || expectedProfit <= 0) return false;
-        if (Number.isFinite(paybackMonths) && paybackMonths > 60) return false;
+        const investment = evaluateSeoInvestment(
+          {
+            expectedMonthlyProfit: metricNumber(
+              businessValue.expectedMonthlyProfit,
+            ),
+            implementationCost: metricNumber(businessValue.implementationCost),
+            paybackMonths: metricNumber(businessValue.paybackMonths),
+            confidenceScore: candidate.confidence_score,
+            currentRank: metricNumber(evidence.currentRank),
+            actionType: candidate.action_type,
+            economicsConfidence: metricNumber(evidence.economicsConfidence),
+            opportunityScore: candidate.opportunity_score,
+          },
+          policy,
+        );
+        if (!investment.qualified) return false;
         if (
           Array.isArray(evidence.missingEvidence) &&
           evidence.missingEvidence.length > 3
@@ -88,12 +111,25 @@ export function selectManagedOpportunity(
           return false;
         return true;
       })
-      .sort(
-        (a, b) =>
-          Number(b.opportunity_score ?? 0) *
-            Number(b.confidence_score ?? 0) -
-          Number(a.opportunity_score ?? 0) *
-            Number(a.confidence_score ?? 0),
-      )[0] ?? null
+      .sort((a, b) => {
+        const evaluate = (candidate: ManagedOpportunityCandidate) => {
+          const evidence = record(candidate.evidence);
+          const value = record(evidence.businessValue);
+          return evaluateSeoInvestment(
+            {
+              expectedMonthlyProfit: metricNumber(value.expectedMonthlyProfit),
+              implementationCost: metricNumber(value.implementationCost),
+              paybackMonths: metricNumber(value.paybackMonths),
+              confidenceScore: candidate.confidence_score,
+              currentRank: metricNumber(evidence.currentRank),
+              actionType: candidate.action_type,
+              economicsConfidence: metricNumber(evidence.economicsConfidence),
+              opportunityScore: candidate.opportunity_score,
+            },
+            policy,
+          ).focusScore;
+        };
+        return evaluate(b) - evaluate(a);
+      })[0] ?? null
   );
 }

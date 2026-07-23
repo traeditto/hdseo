@@ -17,8 +17,11 @@ function candidate(
     evidence: {
       businessValue: {
         expectedMonthlyProfit: 600,
+        implementationCost: 350,
         paybackMonths: 2,
       },
+      currentRank: 12,
+      economicsConfidence: 0.8,
       missingEvidence: [],
     },
     status: "open",
@@ -65,6 +68,44 @@ describe("managed Autopilot opportunity selection", () => {
     );
 
     expect(selected?.id).toBe("higher");
+  });
+
+  it("concentrates effort on the stronger qualified business outcome", () => {
+    const selected = selectManagedOpportunity(
+      [
+        candidate({
+          id: "seo-score-only",
+          opportunity_score: 92,
+          evidence: {
+            businessValue: {
+              expectedMonthlyProfit: 350,
+              implementationCost: 350,
+              paybackMonths: 1,
+            },
+            currentRank: 12,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+        candidate({
+          id: "stronger-roi",
+          opportunity_score: 72,
+          evidence: {
+            businessValue: {
+              expectedMonthlyProfit: 900,
+              implementationCost: 350,
+              paybackMonths: 0.39,
+            },
+            currentRank: 15,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+      ],
+      "service_area",
+    );
+
+    expect(selected?.id).toBe("stronger-roi");
   });
 
   it("permits verified nationwide work without a local relevance marker", () => {

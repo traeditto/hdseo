@@ -29,6 +29,20 @@ type Receipt = {
     currentPosition: number | null;
     targetUrl: string | null;
     expectedValue: number | null;
+    investment: {
+      qualified: boolean;
+      verdict: "qualified_focus_investment" | "historical_below_threshold";
+      reasons: string[];
+      focusScore: number;
+      implementationCost: number;
+      paybackMonths: number | null;
+      twelveMonthNetValue: number;
+      twelveMonthRoiPercent: number | null;
+      minimumMonthlyProfit: number;
+      maximumPaybackMonths: number;
+      minimumTwelveMonthRoiPercent: number;
+      planLabel: string;
+    };
     recommendations: unknown[];
     exactChange: unknown;
   };
@@ -314,9 +328,28 @@ export function WorkReceipt({
               </div>
               {receipt.proposal.expectedValue != null && (
                 <p className="receipt-disclaimer">
-                  Directional modeled opportunity: {money(receipt.proposal.expectedValue)}. This is an estimate based on recorded assumptions—not guaranteed revenue.
+                  Conservative modeled monthly gross-profit opportunity: {money(receipt.proposal.expectedValue)}. This is an estimate based on recorded assumptions—not guaranteed revenue.
                 </p>
               )}
+              <aside className={receipt.proposal.investment.qualified ? "receipt-truth active" : "receipt-truth waiting"}>
+                <strong>
+                  {receipt.proposal.investment.qualified
+                    ? "Qualified focus investment"
+                    : "Historical result—below today’s Autopilot investment threshold"}
+                </strong>
+                <p>
+                  {receipt.proposal.investment.qualified
+                    ? `This move passed the ${receipt.proposal.investment.planLabel} value, attainability, confidence, payback and 12-month ROI gates.`
+                    : `HD SEO would not select, implement, or bill this move today. It remains visible only as historical evidence while Autopilot searches for a materially stronger objective.`}
+                </p>
+                <span>
+                  Required monthly profit ≥ {money(receipt.proposal.investment.minimumMonthlyProfit)}
+                  {" · "}payback ≤ {receipt.proposal.investment.maximumPaybackMonths} months
+                  {" · "}12-month ROI ≥ {receipt.proposal.investment.minimumTwelveMonthRoiPercent}%
+                  {" · "}modeled payback {receipt.proposal.investment.paybackMonths == null ? "unconfirmed" : `${receipt.proposal.investment.paybackMonths} months`}
+                  {" · "}modeled 12-month ROI {receipt.proposal.investment.twelveMonthRoiPercent == null ? "unconfirmed" : `${receipt.proposal.investment.twelveMonthRoiPercent}%`}
+                </span>
+              </aside>
               <details>
                 <summary>See the exact page, content, code and validation plan</summary>
                 <pre>{compactJson(receipt.proposal.exactChange)}</pre>
