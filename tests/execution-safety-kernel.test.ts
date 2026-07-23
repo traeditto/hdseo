@@ -27,6 +27,8 @@ describe("execution safety kernel",()=>{
     expect(gateway).toContain("existing.data.action_digest!==digest");
     expect(gateway).not.toContain('.upsert({\n    agency_id:input.action.agencyId');
     expect(gateway).toContain('eq("execution_ref",input.executionRef)');
+    expect(gateway).toContain("automaticExpired");
+    expect(gateway).toContain('.in("status",["approved","failed","expired"])');
   });
 
   it("requires exact protected actions for deployments and rollbacks while auto-authorizing previews",()=>{
@@ -47,6 +49,7 @@ describe("execution safety kernel",()=>{
     expect(review).toContain("decideMutationIntent");
     expect(execution).toContain("claimMutationIntent");
     expect(execution).toContain("settleMutationIntent");
+    expect(execution).toContain('status:"retry_scheduled"');
     expect(github).toContain("assertExactBranchCommit");
     expect(github).toContain("/compare/${input.baseSha}...${input.commitSha}");
     expect(github).toContain("content!==file.content");

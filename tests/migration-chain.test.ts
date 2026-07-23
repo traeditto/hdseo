@@ -51,4 +51,14 @@ describe("Supabase migration chain", () => {
     expect(sql).toContain("p_client_organization_id");
     expect(sql).toContain("v_source.client_organization_id");
   });
+
+  it("reconciles deployment jobs created before tenant binding was present", () => {
+    const sql = readFileSync(
+      join(migrationsDirectory, "0048_seo_job_tenant_binding.sql"),
+      "utf8",
+    );
+    expect(sql).toContain("add column if not exists client_organization_id uuid");
+    expect(sql).toContain("SEO_JOB_TENANT_BACKFILL_INCOMPLETE");
+    expect(sql).toContain("seo_jobs_project_tenant_0048_fk");
+  });
 });

@@ -42,8 +42,9 @@ export async function requestMutationIntent(db:SupabaseClient,input:{
   if(existing.error)throw new ApiError("The protected action could not be checked.",500,"DATABASE_BINDING_FAILED");
   if(existing.data){
     if(existing.data.action_digest!==digest)throw new ApiError("This idempotency key already protects a different action.",409,"CONFLICT");
-    if(automatic&&["failed","expired"].includes(existing.data.status)){
-      const renewed=await db.from("mutation_intents").update({status:"approved",approved_by:input.requestedBy,approved_at:now.toISOString(),expires_at:expiresAt,execution_ref:null,execution_started_at:null,completed_at:null,failure_code:null,failure_message:null,updated_at:now.toISOString()}).eq("id",existing.data.id).eq("action_digest",digest).in("status",["failed","expired"]).select("id,action_digest,status,approval_policy,expires_at,trace_id,requested_by,approved_by").maybeSingle();
+    const automaticExpired=automatic&&existing.data.status==="approved"&&new Date(existing.data.expires_at).getTime()<=now.getTime();
+    if(automatic&&(["failed","expired"].includes(existing.data.status)||automaticExpired)){
+      const renewed=await db.from("mutation_intents").update({status:"approved",approved_by:input.requestedBy,approved_at:now.toISOString(),expires_at:expiresAt,execution_ref:null,execution_started_at:null,completed_at:null,failure_code:null,failure_message:null,updated_at:now.toISOString()}).eq("id",existing.data.id).eq("action_digest",digest).in("status",["approved","failed","expired"]).select("id,action_digest,status,approval_policy,expires_at,trace_id,requested_by,approved_by").maybeSingle();
       if(renewed.error||!renewed.data)throw new ApiError("The protected action retry could not be registered.",409,"CONFLICT");
       return renewed.data;
     }
