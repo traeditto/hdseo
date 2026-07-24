@@ -193,6 +193,7 @@ export function LiveAgencyDashboard({
     ),
     [selectedClientId, setSelectedClientId] = useState<string | null>(null),
     [dialog, setDialog] = useState<string | null>(null),
+    [setupProjectId, setSetupProjectId] = useState<string | null>(null),
     [receiptPackageId, setReceiptPackageId] = useState<string | null>(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
@@ -842,6 +843,7 @@ export function LiveAgencyDashboard({
               busy={busy}
               onAction={act}
               onOpenPackages={() => setTab("Packages")}
+              openSetupProjectId={setupProjectId}
             />
           )}
           {tab === "Opportunities" && (
@@ -1269,8 +1271,9 @@ export function LiveAgencyDashboard({
             scopedProjects.length === 1 ? scopedProjects[0].id : null
           }
           close={() => setDialog(null)}
-          openConnections={() => {
+          openConnections={(projectId) => {
             setDialog(null);
+            setSetupProjectId(projectId ?? null);
             setTab("Websites");
           }}
           submit={form}
@@ -1330,7 +1333,7 @@ function LiveDialog({
   implementationReadiness: ImplementationReadiness[];
   selectedProjectId: string | null;
   close: () => void;
-  openConnections: () => void;
+  openConnections: (projectId?: string) => void;
   submit: (
     event: FormEvent<HTMLFormElement>,
     action: string,
@@ -1627,13 +1630,23 @@ function LiveDialog({
                               {item.recommended && item.available && (
                                 <em>RECOMMENDED</em>
                               )}
+                              {item.connected && <em>GITHUB CONNECTED</em>}
                               <small>{item.description}</small>
                               {item.reason && <b>{item.reason}</b>}
                             </span>
                           </label>
                           {item.setup && (
-                            <button type="button" onClick={openConnections}>
-                              Finish setup
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openConnections(
+                                  item.value.startsWith("repository_")
+                                    ? packageProject?.id
+                                    : undefined,
+                                )
+                              }
+                            >
+                              {item.setupLabel ?? "Finish setup"}
                             </button>
                           )}
                         </div>

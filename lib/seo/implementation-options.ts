@@ -29,6 +29,8 @@ export type ImplementationOption = {
   reason?: string;
   recommended?: boolean;
   setup?: boolean;
+  connected?: boolean;
+  setupLabel?: string;
 };
 
 const repositoryBlockerLabels: Record<string, string> = {
@@ -49,14 +51,16 @@ export function buildImplementationOptions(
   const cmsReady = readiness?.cmsReady === true;
   const repositoryReady = readiness?.repositoryReady === true;
   const vercelReady = repositoryReady && readiness?.vercelConnected === true;
-  const repositoryReason = readiness?.repositoryBlockers.length
-    ? readiness.repositoryBlockers
-        .map(
-          (item) =>
-            repositoryBlockerLabels[item] ?? item.replaceAll("_", " "),
-        )
-        .join(" ")
-    : "Connect and verify a GitHub repository.";
+  const repositoryReason = readiness?.repositoryConnected
+    ? "GitHub is already connected for this client. Finish the protected deployment checks; the repository does not need to be connected again."
+    : readiness?.repositoryBlockers.length
+      ? readiness.repositoryBlockers
+          .map(
+            (item) =>
+              repositoryBlockerLabels[item] ?? item.replaceAll("_", " "),
+          )
+          .join(" ")
+      : "Connect and verify a GitHub repository.";
   const recommended: ImplementationChoice = cmsReady
     ? (`${provider}_direct` as ImplementationChoice)
     : vercelReady
@@ -103,6 +107,10 @@ export function buildImplementationOptions(
           : undefined,
       recommended: recommended === "repository_vercel",
       setup: !vercelReady,
+      connected: readiness?.repositoryConnected === true,
+      setupLabel: readiness?.repositoryConnected
+        ? "Finish safety activation"
+        : "Connect GitHub",
     },
     {
       value: "repository_pr",
@@ -114,6 +122,10 @@ export function buildImplementationOptions(
       reason: repositoryReady ? undefined : repositoryReason,
       recommended: recommended === "repository_pr",
       setup: !repositoryReady,
+      connected: readiness?.repositoryConnected === true,
+      setupLabel: readiness?.repositoryConnected
+        ? "Finish safety activation"
+        : "Connect GitHub",
     },
     {
       value: "squarespace_guided",

@@ -54,7 +54,7 @@ describe("connection-aware implementation choices", () => {
     expect(options.find((item) => item.value === "repository_pr")?.available).toBe(true);
   });
 
-  it("explains repository blockers and falls back to a safe CMS package", () => {
+  it("recognizes an existing GitHub connection and asks only for safety activation", () => {
     const options = buildImplementationOptions(
       readiness({
         repositoryConnected: true,
@@ -67,9 +67,14 @@ describe("connection-aware implementation choices", () => {
     );
     const repository = options.find((item) => item.value === "repository_pr");
 
-    expect(repository).toMatchObject({ available: false, setup: true });
-    expect(repository?.reason).toContain("not enabled for this client");
-    expect(repository?.reason).toContain("verify one manual change");
+    expect(repository).toMatchObject({
+      available: false,
+      setup: true,
+      connected: true,
+      setupLabel: "Finish safety activation",
+    });
+    expect(repository?.reason).toContain("GitHub is already connected");
+    expect(repository?.reason).toContain("does not need to be connected again");
     expect(options.find((item) => item.value === "generic_cms")?.recommended).toBe(true);
   });
 

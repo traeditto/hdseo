@@ -25,14 +25,14 @@ const methods:Array<{mode:Mode;title:string;description:string;icon:string}>=[
 
 function human(value:string|null|undefined){return (value||"not connected").replaceAll("_"," ");}
 
-export function WebsiteConnections({agencyId,projects,websites,canManage,busy,onAction,onOpenPackages}:{agencyId:string;projects:Project[];websites:Website[];canManage:boolean;busy:boolean;onAction:(body:Record<string,unknown>)=>Promise<boolean>;onOpenPackages:()=>void}){
+export function WebsiteConnections({agencyId,projects,websites,canManage,busy,onAction,onOpenPackages,openSetupProjectId}:{agencyId:string;projects:Project[];websites:Website[];canManage:boolean;busy:boolean;onAction:(body:Record<string,unknown>)=>Promise<boolean>;onOpenPackages:()=>void;openSetupProjectId?:string|null}){
   const [projectId,setProjectId]=useState(projects[0]?.id??"");
   const [open,setOpen]=useState(false);
   const [mode,setMode]=useState<Mode>("wordpress");
   const [integrationBusy,setIntegrationBusy]=useState<string|null>(null);
   const [integrationMessage,setIntegrationMessage]=useState("");
   const [propertyOptions,setPropertyOptions]=useState<Record<string,SearchConsoleProperty[]>>({});
-  const [setupProject,setSetupProject]=useState<Project|null>(null);
+  const [setupProject,setSetupProject]=useState<Project|null>(()=>projects.find(item=>item.id===openSetupProjectId)??null);
   const selected=projects.find(project=>project.id===projectId)??projects[0];
   const websiteByProject=useMemo(()=>new Map(websites.map(website=>[website.projectId,website])),[websites]);
   function begin(nextProjectId:string){setProjectId(nextProjectId);setMode("wordpress");setOpen(true);}
