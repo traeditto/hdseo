@@ -16,6 +16,7 @@ type RunwayCandidate = {
 
 export type GrowthRunwayItem = {
   id: string;
+  selected: boolean;
   targetUrl: string;
   actionType: string;
   keywords: string[];
@@ -186,6 +187,10 @@ export function buildGrowthRunway(
         ),
       );
       const primaryEvidence = record(primary.evidence);
+      const selected = related.some(
+        (candidate) =>
+          record(record(candidate.evidence).customerFocus).active === true,
+      );
       const capacityUnits = Math.min(
         policy.includedOutcomes,
         Math.max(1, Math.ceil(related.length / 2)),
@@ -213,6 +218,7 @@ export function buildGrowthRunway(
       return [
         {
           id: primary.id,
+          selected,
           targetUrl,
           actionType: primary.action_type,
           keywords,
@@ -242,6 +248,7 @@ export function buildGrowthRunway(
     })
     .sort(
       (a, b) =>
+        Number(b.selected) - Number(a.selected) ||
         b.valueCoveragePercent - a.valueCoveragePercent ||
         b.confidenceScore - a.confidenceScore,
     )

@@ -108,6 +108,45 @@ describe("managed Autopilot opportunity selection", () => {
     expect(selected?.id).toBe("stronger-roi");
   });
 
+  it("honors a customer focus only after it independently qualifies", () => {
+    const selected = selectManagedOpportunity(
+      [
+        candidate({
+          id: "qualified-default",
+          opportunity_score: 90,
+          evidence: {
+            businessValue: {
+              expectedMonthlyProfit: 900,
+              implementationCost: 350,
+              paybackMonths: 0.39,
+            },
+            currentRank: 12,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+        candidate({
+          id: "qualified-customer-focus",
+          opportunity_score: 70,
+          evidence: {
+            businessValue: {
+              expectedMonthlyProfit: 650,
+              implementationCost: 350,
+              paybackMonths: 0.54,
+            },
+            customerFocus: { active: true },
+            currentRank: 14,
+            economicsConfidence: 0.8,
+            missingEvidence: [],
+          },
+        }),
+      ],
+      "service_area",
+    );
+
+    expect(selected?.id).toBe("qualified-customer-focus");
+  });
+
   it("uses the whole month only for a plan-level focus campaign", () => {
     const selected = selectManagedOpportunity(
       [

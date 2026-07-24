@@ -51,6 +51,7 @@ type ManagedOutcomeRun = {
 };
 type GrowthRunwayItem = {
   id: string;
+  selected: boolean;
   targetUrl: string;
   actionType: string;
   keywords: string[];
@@ -977,6 +978,26 @@ export function LiveClientBusinessDashboard({
       setBusyId(null);
     }
   }
+  async function focusRunway(item:GrowthRunwayItem){
+    if(!project?.id)return;
+    setBusyId(`runway:${item.id}`);
+    setMessage("");
+    try{
+      const response=await fetch("/api/agent-service/focus-runway",{
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({projectId:project.id,opportunityId:item.id}),
+      });
+      const payload=await response.json() as {service?:ManagedServiceStatus;error?:{message?:string}};
+      if(!response.ok)throw new Error(payload.error?.message??"Autopilot could not focus this campaign.");
+      setManagedService(payload.service??null);
+      setMessage("Autopilot focus saved. HD SEO is concentrating the next research cycle on this campaign without spending execution capacity yet.");
+    }catch(error){
+      setMessage(error instanceof Error?error.message:"Autopilot could not focus this campaign.");
+    }finally{
+      setBusyId(null);
+    }
+  }
   async function decide(packageId: string, decision: string) {
     const result = await act(
       { action: "package_decision", packageId, decision },
@@ -1527,7 +1548,7 @@ export function LiveClientBusinessDashboard({
                   </p>
                   <div>
                     {growthRunway.map((item) => (
-                      <article key={item.id}>
+                      <article key={item.id} className={item.selected?"selected":""}>
                         <div className="owner-runway-score">
                           <strong>{item.valueCoveragePercent}%</strong>
                           <small>of value threshold</small>
@@ -1552,6 +1573,17 @@ export function LiveClientBusinessDashboard({
                             <summary>How this becomes an investable campaign</summary>
                             <p>{item.explanation}</p>
                           </details>
+                          {item.selected ? (
+                            <span className="owner-runway-focus">✓ Autopilot is focused here</span>
+                          ) : canApprove ? (
+                            <button
+                              className="owner-runway-focus-button"
+                              disabled={busyId!==null}
+                              onClick={()=>void focusRunway(item)}
+                            >
+                              {busyId===`runway:${item.id}`?"Focusing research…":"Focus Autopilot here →"}
+                            </button>
+                          ) : null}
                         </div>
                       </article>
                     ))}

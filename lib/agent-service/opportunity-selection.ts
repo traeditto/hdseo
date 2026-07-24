@@ -44,6 +44,8 @@ const record = (value: unknown): Record<string, unknown> =>
     : {};
 const metricNumber = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
+const isCustomerFocused = (candidate: ManagedOpportunityCandidate) =>
+  record(record(candidate.evidence).customerFocus).active === true;
 
 function hasUsableTarget(value: string | null) {
   if (!value) return false;
@@ -167,7 +169,10 @@ export function selectManagedOpportunity(
         return true;
       })
       .sort((a, b) => {
-        return evaluate(b).portfolioScore - evaluate(a).portfolioScore;
+        return (
+          Number(isCustomerFocused(b)) - Number(isCustomerFocused(a)) ||
+          evaluate(b).portfolioScore - evaluate(a).portfolioScore
+        );
       })[0] ?? null;
   if (directlyQualified) return directlyQualified;
 
@@ -364,7 +369,8 @@ export function selectManagedOpportunity(
           investment.expectedMonthlyProfit *
             Math.max(0, confidenceScore / 100) *
             10 +
-          investment.focusScore,
+          investment.focusScore +
+          (related.some(isCustomerFocused) ? 1_000_000 : 0),
       },
     ];
   });

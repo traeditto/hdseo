@@ -29,6 +29,7 @@ describe("compound growth runway",()=>{
     expect(runway).toHaveLength(1);
     expect(runway[0]).toMatchObject({
       id:"one",
+      selected:false,
       keywords:["roof repair jacksonville","emergency roof repair jacksonville"],
       currentMonthlyProfit:110,
       capacityUnits:1,
@@ -45,5 +46,27 @@ describe("compound growth runway",()=>{
     ],"service_area",investmentPolicyForPlan("pro"));
 
     expect(runway).toEqual([]);
+  });
+
+  it("places the customer-selected focus first without weakening the ROI gate",()=>{
+    const focused=candidate("focused","gutter repair jacksonville",25,{
+      target_url:"https://example.com/gutters",
+      evidence:{
+        keyword:"gutter repair jacksonville",
+        currentRank:61,
+        economicsConfidence:.5,
+        businessValue:{expectedMonthlyProfit:25,implementationCost:350},
+        customerFocus:{active:true},
+      },
+    });
+    const runway=buildGrowthRunway([
+      candidate("stronger","roof repair jacksonville",90),
+      focused,
+    ],"service_area",investmentPolicyForPlan("pro"));
+
+    expect(runway[0]).toMatchObject({id:"focused",selected:true});
+    expect(runway[0].currentMonthlyProfit).toBeLessThan(
+      runway[0].requiredMonthlyProfit,
+    );
   });
 });

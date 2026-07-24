@@ -345,11 +345,20 @@ async function reconcileActiveCycle(db:SupabaseClient,enrollment:Enrollment,requ
 async function ensureDiscoveryCampaign(db:SupabaseClient,enrollment:Enrollment,requestedBy:string){
   const active=await db.from("seo_campaign_jobs").select("id,status").eq("project_id",enrollment.project_id).not("status","in","(completed,failed,cancelled,stale)").limit(1).maybeSingle();
   if(active.data)return{id:active.data.id as string,wave:1,status:active.data.status as string};
-  const [project,locations]=await Promise.all([
+  const [project,locations,focusedOpportunity]=await Promise.all([
     db.from("seo_projects").select("primary_market").eq("id",enrollment.project_id).maybeSingle(),
     db.from("seo_locations").select("name").eq("project_id",enrollment.project_id).eq("status","active").order("priority",{ascending:false}).limit(25),
+    db.from("seo_opportunities").select("id,target_url,evidence").eq("agency_id",enrollment.agency_id).eq("client_organization_id",enrollment.client_organization_id).eq("project_id",enrollment.project_id).in("status",["open","selected","approved"]).order("updated_at",{ascending:false}).limit(20),
   ]);
   const serviceAreas=(locations.data??[]).map(row=>row.name),targetMarket=project.data?.primary_market||serviceAreas.join(", ")||"verified service area";
+  const focusRow=(focusedOpportunity.data??[]).find(row=>{
+    const evidence=row.evidence&&typeof row.evidence==="object"&&!Array.isArray(row.evidence)?row.evidence as Record<string,unknown>:{};
+    const focus=evidence.customerFocus&&typeof evidence.customerFocus==="object"&&!Array.isArray(evidence.customerFocus)?evidence.customerFocus as Record<string,unknown>:{};
+    return focus.active===true;
+  });
+  const focusEvidence=focusRow?.evidence&&typeof focusRow.evidence==="object"&&!Array.isArray(focusRow.evidence)?focusRow.evidence as Record<string,unknown>:{};
+  const focus=focusEvidence.customerFocus&&typeof focusEvidence.customerFocus==="object"&&!Array.isArray(focusEvidence.customerFocus)?focusEvidence.customerFocus as Record<string,unknown>:{};
+  const focusKeywords=Array.isArray(focus.keywords)?focus.keywords.filter((value):value is string=>typeof value==="string"&&value.trim().length>0).slice(0,10):[];
   const day=new Date().toISOString().slice(0,10),dayStart=`${day}T00:00:00.000Z`;
   const prior=await db.from("seo_campaign_jobs").select("id,status,input,result,created_at")
     .eq("project_id",enrollment.project_id)
@@ -364,7 +373,7 @@ async function ensureDiscoveryCampaign(db:SupabaseClient,enrollment:Enrollment,r
   const inserted=await db.from("seo_campaign_jobs").insert({
     agency_id:enrollment.agency_id,client_organization_id:enrollment.client_organization_id,project_id:enrollment.project_id,
     requested_by:requestedBy,status:"queued",current_stage:"discover",progress_percent:0,
-    input:{automationMode:"RECOMMEND",managedDiscoveryOnly:true,targetMarket,serviceAreas,discoveryLimit,adaptiveWave:wave,maxAdaptiveWaves:3,adaptiveReason:wave===1?"initial_research":"no_roi_qualified_move"},
+    input:{automationMode:"RECOMMEND",managedDiscoveryOnly:true,targetMarket,serviceAreas,discoveryLimit,adaptiveWave:wave,maxAdaptiveWaves:3,adaptiveReason:focusRow?"customer_focused_runway":wave===1?"initial_research":"no_roi_qualified_move",focusOpportunityId:focusRow?.id??null,focusTargetUrl:focusRow?.target_url??null,focusKeywords},
     result:{managedDiscoveryOnly:true,adaptiveWave:wave,maxAdaptiveWaves:3},idempotency_key:idempotencyKey,
     reference_id:crypto.randomUUID(),
   }).select("id").single();

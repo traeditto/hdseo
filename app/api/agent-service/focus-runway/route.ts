@@ -1,0 +1,39 @@
+import {z} from "zod";
+import {jsonError} from "@/lib/api/errors";
+import {parseJson} from "@/lib/api/request";
+import {requireLiveAgencyProject} from "@/lib/auth/live-tenant";
+import {
+  agentServiceSnapshot,
+  focusGrowthRunway,
+} from "@/lib/agent-service/service";
+
+const schema=z.object({
+  projectId:z.string().uuid(),
+  opportunityId:z.string().uuid(),
+});
+
+export async function POST(request:Request){
+  try{
+    const input=await parseJson(request,schema);
+    const context=await requireLiveAgencyProject({
+      projectId:input.projectId,
+      permission:"provider.authorize",
+    });
+    await focusGrowthRunway(context.db,{
+      agencyId:context.agencyId,
+      clientId:context.clientId,
+      projectId:input.projectId,
+      userId:context.userId,
+    },input.opportunityId);
+    return Response.json({
+      ok:true,
+      service:await agentServiceSnapshot(context.db,{
+        agencyId:context.agencyId,
+        clientId:context.clientId,
+        projectId:input.projectId,
+      }),
+    });
+  }catch(error){
+    return jsonError(error);
+  }
+}

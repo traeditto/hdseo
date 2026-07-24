@@ -12,6 +12,7 @@ type EnrollmentInput={serviceMode:AgentServiceMode;planKey:string;approvalOwner:
 type OutcomeDecision={kind:"opportunity"|"proof"|"creative"|"execution"|"release";id:string;outcomeRunId:string|null;title:string;summary:string;question:string;riskLevel:"low"|"medium"|"high";status:string;url:string|null;campaignJobId?:string;draft?:{title:unknown;metaDescription:unknown;h1:unknown;sections:unknown;faqs:unknown;qa:unknown};files?:Array<{id:string;path:string;reason:string|null;diff:string|null}>;validation?:Record<string,unknown>};
 
 const now=()=>new Date().toISOString();
+const asRecord=(value:unknown):Record<string,unknown>=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};
 
 async function enterpriseClientId(db:SupabaseClient,tenant:Omit<AgentServiceTenant,"userId">){
   const result=await db.from("clients").select("id").eq("agency_id",tenant.agencyId).eq("organization_id",tenant.clientId).maybeSingle();
@@ -119,6 +120,45 @@ export async function updateAgentServiceSettings(db:SupabaseClient,tenant:AgentS
   if(input.operatorBrand||input.brandName||input.supportEmail||input.resalePriceCents!=null)await db.from("agency_resale_settings").upsert({agency_id:tenant.agencyId,enabled:input.operatorBrand==="agency",brand_name:input.brandName?.trim()||null,support_email:input.supportEmail?.trim()||null,suggested_resale_price_cents:Math.max(0,input.resalePriceCents??0),updated_at:now()},{onConflict:"agency_id"});
   await db.from("audit_logs").insert({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,actor_user_id:tenant.userId,action:"agent_service.settings_updated",object_type:"agent_service_enrollment",object_id:result.data.id,after_summary:{approvalOwner:input.approvalOwner,operatorBrand:input.operatorBrand,riskCeiling:input.riskCeiling,monthlyActionLimit:input.monthlyActionLimit,monthlyProviderBudget:input.monthlyProviderBudget,resalePriceCents:input.resalePriceCents}});
   return result.data;
+}
+
+export async function focusGrowthRunway(db:SupabaseClient,tenant:AgentServiceTenant,opportunityId:string){
+  const [enrollment,project,opportunities]=await Promise.all([
+    db.from("agent_service_enrollments").select("id,plan_key,status").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).maybeSingle(),
+    db.from("seo_projects").select("market_scope").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("id",tenant.projectId).maybeSingle(),
+    db.from("seo_opportunities").select("id,status,action_type,target_url,opportunity_score,confidence_score,reason_codes,evidence").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).in("status",["open","selected","approved"]).order("opportunity_score",{ascending:false}).limit(100),
+  ]);
+  if(enrollment.error||!enrollment.data||!["active","trialing"].includes(enrollment.data.status))throw new ApiError("Autopilot must be active before choosing a campaign focus.",409,"CONFLICT");
+  if(project.error||!project.data||opportunities.error)throw new ApiError("The campaign runway could not be verified.",503,"DATABASE_BINDING_FAILED");
+  const runway=buildGrowthRunway(opportunities.data??[],project.data.market_scope==="nationwide"?"nationwide":"service_area",investmentPolicyForPlan(String(enrollment.data.plan_key)));
+  const selected=runway.find(item=>item.id===opportunityId);
+  if(!selected)throw new ApiError("This opportunity is no longer available in the safe growth runway. Refresh and choose another.",409,"CONFLICT");
+  const selectedRow=(opportunities.data??[]).find(item=>item.id===opportunityId);
+  if(!selectedRow)throw new ApiError("This opportunity is no longer available.",409,"CONFLICT");
+
+  for(const row of opportunities.data??[]){
+    const evidence=asRecord(row.evidence),focus=asRecord(evidence.customerFocus);
+    if(focus.active!==true||row.id===opportunityId)continue;
+    const cleared=await db.from("seo_opportunities").update({evidence:{...evidence,customerFocus:{...focus,active:false,replacedAt:now(),replacedBy:opportunityId}},updated_at:now()}).eq("id",row.id).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("id").maybeSingle();
+    if(cleared.error||!cleared.data)throw new ApiError("The previous campaign focus could not be replaced safely.",503,"DATABASE_BINDING_FAILED");
+  }
+  const selectedEvidence=asRecord(selectedRow.evidence),selectedAt=now();
+  const saved=await db.from("seo_opportunities").update({
+    evidence:{...selectedEvidence,customerFocus:{active:true,selectedAt,selectedBy:tenant.userId,targetUrl:selected.targetUrl,keywords:selected.keywords}},
+    updated_at:selectedAt,
+  }).eq("id",opportunityId).eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).select("id").maybeSingle();
+  if(saved.error||!saved.data)throw new ApiError("The campaign focus could not be saved.",503,"DATABASE_BINDING_FAILED");
+  const queuedResearch=await db.from("seo_campaign_jobs").select("id,input").eq("agency_id",tenant.agencyId).eq("client_organization_id",tenant.clientId).eq("project_id",tenant.projectId).eq("status","queued").contains("input",{managedDiscoveryOnly:true}).order("created_at",{ascending:false}).limit(1).maybeSingle();
+  if(queuedResearch.error)throw new ApiError("The focused research queue could not be inspected.",503,"DATABASE_BINDING_FAILED");
+  if(queuedResearch.data){
+    const input=asRecord(queuedResearch.data.input);
+    const focused=await db.from("seo_campaign_jobs").update({input:{...input,adaptiveReason:"customer_focused_runway",focusOpportunityId:opportunityId,focusTargetUrl:selected.targetUrl,focusKeywords:selected.keywords},updated_at:selectedAt}).eq("id",queuedResearch.data.id).eq("status","queued").select("id").maybeSingle();
+    if(focused.error||!focused.data)throw new ApiError("The queued research pass could not be focused safely.",503,"DATABASE_BINDING_FAILED");
+  }
+  const scheduled=await db.from("agent_service_enrollments").update({next_cycle_at:selectedAt,worker_id:null,locked_at:null,lock_expires_at:null,updated_at:selectedAt}).eq("id",enrollment.data.id).in("status",["active","trialing"]).select("id").maybeSingle();
+  if(scheduled.error||!scheduled.data)throw new ApiError("The focused research cycle could not be scheduled.",503,"DATABASE_BINDING_FAILED");
+  await db.from("audit_logs").insert({agency_id:tenant.agencyId,client_organization_id:tenant.clientId,project_id:tenant.projectId,actor_user_id:tenant.userId,action:"growth_runway.focus_selected",object_type:"seo_opportunity",object_id:opportunityId,after_summary:{targetUrl:selected.targetUrl,keywords:selected.keywords,valueCoveragePercent:selected.valueCoveragePercent}});
+  return{...selected,selected:true,selectedAt};
 }
 
 export async function agentServiceSnapshot(db:SupabaseClient,tenant:Omit<AgentServiceTenant,"userId">){
